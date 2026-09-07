@@ -46,7 +46,7 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` expanded to 11 test cases:
+`src/test/hybrid_multisig_tests.cpp` expanded to 12 test cases:
 
 - Hybrid multisig `IsMine` and spend generation.
 - Hybrid multisig P2SH spends.
@@ -59,6 +59,8 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 - Wallet unlock failures keeping the wallet locked.
 - Hybrid-key plaintext-to-encrypted serialization migration.
 - Hybrid multisig script size limits (n-required and key-count bounds).
+- Combination rejecting signature pairs with a valid ECDSA but invalid
+  ML-DSA half.
 
 ### Notes
 
@@ -67,6 +69,11 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
   empty script instead of reaching the assertion in `EncodeOP_N`.
 - `addhybridmultisigaddress` rejects requests with more than 16 keys or
   an n-required above 16 with an explicit error.
+- `CombineHybridMultisig` now verifies BOTH signature halves of each
+  candidate pair (via `VerifyHybridSignature`) before merging it into
+  the combined script-sig, instead of only checking the ECDSA half.
+  Signature pairs with a valid ECDSA but invalid ML-DSA component are
+  no longer propagated.
 
 ---
 
@@ -75,7 +82,7 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 The foundational hybrid post-quantum layer was added earlier on this branch:
 
 - Quantum-resilient hybrid authentication combining ECDSA (secp256k1) and ML-DSA-65 (Dilithium).
-- ML-DSA-65 signature verification through the OpenSSL EVP interface (OpenSSL 3.2+).
+- ML-DSA-65 signature verification through the OpenSSL EVP interface (OpenSSL 3.5+).
 - Hybrid address types and script templates (`OP_CHECKHYBRIDSIG`, `OP_CHECKHYBRIDSIGVERIFY`, `OP_CHECKMULTIHYBRIDSIG`, `OP_HASHHYBRID160`, `OP_DUPHYBRID`).
 - M-of-N hybrid multisig via `OP_CHECKMULTIHYBRIDSIG`.
 - Hybrid wallet integration: key generation, validation, key pool, automatic address allocation, change addresses, and transaction signing.

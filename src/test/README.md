@@ -40,7 +40,12 @@ plaintext-wallet path that keeps records unencrypted. A script-size-limits
 test (`hybrid_multisig_script_size_limits`) verifies that
 `GetScriptForHybridMultisig` rejects n-required and key counts outside the
 `1..16` range (`EncodeOP_N` assertion) by returning an empty script instead
-of crashing, including the positive 16-key boundary.
+of crashing, including the positive 16-key boundary. A combine test
+(`hybrid_multisig_combine_rejects_invalid_mldsa`) verifies that the
+combining layer requires BOTH the ECDSA and the ML-DSA half of each
+candidate pair to verify (`VerifyHybridSignature`) before accepting it, so
+a pair with a valid ECDSA but invalid ML-DSA signature is never propagated
+into the combined scriptSig.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -88,7 +93,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 11 test cases...
+Running 12 test cases...
 
 *** No errors detected
 ```

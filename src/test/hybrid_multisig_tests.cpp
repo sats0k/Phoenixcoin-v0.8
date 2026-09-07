@@ -514,6 +514,68 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)
     BOOST_CHECK(VerifyScript(combinedP2, p2sh, txToP2, 0, true, 0));
 }
 
+/*
+ * Regression test: the hybrid multisig combining layer must require BOTH
+ * the ECDSA and the ML-DSA half of a signature pair to verify before the
+ * pair is accepted and propagated into the combined scriptSig.
+ *
+ * Previously only the ECDSA half was checked, so a pair consisting of a
+ * valid ECDSA signature and an invalid ML-DSA signature was accepted by
+ * the combiner and carried into the resulting scriptSig.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_rejects_invalid_mldsa)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    CTransaction txFrom, txTo;
+    MakeHybridSpend(inner, txFrom, txTo);
+
+    CHybridKey key0;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], key0));
+
+    std::vector<unsigned char> ecSig, mlSig;
+    CScript valid = SignHybridPair(key0, inner, txTo, 0, SIGHASH_ALL, ecSig, mlSig);
+    BOOST_REQUIRE(!valid.empty());
+    BOOST_REQUIRE(!ecSig.empty());
+    BOOST_REQUIRE(!mlSig.empty());
+
+    // Keep the ECDSA half valid but corrupt the ML-DSA half. The byte used
+    // is in the middle of the signature so the length and the trailing
+    // sighash-type byte are preserved.
+    std::vector<unsigned char> badMl = mlSig;
+    badMl[badMl.size() / 2] ^= 0x01;
+
+    CScript badPair;
+    badPair << ecSig << badMl;
+
+    // The tampered pair is rejected by consensus (both halves must verify).
+    BOOST_CHECK(!VerifyScript(badPair, inner, txTo, 0, false, 0));
+
+    // Combining the valid pair with the tampered pair must not accept the
+    // tampered ML-DSA half, even though the ECDSA half verifies.
+    CScript combined = CombineSignatures(inner, txTo, 0, valid, badPair);
+    BOOST_CHECK(combined != badPair);
+
+    // The combined script still cannot satisfy the 2-of-3 requirement.
+    BOOST_CHECK(!VerifyScript(combined, inner, txTo, 0, false, 0));
+
+    // The tampered ML-DSA material must not have been propagated.
+    std::vector<unsigned char> combinedBytes(combined.begin(), combined.end());
+    BOOST_CHECK(std::search(combinedBytes.begin(), combinedBytes.end(),
+                            badMl.begin(), badMl.end()) == combinedBytes.end());
+
+    // A combiner that received only the tampered pair produces nothing.
+    CScript onlyBad = CombineSignatures(inner, txTo, 0, badPair, badPair);
+    BOOST_CHECK(onlyBad.empty() || !VerifyScript(onlyBad, inner, txTo, 0, false, 0));
+    std::vector<unsigned char> onlyBadBytes(onlyBad.begin(), onlyBad.end());
+    BOOST_CHECK(std::search(onlyBadBytes.begin(), onlyBadBytes.end(),
+                            badMl.begin(), badMl.end()) == onlyBadBytes.end());
+}
+
 BOOST_AUTO_TEST_CASE(hybrid_multisig_m_of_n_combinations)
 {
     CHybridTestKeyStore keystore;

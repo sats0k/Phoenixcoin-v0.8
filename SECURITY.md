@@ -71,9 +71,10 @@ Hybrid multisig script-sigs are merged in the combining layer
 (`CombineSignatures`):
 
 - Every script element is an `[ECDSA][ML-DSA]` signature pair.
-- The ECDSA half of each pair must verify (against a key present in
-  the script) before the pair is accepted for combination; unverified
-  or cross-key-mismatched material is never propagated.
+- Both halves of each pair must verify — against the corresponding
+  ECDSA and ML-DSA public keys present in the script — before the pair
+  is accepted for combination; unverified, cross-key-mismatched, or
+  invalid-ML-DSA material is never propagated.
 - Combined pairs are ordered by the key index they correspond to.
 - Combined scripts must still pass the full consensus
   `VerifyScript`; combining disjoint partials never relaxes the m-of-n

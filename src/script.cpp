@@ -2415,7 +2415,9 @@ static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransac
         for (unsigned int i = 0; i < nN; i++) {
             if (have[i]) continue;
             const valtype& ecPub = vSolutions[1 + i * 2];
-            if (CheckSig(ecSig, ecPub, scriptPubKey, txTo, nIn, 0)) {
+            const valtype& mlPub = vSolutions[2 + i * 2];
+            if (VerifyHybridSignature(ecSig, mlSig, ecPub, mlPub,
+                                      scriptPubKey, txTo, nIn, 0)) {
                 have[i] = true;
                 ecSigFor[i] = ecSig;
                 mlSigFor[i] = mlSig;

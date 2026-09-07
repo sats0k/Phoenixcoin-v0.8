@@ -453,8 +453,9 @@ Testing has covered:
 * Wallet encryption unlock-failure handling
 * Hybrid-key plaintext-to-encrypted migration
 * Hybrid multisig script size limits (n-required and key-count bounds)
+* Hybrid multisig combination rejecting invalid ML-DSA halves
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (11 test cases):
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (12 test cases):
 
 ```bash
 cd src
