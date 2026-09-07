@@ -275,11 +275,13 @@ static bool GetHybridKey(const CHybridTestKeyStore& store,
     return store.GetHybridKeyByLegacyID(CPubKey(pub.ecdsaPubKey).GetID(), keyOut);
 }
 
-static CScript SignHybridPartial(const CHybridKey& key,
-                                 const CScript& scriptPubKey,
-                                 const CTransaction& txTo,
-                                 unsigned int nIn,
-                                 int nHashType)
+static CScript SignHybridPair(const CHybridKey& key,
+                              const CScript& scriptPubKey,
+                              const CTransaction& txTo,
+                              unsigned int nIn,
+                              int nHashType,
+                              std::vector<unsigned char>& ecSigOut,
+                              std::vector<unsigned char>& mlSigOut)
 {
     uint256 sighash = SignatureHash(scriptPubKey, txTo, nIn, nHashType);
 
@@ -299,9 +301,22 @@ static CScript SignHybridPartial(const CHybridKey& key,
         return CScript();
     mlSig.push_back((unsigned char)nHashType);
 
+    ecSigOut = ecSig;
+    mlSigOut = mlSig;
+
     CScript ret;
     ret << ecSig << mlSig;
     return ret;
+}
+
+static CScript SignHybridPartial(const CHybridKey& key,
+                                 const CScript& scriptPubKey,
+                                 const CTransaction& txTo,
+                                 unsigned int nIn,
+                                 int nHashType)
+{
+    std::vector<unsigned char> ecSig, mlSig;
+    return SignHybridPair(key, scriptPubKey, txTo, nIn, nHashType, ecSig, mlSig);
 }
 
 BOOST_AUTO_TEST_CASE(hybrid_multisig_ismine_and_spend)
@@ -482,4 +497,52 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_m_of_n_combinations)
             BOOST_CHECK(!VerifyScript(tooFew, inner, txTo, 0, false, 0));
         }
     }
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_pair_order_and_mismatch)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = inner;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    CHybridKey key0, key1, key2;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], key0));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[1], key1));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[2], key2));
+
+    std::vector<unsigned char> ec0, ml0, ec1, ml1;
+    BOOST_REQUIRE(!SignHybridPair(key0, inner, txTo, 0, SIGHASH_ALL, ec0, ml0).empty());
+    BOOST_REQUIRE(!SignHybridPair(key1, inner, txTo, 0, SIGHASH_ALL, ec1, ml1).empty());
+
+    // Correct pair order (ECDSA, then ML-DSA) verifies.
+    CScript correct;
+    correct << ec0 << ml0 << ec1 << ml1;
+    BOOST_CHECK(VerifyScript(correct, inner, txTo, 0, false, 0));
+
+    // Reversed order within each pair (ML-DSA first) must be rejected.
+    CScript reversed;
+    reversed << ml0 << ec0 << ml1 << ec1;
+    BOOST_CHECK(!VerifyScript(reversed, inner, txTo, 0, false, 0));
+
+    // Mismatched pair: ECDSA half belongs to key0, ML-DSA half to key1.
+    CScript mismatched;
+    mismatched << ec0 << ml1;
+    BOOST_CHECK(!VerifyScript(mismatched, inner, txTo, 0, false, 0));
+
+    // Mismatched pair cannot be rescued by adding a second valid pair.
+    CScript mismatchedFull;
+    mismatchedFull << ec0 << ml1 << ec1 << ml1;
+    BOOST_CHECK(!VerifyScript(mismatchedFull, inner, txTo, 0, false, 0));
 }

@@ -21,8 +21,9 @@ implementation: sighash types, `IsMine` detection and direct spending of
 hybrid multisig scripts, spending via P2SH-wrapped hybrid multisig
 (redeem script) transactions, `IsMine` behavior for locked (encrypted)
 wallets, merging of partial hybrid multisig signatures via
-`CombineSignatures` (direct and P2SH-wrapped), and an m-of-n matrix
-(1/2/3-of-3) covering positive and under-signature cases.
+`CombineSignatures` (direct and P2SH-wrapped), an m-of-n matrix
+(1/2/3-of-3) covering positive and under-signature cases, and
+ECDSA/ML-DSA pair ordering with cross-key mismatch rejection.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -70,7 +71,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 6 test cases...
+Running 7 test cases...
 
 *** No errors detected
 ```
