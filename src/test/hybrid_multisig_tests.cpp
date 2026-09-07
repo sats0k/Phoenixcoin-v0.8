@@ -309,6 +309,18 @@ static CScript SignHybridPair(const CHybridKey& key,
     return ret;
 }
 
+static void MakeHybridSpend(const CScript& script,
+                            CTransaction& txFrom, CTransaction& txTo)
+{
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = script;
+
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+}
+
 static CScript SignHybridPartial(const CHybridKey& key,
                                  const CScript& scriptPubKey,
                                  const CTransaction& txTo,
@@ -545,4 +557,87 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_pair_order_and_mismatch)
     CScript mismatchedFull;
     mismatchedFull << ec0 << ml1 << ec1 << ml1;
     BOOST_CHECK(!VerifyScript(mismatchedFull, inner, txTo, 0, false, 0));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_signature_argument_limits)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    std::vector<CHybridPubKey> pubs2(pubs.begin(), pubs.begin() + 2);
+
+    CScript inner22 = GetScriptForHybridMultisig(2, pubs2);
+    CScript inner11 = GetScriptForHybridMultisig(1, pubs2);
+    BOOST_REQUIRE(!inner22.empty());
+    BOOST_REQUIRE(!inner11.empty());
+
+    CTransaction txFrom22, txTo22;
+    MakeHybridSpend(inner22, txFrom22, txTo22);
+    CTransaction txFrom11, txTo11;
+    MakeHybridSpend(inner11, txFrom11, txTo11);
+
+    CHybridKey key0, key1;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], key0));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[1], key1));
+
+    std::vector<unsigned char> ec0, ml0, ec1, ml1;
+    BOOST_REQUIRE(!SignHybridPair(key0, inner22, txTo22, 0, SIGHASH_ALL, ec0, ml0).empty());
+    BOOST_REQUIRE(!SignHybridPair(key1, inner22, txTo22, 0, SIGHASH_ALL, ec1, ml1).empty());
+
+    // Full 2-of-2 must verify.
+    CScript ok22;
+    ok22 << ec0 << ml0 << ec1 << ml1;
+    BOOST_CHECK(VerifyScript(ok22, inner22, txTo22, 0, false, 0));
+
+    // Missing: only one pair supplied for a 2-of-2.
+    CScript missing22;
+    missing22 << ec0 << ml0;
+    BOOST_CHECK(!VerifyScript(missing22, inner22, txTo22, 0, false, 0));
+
+    // Malformed: garbage ML-DSA half in the first pair.
+    std::vector<unsigned char> garbage(64, 0x42);
+    CScript malformedML22;
+    malformedML22 << ec0 << garbage << ec1 << ml1;
+    BOOST_CHECK(!VerifyScript(malformedML22, inner22, txTo22, 0, false, 0));
+
+    // Malformed: garbage ECDSA half in the first pair.
+    CScript malformedEC22;
+    malformedEC22 << garbage << ml0 << ec1 << ml1;
+    BOOST_CHECK(!VerifyScript(malformedEC22, inner22, txTo22, 0, false, 0));
+
+    // Malformed: empty element within a pair.
+    CScript emptyElem22;
+    emptyElem22 << ec0 << OP_0 << ec1 << ml1;
+    BOOST_CHECK(!VerifyScript(emptyElem22, inner22, txTo22, 0, false, 0));
+
+    std::vector<unsigned char> fec0, fml0, fec1, fml1;
+    BOOST_REQUIRE(!SignHybridPair(key0, inner11, txTo11, 0, SIGHASH_ALL, fec0, fml0).empty());
+    BOOST_REQUIRE(!SignHybridPair(key1, inner11, txTo11, 0, SIGHASH_ALL, fec1, fml1).empty());
+
+    // Full 1-of-2 must verify.
+    CScript one11;
+    one11 << fec0 << fml0;
+    BOOST_CHECK(VerifyScript(one11, inner11, txTo11, 0, false, 0));
+
+    // Extra: two pairs supplied for a 1-of-2.  Consensus accepts the
+    // spend (no cleanstack requirement), but standardness rejects it
+    // because the stack size does not match nArgsExpected == 2*m.
+    CScript extra11;
+    extra11 << fec0 << fml0 << fec1 << fml1;
+    BOOST_CHECK(VerifyScript(extra11, inner11, txTo11, 0, false, 0));
+
+    std::map<uint256, std::pair<CTxIndex, CTransaction> > mapInputs;
+    mapInputs[txFrom11.GetHash()] = std::make_pair(CTxIndex(), txFrom11);
+
+    CTransaction txToStd;
+    txToStd.vin.resize(1);
+    txToStd.vout.resize(1);
+    txToStd.vin[0].prevout.hash = txFrom11.GetHash();
+    txToStd.vin[0].prevout.n = 0;
+
+    txToStd.vin[0].scriptSig = one11;
+    BOOST_CHECK(txToStd.AreInputsStandard(mapInputs));
+
+    txToStd.vin[0].scriptSig = extra11;
+    BOOST_CHECK(!txToStd.AreInputsStandard(mapInputs));
 }

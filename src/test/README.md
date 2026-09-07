@@ -23,7 +23,10 @@ hybrid multisig scripts, spending via P2SH-wrapped hybrid multisig
 wallets, merging of partial hybrid multisig signatures via
 `CombineSignatures` (direct and P2SH-wrapped), an m-of-n matrix
 (1/2/3-of-3) covering positive and under-signature cases, and
-ECDSA/ML-DSA pair ordering with cross-key mismatch rejection.
+ECDSA/ML-DSA pair ordering with cross-key mismatch rejection, plus
+malformed/missing/extra signature argument handling (consensus rejection
+for under-supplied or invalid signature arguments, and standardness
+rejection for surplus arguments).
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -71,7 +74,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 7 test cases...
+Running 8 test cases...
 
 *** No errors detected
 ```
