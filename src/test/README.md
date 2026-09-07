@@ -30,7 +30,13 @@ rejection for surplus arguments. A wallet-crypto test
 (`wallet_crypto_unlock_failure_keeps_locked`) verifies the real
 encrypted-wallet `Unlock` path: a wrong passphrase leaves the wallet
 locked and the keys inaccessible, a correct passphrase unlocks it, and
-re-locking clears the master key again.
+re-locking clears the master key again. A hybrid-key migration test
+(`hybrid_key_plaintext_to_encrypted_migration`) verifies that plaintext
+in-memory hybrid keys convert to checksummed, encrypted at-rest
+`CHybridKeyDisk` records: no plaintext leakage, round-trip decryption with
+the wallet master key, checksum/tamper detection, refusal without an
+unlocked master key (locked-wallet `MakeHybridKeyDisk` throws), and the
+plaintext-wallet path that keeps records unencrypted.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -78,7 +84,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 9 test cases...
+Running 10 test cases...
 
 *** No errors detected
 ```

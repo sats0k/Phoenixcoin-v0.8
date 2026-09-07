@@ -1,6 +1,8 @@
 #include <boost/test/unit_test.hpp>
 
 #include <cstring>
+#include <algorithm>
+#include <memory>
 
 #include "main.h"
 #include "script.h"
@@ -11,6 +13,7 @@
 #include "crypter.h"
 
 #include <openssl/rand.h>
+#include <openssl/evp.h>
 
 extern uint256 SignatureHash(CScript scriptCode,
                             const CTransaction& txTo,
@@ -323,6 +326,44 @@ static void MakeHybridSpend(const CScript& script,
     txTo.vout.resize(1);
     txTo.vin[0].prevout.hash = txFrom.GetHash();
     txTo.vin[0].prevout.n = 0;
+}
+
+static bool SetupEncryptedTestWallet(CWallet& wallet, CKey& keyOut,
+                                     CMasterKey& masterKeyOut)
+{
+    keyOut.MakeNewKey(true);
+
+    CKeyingMaterial vMasterKey;
+    vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
+    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
+
+    masterKeyOut.vchSalt.resize(WALLET_CRYPTO_SALT_SIZE);
+    RAND_bytes(&masterKeyOut.vchSalt[0], WALLET_CRYPTO_SALT_SIZE);
+    masterKeyOut.nDeriveIterations = 25000;
+    masterKeyOut.nDerivationMethod = 0;
+
+    SecureString pass("correct horse battery staple\n");
+
+    CCrypter crypter;
+    if (!crypter.SetKeyFromPassphrase(pass, masterKeyOut.vchSalt,
+                                      masterKeyOut.nDeriveIterations,
+                                      masterKeyOut.nDerivationMethod))
+        return false;
+    if (!crypter.Encrypt(vMasterKey, masterKeyOut.vchCryptedKey))
+        return false;
+
+    bool fCompressed;
+    CSecret vchSecret = keyOut.GetSecret(fCompressed);
+    std::vector<unsigned char> vchCryptedSecret;
+    if (!EncryptSecret(vMasterKey, vchSecret, keyOut.GetPubKey().GetHash(),
+                       vchCryptedSecret))
+        return false;
+    if (!wallet.AddCryptedKey(keyOut.GetPubKey(), vchCryptedSecret))
+        return false;
+
+    wallet.mapMasterKeys[0] = masterKeyOut;
+    wallet.nMasterKeyMaxID = 1;
+    return true;
 }
 
 static CScript SignHybridPartial(const CHybridKey& key,
@@ -651,36 +692,11 @@ BOOST_AUTO_TEST_CASE(wallet_crypto_unlock_failure_keeps_locked)
     CWallet wallet;
 
     CKey key;
-    key.MakeNewKey(true);
-
-    CKeyingMaterial vMasterKey;
-    vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
-    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
-
     CMasterKey kMasterKey;
-    kMasterKey.vchSalt.resize(WALLET_CRYPTO_SALT_SIZE);
-    RAND_bytes(&kMasterKey.vchSalt[0], WALLET_CRYPTO_SALT_SIZE);
-    kMasterKey.nDeriveIterations = 25000;
-    kMasterKey.nDerivationMethod = 0;
+    BOOST_REQUIRE(SetupEncryptedTestWallet(wallet, key, kMasterKey));
 
     SecureString pass("correct horse battery staple\n");
     SecureString wrong("wrong passphrase\n");
-
-    CCrypter crypter;
-    BOOST_REQUIRE(crypter.SetKeyFromPassphrase(pass, kMasterKey.vchSalt,
-                                               kMasterKey.nDeriveIterations,
-                                               kMasterKey.nDerivationMethod));
-    BOOST_REQUIRE(crypter.Encrypt(vMasterKey, kMasterKey.vchCryptedKey));
-
-    bool fCompressed;
-    CSecret vchSecret = key.GetSecret(fCompressed);
-    std::vector<unsigned char> vchCryptedSecret;
-    BOOST_REQUIRE(EncryptSecret(vMasterKey, vchSecret,
-                                key.GetPubKey().GetHash(), vchCryptedSecret));
-    BOOST_REQUIRE(wallet.AddCryptedKey(key.GetPubKey(), vchCryptedSecret));
-
-    wallet.mapMasterKeys[0] = kMasterKey;
-    wallet.nMasterKeyMaxID = 1;
 
     BOOST_CHECK(wallet.IsCrypted());
     BOOST_CHECK(wallet.IsLocked());
@@ -700,4 +716,122 @@ BOOST_AUTO_TEST_CASE(wallet_crypto_unlock_failure_keeps_locked)
     wallet.Lock();
     BOOST_CHECK(wallet.IsLocked());
     BOOST_CHECK(!wallet.GetKey(key.GetPubKey().GetID(), keyOut));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_key_plaintext_to_encrypted_migration)
+{
+    CHybridKey plainKey;
+    GenerateHybridKey(plainKey);
+    BOOST_REQUIRE(plainKey.mldsaSigner);
+
+    CKeyingMaterial vMasterKey;
+    vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
+    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
+
+    CKeyingMaterial wrongKey;
+    wrongKey.resize(WALLET_CRYPTO_KEY_SIZE);
+    RAND_bytes(&wrongKey[0], WALLET_CRYPTO_KEY_SIZE);
+    if (wrongKey == vMasterKey)
+        wrongKey[0] ^= 0x01;
+
+    // Plaintext at-rest record (pre-encryption form).
+    CHybridKeyDisk plainDisk = CHybridKeyDisk::FromMemory(plainKey);
+    BOOST_CHECK(!plainDisk.IsEncrypted());
+    BOOST_CHECK(plainDisk.CheckChecksum());
+    BOOST_CHECK(plainDisk.secpPub == plainKey.secpPub);
+
+    CPrivKey plainSecpOut;
+    std::vector<unsigned char> plainMldsaOut;
+    BOOST_CHECK(plainDisk.DecryptPrivate(vMasterKey, plainSecpOut, plainMldsaOut));
+    BOOST_CHECK(plainSecpOut == plainKey.secpPriv);
+    BOOST_CHECK(!plainMldsaOut.empty());
+
+    // Migration to the encrypted at-rest record.
+    CHybridKeyDisk encDisk = CHybridKeyDisk::FromMemoryEncrypted(plainKey, vMasterKey);
+    BOOST_CHECK(encDisk.IsEncrypted());
+    BOOST_CHECK(encDisk.CheckChecksum());
+    BOOST_CHECK(encDisk.secpPub == plainKey.secpPub);
+    BOOST_CHECK(!encDisk.vchCryptedPrivate.empty());
+
+    // The encrypted record must still round-trip the private material when
+    // decrypted with the correct master key.
+    CPrivKey secpOut;
+    std::vector<unsigned char> mldsaOut;
+    BOOST_CHECK(encDisk.DecryptPrivate(vMasterKey, secpOut, mldsaOut));
+    BOOST_CHECK(secpOut == plainKey.secpPriv);
+
+    // The decrypted MLDSA private key reproduces the original public key.
+    const unsigned char* p = mldsaOut.data();
+    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaOut.size());
+    BOOST_REQUIRE(pkey);
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkeyGuard(pkey, &EVP_PKEY_free);
+    MLDSASigner recovered(pkey);
+    BOOST_CHECK(recovered.GetPublicKey() == plainKey.mldsaSigner->GetPublicKey());
+
+    // Neither the encrypted blob nor the full record contains the plaintext.
+    CDataStream plainTuple(SER_DISK, CLIENT_VERSION);
+    plainTuple << secpOut << mldsaOut;
+    std::vector<unsigned char> tupleBytes(plainTuple.begin(), plainTuple.end());
+
+    BOOST_CHECK(std::search(encDisk.vchCryptedPrivate.begin(),
+                            encDisk.vchCryptedPrivate.end(),
+                            tupleBytes.begin(), tupleBytes.end()) ==
+                encDisk.vchCryptedPrivate.end());
+
+    CDataStream rawRecord(SER_DISK, CLIENT_VERSION);
+    rawRecord << encDisk;
+    std::vector<unsigned char> rawBytes(rawRecord.begin(), rawRecord.end());
+    BOOST_CHECK(std::search(rawBytes.begin(), rawBytes.end(),
+                            tupleBytes.begin(), tupleBytes.end()) ==
+                rawBytes.end());
+
+    // A wrong master key must not reproduce the original private material.
+    CPrivKey junkSecp;
+    std::vector<unsigned char> junkMldsa;
+    BOOST_CHECK(!(encDisk.DecryptPrivate(wrongKey, junkSecp, junkMldsa) &&
+                  junkSecp == plainKey.secpPriv));
+
+    // Tampering with the encrypted blob breaks the checksum.
+    CHybridKeyDisk tampered = encDisk;
+    tampered.vchCryptedPrivate[tampered.vchCryptedPrivate.size() / 2] ^= 0x01;
+    BOOST_CHECK(!tampered.CheckChecksum());
+
+    // Migration without an unlocked master key is refused.
+    CKeyingMaterial noKey;
+    BOOST_CHECK_THROW(CHybridKeyDisk::FromMemoryEncrypted(plainKey, noKey),
+                      std::runtime_error);
+
+    // CWallet::MakeHybridKeyDisk: plaintext wallet keeps plaintext records.
+    CWallet wallet;
+    CHybridKeyDisk walletPlain = wallet.MakeHybridKeyDisk(plainKey);
+    BOOST_CHECK(!walletPlain.IsEncrypted());
+    BOOST_CHECK(walletPlain.CheckChecksum());
+
+    // Encrypted but locked wallet throws when migrating a plaintext key.
+    CKey walletKey;
+    CMasterKey kMasterKey;
+    BOOST_REQUIRE(SetupEncryptedTestWallet(wallet, walletKey, kMasterKey));
+    BOOST_CHECK_THROW(wallet.MakeHybridKeyDisk(plainKey), std::runtime_error);
+
+    // Unlocked wallet migrates the key to an encrypted at-rest record using
+    // the wallet master key.
+    SecureString pass("correct horse battery staple\n");
+    BOOST_CHECK(wallet.Unlock(pass));
+    CHybridKeyDisk walletEnc = wallet.MakeHybridKeyDisk(plainKey);
+    BOOST_CHECK(walletEnc.IsEncrypted());
+    BOOST_CHECK(walletEnc.CheckChecksum());
+
+    // Recover the wallet master key from the passphrase and verify the
+    // migrated record decrypts back to the original private material.
+    CCrypter crypter;
+    CKeyingMaterial unlockedMaster;
+    BOOST_REQUIRE(crypter.SetKeyFromPassphrase(pass, kMasterKey.vchSalt,
+                                               kMasterKey.nDeriveIterations,
+                                               kMasterKey.nDerivationMethod));
+    BOOST_REQUIRE(crypter.Decrypt(kMasterKey.vchCryptedKey, unlockedMaster));
+
+    CPrivKey wSecp;
+    std::vector<unsigned char> wMldsa;
+    BOOST_CHECK(walletEnc.DecryptPrivate(unlockedMaster, wSecp, wMldsa));
+    BOOST_CHECK(wSecp == plainKey.secpPriv);
 }
