@@ -2680,6 +2680,13 @@ return CScript()
  */
 CScript GetScriptForHybridMultisig(int nRequired,
                                   const std::vector<CHybridPubKey>& keys) {
+    if (nRequired < 1 || nRequired > 16)
+        return CScript();  // EncodeOP_N supports 1..16 only
+    if (keys.empty() || keys.size() > 16)
+        return CScript();  // EncodeOP_N supports 1..16 only
+    if ((size_t)nRequired > keys.size())
+        return CScript();  // cannot require more keys than supplied
+
     CScript script;
     script << CScript::EncodeOP_N(nRequired);
 

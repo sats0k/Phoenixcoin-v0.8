@@ -50,7 +50,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides a unit/regression suite (10 test cases) covering:
+`src/test/hybrid_multisig_tests.cpp` provides a unit/regression suite (11 test cases) covering:
 
 - Hybrid multisig IsMine and spend generation
 - Hybrid multisig P2SH spends
@@ -62,6 +62,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - Missing, malformed, and extra signature argument rejection
 - Wallet unlock failures keeping the wallet locked
 - Hybrid-key plaintext-to-encrypted serialization migration
+- Hybrid multisig script size limits (n-required and key-count bounds)
 
 Build and run with:
 

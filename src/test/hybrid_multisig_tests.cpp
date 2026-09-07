@@ -835,3 +835,61 @@ BOOST_AUTO_TEST_CASE(hybrid_key_plaintext_to_encrypted_migration)
     BOOST_CHECK(walletEnc.DecryptPrivate(unlockedMaster, wSecp, wMldsa));
     BOOST_CHECK(wSecp == plainKey.secpPriv);
 }
+
+/*
+ * Regression test: GetScriptForHybridMultisig / addhybridmultisigaddress
+ * must not reach CScript::EncodeOP_N (which ASSERTS on n outside 1..16)
+ * with an out-of-range key count or required count.
+ *
+ * An RPC caller could previously supply nRequired = 17, or 17 keys, and
+ * trigger the assertion (daemon crash / DoS). The constructor is now
+ * defensive and returns an empty script, and the RPC rejects explicitly.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_multisig_script_size_limits)
+{
+    for (int nKeys : { 17, 32 }) {
+        CHybridTestKeyStore store;
+        std::vector<CHybridPubKey> pubs =
+            BuildTestHybridPubs(store, nKeys);
+        BOOST_REQUIRE_EQUAL((int)pubs.size(), nKeys);
+
+        // nRequired within range but too many keys -> rejected (empty).
+        for (int nReq = 1; nReq <= 16; ++nReq) {
+            if (nReq <= nKeys) {
+                BOOST_CHECK(GetScriptForHybridMultisig(nReq, pubs).empty());
+            }
+        }
+
+        // nRequired > 16 -> rejected (empty), regardless of key count.
+        BOOST_CHECK(GetScriptForHybridMultisig(17, pubs).empty());
+        BOOST_CHECK(GetScriptForHybridMultisig(100, pubs).empty());
+    }
+
+    // nRequired < 1 -> rejected.
+    CHybridTestKeyStore store;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(store, 2);
+    BOOST_CHECK(GetScriptForHybridMultisig(0, pubs).empty());
+    BOOST_CHECK(GetScriptForHybridMultisig(-5, pubs).empty());
+
+    // Empty key list -> rejected.
+    std::vector<CHybridPubKey> none;
+    BOOST_CHECK(GetScriptForHybridMultisig(1, none).empty());
+
+    // nRequired exceeding the number of keys -> rejected.
+    BOOST_CHECK(GetScriptForHybridMultisig(3, pubs).empty());
+
+    // Boundary: exactly 16 keys with a valid nRequired still builds.
+    std::vector<CHybridPubKey> sixteen;
+    CHybridTestKeyStore store16;
+    for (int i = 0; i < 16; ++i) {
+        CHybridKey hk;
+        GenerateHybridKey(hk);
+        sixteen.push_back(CHybridPubKey(hk.secpPub.Raw(),
+                                       hk.mldsaSigner->GetPublicKey()));
+        store16.AddHybridKey(hk);
+    }
+    for (int nReq = 1; nReq <= 16; ++nReq) {
+        CScript s = GetScriptForHybridMultisig(nReq, sixteen);
+        BOOST_CHECK(!s.empty());
+    }
+}

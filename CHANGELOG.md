@@ -46,7 +46,7 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` expanded to 10 test cases:
+`src/test/hybrid_multisig_tests.cpp` expanded to 11 test cases:
 
 - Hybrid multisig `IsMine` and spend generation.
 - Hybrid multisig P2SH spends.
@@ -58,6 +58,15 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 - Missing, malformed, and extra signature argument rejection.
 - Wallet unlock failures keeping the wallet locked.
 - Hybrid-key plaintext-to-encrypted serialization migration.
+- Hybrid multisig script size limits (n-required and key-count bounds).
+
+### Notes
+
+- `GetScriptForHybridMultisig` is now defensive: n-required and key
+  counts outside the `1..16` range supported by `EncodeOP_N` return an
+  empty script instead of reaching the assertion in `EncodeOP_N`.
+- `addhybridmultisigaddress` rejects requests with more than 16 keys or
+  an n-required above 16 with an explicit error.
 
 ---
 

@@ -36,7 +36,11 @@ in-memory hybrid keys convert to checksummed, encrypted at-rest
 `CHybridKeyDisk` records: no plaintext leakage, round-trip decryption with
 the wallet master key, checksum/tamper detection, refusal without an
 unlocked master key (locked-wallet `MakeHybridKeyDisk` throws), and the
-plaintext-wallet path that keeps records unencrypted.
+plaintext-wallet path that keeps records unencrypted. A script-size-limits
+test (`hybrid_multisig_script_size_limits`) verifies that
+`GetScriptForHybridMultisig` rejects n-required and key counts outside the
+`1..16` range (`EncodeOP_N` assertion) by returning an empty script instead
+of crashing, including the positive 16-key boundary.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -84,7 +88,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 10 test cases...
+Running 11 test cases...
 
 *** No errors detected
 ```

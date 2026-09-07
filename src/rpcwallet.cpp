@@ -862,6 +862,10 @@ Value addhybridmultisigaddress(const Array &params, bool fHelp) {
         throw(runtime_error("a multisignature address must require at least one key to redeem"));
     }
 
+    if(nRequired > 16 || (int)keys.size() > 16) {
+        throw(runtime_error("valid hybrid multisignature scripts support at most 16 keys"));
+    }
+
     if((int)keys.size() < nRequired) {
         throw(runtime_error(strprintf("not enough keys supplied " \
           "(got %" PRIszu " keys, but need at least %d to redeem)", keys.size(), nRequired)));

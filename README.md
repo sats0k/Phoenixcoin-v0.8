@@ -452,8 +452,9 @@ Testing has covered:
 * Missing, malformed, and extra hybrid signature arguments
 * Wallet encryption unlock-failure handling
 * Hybrid-key plaintext-to-encrypted migration
+* Hybrid multisig script size limits (n-required and key-count bounds)
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (10 test cases):
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (11 test cases):
 
 ```bash
 cd src
