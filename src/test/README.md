@@ -18,8 +18,9 @@ hybrid_multisig_tests.cpp
 
 `hybrid_multisig_tests.cpp` contains tests for the hybrid multisignature
 implementation: sighash types, `IsMine` detection and direct spending of
-hybrid multisig scripts, and spending via P2SH-wrapped hybrid multisig
-(redeem script) transactions.
+hybrid multisig scripts, spending via P2SH-wrapped hybrid multisig
+(redeem script) transactions, and `IsMine` behavior for locked (encrypted)
+wallets.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -67,7 +68,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 3 test cases...
+Running 4 test cases...
 
 *** No errors detected
 ```
@@ -103,6 +104,9 @@ TESTOBJS := \
     obj-test/test_bitcoin.o \
     obj-test/hybrid_multisig_tests.o
 ```
+
+Header dependencies for test objects are tracked via `-include obj-test/*.P`
+in `src/Makefile.linux`, so test sources are rebuilt when headers change.
 
 ## Boost Unit Test Framework
 

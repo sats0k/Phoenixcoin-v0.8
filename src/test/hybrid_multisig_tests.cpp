@@ -249,6 +249,12 @@ public:
     }
 };
 
+class CLockedHybridTestKeyStore : public CHybridTestKeyStore
+{
+public:
+    virtual bool IsLocked() const override { return true; }
+};
+
 static std::vector<CHybridPubKey> BuildTestHybridPubs(CHybridTestKeyStore& store,
                                                       int nKeys)
 {
@@ -325,4 +331,15 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_p2sh_ismine_and_spend)
 
     BOOST_CHECK(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
     BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig, p2sh, txTo, 0, true, 0));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_locked_ismine)
+{
+    CLockedHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 2);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
 }

@@ -384,6 +384,9 @@ bool CTransaction::AreInputsStandard(const MapPrevTx& mapInputs) const
                 return false;
             nArgsExpected += tmpExpected;
         }
+
+        if (stack.size() != (unsigned)nArgsExpected)
+            return false;
     }
 
     return true;

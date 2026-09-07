@@ -1841,7 +1841,8 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
 
             CPubKey ecdsaPub(vSolutions[0]);
 
-            if (keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+            if (!keystore.IsLocked() &&
+                keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
                 return MINE_SPENDABLE;
 
             break;
@@ -1850,7 +1851,8 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
         case TX_HYBRID_PUBKEYHASH: {
             uint160 hash(vSolutions[0]);
 
-            if (keystore.HaveHybridKeyByHash(hash))
+            if (!keystore.IsLocked() &&
+                keystore.HaveHybridKeyByHash(hash))
                 return MINE_SPENDABLE;
 
             break;
@@ -1871,7 +1873,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
                     fAll = false;
             }
 
-            if (fAll)
+            if (!keystore.IsLocked() && fAll)
                 return MINE_SPENDABLE;
             break;
         }

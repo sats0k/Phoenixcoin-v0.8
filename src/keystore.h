@@ -115,6 +115,8 @@ public:
     virtual void GetKeys(std::set<CKeyID> &setAddress) const =0;
     virtual bool GetPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const;
 
+    virtual bool IsLocked() const { return false; }
+
     // Support for BIP 0013 : see https://en.bitcoin.it/wiki/BIP_0013
     virtual bool AddCScript(const CScript& redeemScript) =0;
     virtual bool HaveCScript(const CScriptID &hash) const =0;
@@ -275,7 +277,7 @@ public:
         return fUseCrypto;
     }
 
-    bool IsLocked() const
+    virtual bool IsLocked() const
     {
         if (!IsCrypted())
             return false;
