@@ -519,6 +519,7 @@ Value gethybridkey(const Array& params, bool fHelp) {
     std::string mldsaAlg;
     int64_t nCreateTime = 0;
     std::string strMldsaPubB64;
+    std::vector<unsigned char> mldsaPub;
 
     {
         LOCK(pwalletMain->cs_wallet);
@@ -538,11 +539,10 @@ Value gethybridkey(const Array& params, bool fHelp) {
         nCreateTime = it->second.nCreateTime;
 
         if (it->second.mldsaSigner) {
-            std::vector<uint8_t> pub =
-                it->second.mldsaSigner->GetPublicKey();
+            mldsaPub = it->second.mldsaSigner->GetPublicKey();
 
-            if (!pub.empty())
-                strMldsaPubB64 = EncodeBase64(pub.data(), pub.size());
+            if (!mldsaPub.empty())
+                strMldsaPubB64 = EncodeBase64(mldsaPub.data(), mldsaPub.size());
         }
     }
 
@@ -553,6 +553,13 @@ Value gethybridkey(const Array& params, bool fHelp) {
     result.push_back(Pair("pubkey_mldsa_b64", strMldsaPubB64));
     result.push_back(Pair("algorithm_mldsa", mldsaAlg));
     result.push_back(Pair("created", nCreateTime));
+
+    if (secpPub.IsValid() &&
+        mldsaPub.size() == CHybridPubKey::MLDSA_SIZE) {
+        CHybridPubKey hybridPub(secpPub.Raw(), mldsaPub);
+        result.push_back(
+            Pair("pubkey_serialized_hex", HexStr(hybridPub.Serialize())));
+    }
 
     // Add label if exists
     {

@@ -4,7 +4,9 @@
 
 #include "main.h"
 #include "script.h"
+#include "keystore.h"
 #include "hs/hybrid_signer.h"
+#include "hs/wallethybrid.h"
 
 extern uint256 SignatureHash(CScript scriptCode,
                             const CTransaction& txTo,
@@ -170,4 +172,157 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_sighash_types)
                 "OP_CHECKMULTIHYBRIDSIG failed for sighash type 0x%02x",
                 hashType));
     }
+}
+
+class CHybridTestKeyStore : public CBasicKeyStore
+{
+private:
+    std::map<CHybridKeyID, CHybridKey> mapHybridKeys;
+
+public:
+    bool AddHybridKey(CHybridKey& key)
+    {
+        LOCK(cs_KeyStore);
+        mapHybridKeys.emplace(key.GetHybridID(), std::move(key));
+        return true;
+    }
+
+    virtual bool HaveHybridKey(const CHybridKeyID& address) const override
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeys.count(address) > 0;
+    }
+
+    virtual bool HaveHybridKeyByHash(const uint160& keyHash) const override
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeys.count(CHybridKeyID(keyHash)) > 0;
+    }
+
+    virtual bool HaveHybridKeyByLegacyID(const CKeyID& keyID) const override
+    {
+        LOCK(cs_KeyStore);
+        for (const auto& entry : mapHybridKeys)
+            if (entry.second.GetKeyID() == keyID)
+                return true;
+        return false;
+    }
+
+    virtual bool GetHybridKey(const CHybridKeyID& address,
+                              CHybridKey& keyOut) const override
+    {
+        LOCK(cs_KeyStore);
+        std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+            mapHybridKeys.find(address);
+        if (it == mapHybridKeys.end())
+            return false;
+
+        keyOut.secpPriv = it->second.secpPriv;
+        keyOut.secpPub = it->second.secpPub;
+        keyOut.mldsaAlg = it->second.mldsaAlg;
+        keyOut.nCreateTime = it->second.nCreateTime;
+        keyOut.mldsaSigner = GetSignerFromKey(it->second);
+        return keyOut.mldsaSigner != NULL;
+    }
+
+    virtual bool GetHybridKeyByHash(const uint160& keyHash,
+                                    CHybridKey& keyOut) const override
+    {
+        return GetHybridKey(CHybridKeyID(keyHash), keyOut);
+    }
+
+    virtual bool GetHybridKeyByLegacyID(const CKeyID& keyID,
+                                        CHybridKey& keyOut) const override
+    {
+        LOCK(cs_KeyStore);
+        for (const auto& entry : mapHybridKeys)
+            if (entry.second.GetKeyID() == keyID)
+            {
+                keyOut.secpPriv = entry.second.secpPriv;
+                keyOut.secpPub = entry.second.secpPub;
+                keyOut.mldsaAlg = entry.second.mldsaAlg;
+                keyOut.nCreateTime = entry.second.nCreateTime;
+                keyOut.mldsaSigner = GetSignerFromKey(entry.second);
+                return keyOut.mldsaSigner != NULL;
+            }
+        return false;
+    }
+};
+
+static std::vector<CHybridPubKey> BuildTestHybridPubs(CHybridTestKeyStore& store,
+                                                      int nKeys)
+{
+    std::vector<CHybridPubKey> pubs;
+    for (int i = 0; i < nKeys; ++i) {
+        CHybridKey hk;
+        GenerateHybridKey(hk);
+        pubs.push_back(CHybridPubKey(hk.secpPub.Raw(),
+                                     hk.mldsaSigner->GetPublicKey()));
+        store.AddHybridKey(hk);
+    }
+    return pubs;
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_ismine_and_spend)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    CHybridTestKeyStore partial;
+    {
+        CHybridKey one;
+        GenerateHybridKey(one);
+        partial.AddHybridKey(one);
+    }
+
+    CHybridTestKeyStore empty;
+    BOOST_CHECK(IsMine(partial, inner) == MINE_NO);
+    BOOST_CHECK(IsMine(empty, inner) == MINE_NO);
+
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_SPENDABLE);
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = inner;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    BOOST_CHECK(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+    BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig, inner, txTo, 0, false, 0));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_p2sh_ismine_and_spend)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 2);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    keystore.AddCScript(inner);
+
+    CScript p2sh;
+    p2sh << OP_HASH160 << inner.GetID() << OP_EQUAL;
+
+    BOOST_CHECK(IsMine(keystore, p2sh) == MINE_SPENDABLE);
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = p2sh;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    BOOST_CHECK(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+    BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig, p2sh, txTo, 0, true, 0));
 }

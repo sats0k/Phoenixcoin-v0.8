@@ -17,7 +17,9 @@ hybrid_multisig_tests.cpp
 ```
 
 `hybrid_multisig_tests.cpp` contains tests for the hybrid multisignature
-implementation, including transaction sighash types.
+implementation: sighash types, `IsMine` detection and direct spending of
+hybrid multisig scripts, and spending via P2SH-wrapped hybrid multisig
+(redeem script) transactions.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -25,18 +27,22 @@ behavior that have changed in the current codebase.
 
 ## Building the tests
 
-Build the test executable with the dynamic Boost libraries:
+Build the test executable with the Boost static libraries:
 
 ```
-make DYNAMIC=1 -f Makefile.linux test_phoenixcoin
+make -j4 STATIC=1 -f Makefile.linux test_phoenixcoin
 ```
 
 If necessary, perform a clean build first:
 
 ```
 make -f Makefile.linux clean
-make DYNAMIC=1 -f Makefile.linux test_phoenixcoin
+make -j4 STATIC=1 -f Makefile.linux test_phoenixcoin
 ```
+
+Use `STATIC=1` rather than `DYNAMIC=1`: the shared Boost Unit Test
+Framework library does not export `main`, so a `DYNAMIC=1` build fails
+to link the test executable.
 
 ## Running the tests
 
@@ -46,16 +52,22 @@ Run the complete currently enabled test suite:
 ./test_phoenixcoin
 ```
 
-Run only the hybrid multisignature sighash tests:
+Run only the hybrid multisignature tests:
 
 ```
-./test_phoenixcoin --run_test=hybrid_multisig_sighash_types
+./test_phoenixcoin --run_test=hybrid_multisig_*
+```
+
+Run one specific test case, for example the P2SH spend test:
+
+```
+./test_phoenixcoin --run_test=hybrid_multisig_p2sh_ismine_and_spend
 ```
 
 A successful hybrid test run should report:
 
 ```
-Running 1 test case...
+Running 3 test cases...
 
 *** No errors detected
 ```
@@ -94,11 +106,11 @@ TESTOBJS := \
 
 ## Boost Unit Test Framework
 
-The test executable uses the Boost Unit Test Framework dynamically when
-built with `DYNAMIC=1`. The build system links against:
+The test executable uses the Boost Unit Test Framework statically when
+built with `STATIC=1`. The build system links against:
 
 ```
-libboost_unit_test_framework.so
+libboost_unit_test_framework.a
 ```
 
 For further reading about the Boost Unit Test Framework, see:

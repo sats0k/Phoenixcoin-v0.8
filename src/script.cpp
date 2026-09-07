@@ -446,7 +446,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
     valtype vchPushValue;
     vector<bool> vfExec;
     vector<valtype> altstack;
-    if(script.size() > 10000)
+    if(script.size() > MAX_SCRIPT_SIZE)
         return(false);
     int nOpCount = 0;
     try {
@@ -457,7 +457,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
             //
             if(!script.GetOp(pc, opcode, vchPushValue))
                 return(false);
-            if(vchPushValue.size() > 5520)
+            if(vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)
                 return(false);
             if(opcode > OP_16 && ++nOpCount > 201)
                 return(false);
@@ -1857,9 +1857,23 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
         }
 
         case TX_HYBRID_MULTISIG: {
-           // Phase 1:
-           // Multisig ownership can be implemented later.
-           return MINE_NO;
+            if (vSolutions.size() < 3 || vSolutions[0].size() != 1)
+                return MINE_NO;
+
+            int nN = vSolutions[vSolutions.size() - 1][0];
+            if (nN < 1 || vSolutions.size() != 2 + (size_t)nN * 2)
+                return MINE_NO;
+
+            bool fAll = true;
+            for (int i = 0; i < nN && fAll; ++i) {
+                CPubKey ecdsaPub(vSolutions[1 + i * 2]);
+                if (!keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                    fAll = false;
+            }
+
+            if (fAll)
+                return MINE_SPENDABLE;
+            break;
         }
     }
 
@@ -2258,7 +2272,22 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
         txnouttype subType;
         bool fSolved =
             Solver(keystore, subscript, hash2, nHashType, scriptSigRet, subType) && subType != TX_SCRIPTHASH;
-        txin.scriptSig << static_cast<valtype>(subscript);
+        if (!fSolved) {
+            txnouttype templateType;
+            std::vector<valtype> templateSolutions;
+            if (Solver(subscript, templateType, templateSolutions)) {
+                CScript hybridSigRet;
+                if (templateType == TX_HYBRID_MULTISIG &&
+                    SignHybridTx(keystore, subscript, txTo, nIn, nHashType, hybridSigRet)) {
+                    scriptSigRet = hybridSigRet;
+                    fSolved = true;
+                }
+            }
+        }
+        if (fSolved) {
+            txin.scriptSig = scriptSigRet;
+            txin.scriptSig << static_cast<valtype>(subscript);
+        }
         if(!fSolved) return(false);
     } else {
         txin.scriptSig = scriptSigRet;

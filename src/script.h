@@ -33,6 +33,15 @@ enum isminetype {
     MINE_SPENDABLE = 2,
 };
 
+// Largest redeem-script element pushed by a hybrid multisig P2SH input
+// (OP_<n> <ec1> <mldsa1> ... <ecN> <mldsaN> OP_<m> OP_CHECKMULTIHYBRIDSIG,
+// N up to 20, ~1991 bytes per keypair, plus overhead).
+static const int MAX_SCRIPT_ELEMENT_SIZE = 66000;
+
+// Worst-case hybrid multisig P2SH scriptSig: up to N signatures
+// (each [sigEC ~73B][sigML 5+3369B]) followed by the redeem script.
+static const int MAX_SCRIPT_SIZE = 200000;
+
 enum txnouttype
 {
     TX_NONSTANDARD,
