@@ -19,8 +19,9 @@ hybrid_multisig_tests.cpp
 `hybrid_multisig_tests.cpp` contains tests for the hybrid multisignature
 implementation: sighash types, `IsMine` detection and direct spending of
 hybrid multisig scripts, spending via P2SH-wrapped hybrid multisig
-(redeem script) transactions, and `IsMine` behavior for locked (encrypted)
-wallets.
+(redeem script) transactions, `IsMine` behavior for locked (encrypted)
+wallets, and merging of partial hybrid multisig signatures via
+`CombineSignatures` (direct and P2SH-wrapped).
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -68,7 +69,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 4 test cases...
+Running 5 test cases...
 
 *** No errors detected
 ```

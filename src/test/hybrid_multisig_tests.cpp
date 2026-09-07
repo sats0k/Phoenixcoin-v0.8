@@ -269,6 +269,41 @@ static std::vector<CHybridPubKey> BuildTestHybridPubs(CHybridTestKeyStore& store
     return pubs;
 }
 
+static bool GetHybridKey(const CHybridTestKeyStore& store,
+                         const CHybridPubKey& pub, CHybridKey& keyOut)
+{
+    return store.GetHybridKeyByLegacyID(CPubKey(pub.ecdsaPubKey).GetID(), keyOut);
+}
+
+static CScript SignHybridPartial(const CHybridKey& key,
+                                 const CScript& scriptPubKey,
+                                 const CTransaction& txTo,
+                                 unsigned int nIn,
+                                 int nHashType)
+{
+    uint256 sighash = SignatureHash(scriptPubKey, txTo, nIn, nHashType);
+
+    std::vector<unsigned char> preimage;
+    if (!ConstructSignatureHashPreimage(scriptPubKey, txTo, nIn, nHashType, preimage))
+        return CScript();
+
+    std::vector<unsigned char> msg = BuildHybridMessage(preimage);
+
+    std::vector<unsigned char> ecSig;
+    if (!key.GetCKey().Sign(sighash, ecSig))
+        return CScript();
+    ecSig.push_back((unsigned char)nHashType);
+
+    std::vector<unsigned char> mlSig;
+    if (!key.mldsaSigner || !key.mldsaSigner->Sign(msg, mlSig))
+        return CScript();
+    mlSig.push_back((unsigned char)nHashType);
+
+    CScript ret;
+    ret << ecSig << mlSig;
+    return ret;
+}
+
 BOOST_AUTO_TEST_CASE(hybrid_multisig_ismine_and_spend)
 {
     CHybridTestKeyStore keystore;
@@ -342,4 +377,67 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_locked_ismine)
     BOOST_REQUIRE(!inner.empty());
 
     BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = inner;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    CHybridKey key0, key1;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], key0));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[1], key1));
+
+    CScript sigA = SignHybridPartial(key0, inner, txTo, 0, SIGHASH_ALL);
+    CScript sigB = SignHybridPartial(key1, inner, txTo, 0, SIGHASH_ALL);
+    BOOST_REQUIRE(!sigA.empty());
+    BOOST_REQUIRE(!sigB.empty());
+
+    BOOST_CHECK(!VerifyScript(sigA, inner, txTo, 0, false, 0));
+    BOOST_CHECK(!VerifyScript(sigB, inner, txTo, 0, false, 0));
+
+    CScript combined = CombineSignatures(inner, txTo, 0, sigA, sigB);
+    BOOST_CHECK(combined != sigA);
+    BOOST_CHECK(combined != sigB);
+    BOOST_CHECK(VerifyScript(combined, inner, txTo, 0, false, 0));
+
+    BOOST_CHECK(!VerifyScript(CombineSignatures(inner, txTo, 0, sigA, sigA),
+                              inner, txTo, 0, false, 0));
+
+    keystore.AddCScript(inner);
+
+    CScript p2sh;
+    p2sh << OP_HASH160 << inner.GetID() << OP_EQUAL;
+
+    CTransaction txFromP2;
+    txFromP2.vout.resize(1);
+    txFromP2.vout[0].scriptPubKey = p2sh;
+
+    CTransaction txToP2;
+    txToP2.vin.resize(1);
+    txToP2.vout.resize(1);
+    txToP2.vin[0].prevout.hash = txFromP2.GetHash();
+    txToP2.vin[0].prevout.n = 0;
+
+    CScript sigAP2 = SignHybridPartial(key0, inner, txToP2, 0, SIGHASH_ALL);
+    CScript sigBP2 = SignHybridPartial(key1, inner, txToP2, 0, SIGHASH_ALL);
+    std::vector<unsigned char> sub(inner.begin(), inner.end());
+    sigAP2 << sub;
+    sigBP2 << sub;
+
+    CScript combinedP2 = CombineSignatures(p2sh, txToP2, 0, sigAP2, sigBP2);
+    BOOST_CHECK(VerifyScript(combinedP2, p2sh, txToP2, 0, true, 0));
 }

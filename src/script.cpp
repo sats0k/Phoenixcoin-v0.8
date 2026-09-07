@@ -2389,6 +2389,49 @@ static CScript CombineMultisig(const CScript& scriptPubKey, const CTransaction& 
     return result;
 }
 
+static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
+                                     const std::vector<valtype>& vSolutions,
+                                     std::vector<valtype>& sigs1, std::vector<valtype>& sigs2)
+{
+    if (vSolutions.size() < 3 || vSolutions[0].size() != 1)
+        return CScript();
+
+    unsigned int nN = vSolutions[vSolutions.size() - 1][0];
+    if (nN < 1 || vSolutions.size() != 2 + (size_t)nN * 2)
+        return CScript();
+
+    std::vector<valtype> both;
+    for (const valtype& v : sigs1)
+        if (!v.empty()) both.push_back(v);
+    for (const valtype& v : sigs2)
+        if (!v.empty()) both.push_back(v);
+
+    std::vector<bool> have(nN, false);
+    std::vector<valtype> ecSigFor(nN), mlSigFor(nN);
+
+    for (size_t bi = 0; bi + 1 < both.size(); bi += 2) {
+        const valtype& ecSig = both[bi];
+        const valtype& mlSig = both[bi + 1];
+        for (unsigned int i = 0; i < nN; i++) {
+            if (have[i]) continue;
+            const valtype& ecPub = vSolutions[1 + i * 2];
+            if (CheckSig(ecSig, ecPub, scriptPubKey, txTo, nIn, 0)) {
+                have[i] = true;
+                ecSigFor[i] = ecSig;
+                mlSigFor[i] = mlSig;
+                break;
+            }
+        }
+    }
+
+    CScript result;
+    for (unsigned int i = 0; i < nN; i++) {
+        if (have[i])
+            result << ecSigFor[i] << mlSigFor[i];
+    }
+    return result;
+}
+
 static CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo, unsigned int nIn,
                                  const txnouttype txType, const vector<valtype>& vSolutions,
                                  vector<valtype>& sigs1, vector<valtype>& sigs2) {
@@ -2425,11 +2468,12 @@ static CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo,
     case TX_MULTISIG:
         return CombineMultisig(scriptPubKey, txTo, nIn, vSolutions, sigs1, sigs2);
 
-    // Hybrid signature types - use simple combination logic
+    // Hybrid signature types
+    case TX_HYBRID_MULTISIG:
+        return CombineHybridMultisig(scriptPubKey, txTo, nIn, vSolutions, sigs1, sigs2);
     case TX_HYBRID_PUBKEY:
     case TX_HYBRID_PUBKEYHASH:
-    case TX_HYBRID_MULTISIG:
-        // For hybrid sigs, prefer the more complete signature set
+        // Single-signature types: prefer the more complete signature set
         if (sigs1.size() >= sigs2.size())
             return PushAll(sigs1);
         return PushAll(sigs2);
