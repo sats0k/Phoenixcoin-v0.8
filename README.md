@@ -197,9 +197,14 @@ Hybrid multisig combines the existing multisignature transaction model with hybr
 The implementation supports:
 
 * M-of-N hybrid multisig
-* Hybrid public-key scripts
+* Hybrid public-key scripts with hybrid P2PK/P2PKH outputs
 * Hybrid signature verification
 * Consensus enforcement of both signature algorithms
+* Combined signing (every script element is an `[ECDSA][ML-DSA]` signature pair)
+* Partial-signature combining (disjoint partial script-sigs are merged by `CombineSignatures` into a complete redeemable script, with each ECDSA half verified against the script keys before merging)
+* Pay-to-script-hash wrapping (hybrid multisig scripts are spent as P2SH outputs)
+
+Each signature element in a hybrid multisig script-sig is a pair of an ECDSA signature followed by an ML-DSA signature over the same hybrid message. Both halves must verify for the script to pass consensus.
 
 ---
 
@@ -407,7 +412,12 @@ gethybridaddress
 listhybridaddresses
 gethybridkey
 dumphybridkey
+addhybridmultisigaddress
 ```
+
+`addhybridmultisigaddress <n-required> <'["hybridpubkey",...]'> [account]` creates an N-of-M hybrid multisignature P2SH address from hybrid public keys and adds it to the wallet.
+
+Each `hybridpubkey` is the hex-encoded serialized hybrid public key (`pubkey_serialized_hex`) returned by `gethybridkey` — a 33-byte compressed secp256k1 public key followed by the 1,952-byte ML-DSA-65 public key. The hybrid private key must be present (and the wallet unlocked, if encrypted) to sign for such an address.
 
 `dumphybridkey` is particularly sensitive because it exposes the hybrid private key material.
 
@@ -435,6 +445,21 @@ Testing has covered:
 * Hybrid transaction propagation
 * Hybrid transaction mining
 * Hybrid multisignature transactions
+* Hybrid multisig P2SH wallet spends
+* Partial-signature combining for hybrid multisig
+* Hybrid multisig m-of-n signature combinations
+* Hybrid signature pair ordering and cross-key mismatch rejection
+* Missing, malformed, and extra hybrid signature arguments
+* Wallet encryption unlock-failure handling
+* Hybrid-key plaintext-to-encrypted migration
+
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (10 test cases):
+
+```bash
+cd src
+make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
+./test_phoenixcoin
+```
 
 The implementation has also been tested with fuzzing targets covering hybrid key deserialization, encrypted keys, and hybrid verification.
 
@@ -561,6 +586,12 @@ src/wallet.cpp
 ```
 
 Hybrid RPC integration is implemented through the wallet/RPC sources.
+
+Automated hybrid unit/regression tests are located under:
+
+```text
+src/test/hybrid_multisig_tests.cpp
+```
 
 ---
 
