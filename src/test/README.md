@@ -26,7 +26,11 @@ wallets, merging of partial hybrid multisig signatures via
 ECDSA/ML-DSA pair ordering with cross-key mismatch rejection, plus
 malformed/missing/extra signature argument handling (consensus rejection
 for under-supplied or invalid signature arguments, and standardness
-rejection for surplus arguments).
+rejection for surplus arguments. A wallet-crypto test
+(`wallet_crypto_unlock_failure_keeps_locked`) verifies the real
+encrypted-wallet `Unlock` path: a wrong passphrase leaves the wallet
+locked and the keys inaccessible, a correct passphrase unlocks it, and
+re-locking clears the master key again.
 
 Legacy test sources from the original Bitcoin/Phoenixcoin test suite
 are not currently enabled because they depend on interfaces or wallet
@@ -74,7 +78,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful hybrid test run should report:
 
 ```
-Running 8 test cases...
+Running 9 test cases...
 
 *** No errors detected
 ```

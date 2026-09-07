@@ -7,6 +7,10 @@
 #include "keystore.h"
 #include "hs/hybrid_signer.h"
 #include "hs/wallethybrid.h"
+#include "wallet.h"
+#include "crypter.h"
+
+#include <openssl/rand.h>
 
 extern uint256 SignatureHash(CScript scriptCode,
                             const CTransaction& txTo,
@@ -640,4 +644,60 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_signature_argument_limits)
 
     txToStd.vin[0].scriptSig = extra11;
     BOOST_CHECK(!txToStd.AreInputsStandard(mapInputs));
+}
+
+BOOST_AUTO_TEST_CASE(wallet_crypto_unlock_failure_keeps_locked)
+{
+    CWallet wallet;
+
+    CKey key;
+    key.MakeNewKey(true);
+
+    CKeyingMaterial vMasterKey;
+    vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
+    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
+
+    CMasterKey kMasterKey;
+    kMasterKey.vchSalt.resize(WALLET_CRYPTO_SALT_SIZE);
+    RAND_bytes(&kMasterKey.vchSalt[0], WALLET_CRYPTO_SALT_SIZE);
+    kMasterKey.nDeriveIterations = 25000;
+    kMasterKey.nDerivationMethod = 0;
+
+    SecureString pass("correct horse battery staple\n");
+    SecureString wrong("wrong passphrase\n");
+
+    CCrypter crypter;
+    BOOST_REQUIRE(crypter.SetKeyFromPassphrase(pass, kMasterKey.vchSalt,
+                                               kMasterKey.nDeriveIterations,
+                                               kMasterKey.nDerivationMethod));
+    BOOST_REQUIRE(crypter.Encrypt(vMasterKey, kMasterKey.vchCryptedKey));
+
+    bool fCompressed;
+    CSecret vchSecret = key.GetSecret(fCompressed);
+    std::vector<unsigned char> vchCryptedSecret;
+    BOOST_REQUIRE(EncryptSecret(vMasterKey, vchSecret,
+                                key.GetPubKey().GetHash(), vchCryptedSecret));
+    BOOST_REQUIRE(wallet.AddCryptedKey(key.GetPubKey(), vchCryptedSecret));
+
+    wallet.mapMasterKeys[0] = kMasterKey;
+    wallet.nMasterKeyMaxID = 1;
+
+    BOOST_CHECK(wallet.IsCrypted());
+    BOOST_CHECK(wallet.IsLocked());
+
+    CKey keyOut;
+    BOOST_CHECK(!wallet.GetKey(key.GetPubKey().GetID(), keyOut));
+
+    BOOST_CHECK(!wallet.Unlock(wrong));
+    BOOST_CHECK(wallet.IsLocked());
+    BOOST_CHECK(!wallet.GetKey(key.GetPubKey().GetID(), keyOut));
+
+    BOOST_CHECK(wallet.Unlock(pass));
+    BOOST_CHECK(!wallet.IsLocked());
+    BOOST_CHECK(wallet.GetKey(key.GetPubKey().GetID(), keyOut));
+    BOOST_CHECK(keyOut.GetPubKey() == key.GetPubKey());
+
+    wallet.Lock();
+    BOOST_CHECK(wallet.IsLocked());
+    BOOST_CHECK(!wallet.GetKey(key.GetPubKey().GetID(), keyOut));
 }
