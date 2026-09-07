@@ -441,3 +441,45 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)
     CScript combinedP2 = CombineSignatures(p2sh, txToP2, 0, sigAP2, sigBP2);
     BOOST_CHECK(VerifyScript(combinedP2, p2sh, txToP2, 0, true, 0));
 }
+
+BOOST_AUTO_TEST_CASE(hybrid_multisig_m_of_n_combinations)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    for (int m = 1; m <= 3; ++m) {
+        CScript inner = GetScriptForHybridMultisig(m, pubs);
+        BOOST_REQUIRE(!inner.empty());
+
+        CTransaction txFrom;
+        txFrom.vout.resize(1);
+        txFrom.vout[0].scriptPubKey = inner;
+
+        CTransaction txTo;
+        txTo.vin.resize(1);
+        txTo.vout.resize(1);
+        txTo.vin[0].prevout.hash = txFrom.GetHash();
+        txTo.vin[0].prevout.n = 0;
+
+        CScript scriptSig;
+        for (int i = 0; i < m; ++i) {
+            CHybridKey key;
+            BOOST_REQUIRE(GetHybridKey(keystore, pubs[i], key));
+            CScript partial = SignHybridPartial(key, inner, txTo, 0, SIGHASH_ALL);
+            BOOST_REQUIRE(!partial.empty());
+            scriptSig += partial;
+        }
+
+        BOOST_CHECK(VerifyScript(scriptSig, inner, txTo, 0, false, 0));
+
+        for (int k = m - 1; k >= 1; --k) {
+            CScript tooFew;
+            for (int i = 0; i < k; ++i) {
+                CHybridKey key;
+                BOOST_REQUIRE(GetHybridKey(keystore, pubs[i], key));
+                tooFew += SignHybridPartial(key, inner, txTo, 0, SIGHASH_ALL);
+            }
+            BOOST_CHECK(!VerifyScript(tooFew, inner, txTo, 0, false, 0));
+        }
+    }
+}
