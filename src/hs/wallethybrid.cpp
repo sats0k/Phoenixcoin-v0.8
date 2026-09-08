@@ -194,8 +194,10 @@ bool CHybridKeyDisk::DecryptPrivate(const CKeyingMaterial& vMasterKey,
 bool CWallet::HaveHybridKey(const CHybridKeyID &address) const
 {
     LOCK(cs_wallet);
-    return mapHybridKeys.count(address) > 0 ||
-           mapHybridKeyDisk.count(address) > 0;
+    // Only decrypted in-memory keys are usable. mapHybridKeyDisk holds
+    // encrypted-at-rest records that are NOT spendable while the wallet is
+    // locked, so they must not count as "have" for ownership queries.
+    return mapHybridKeys.count(address) > 0;
 }
 
 bool CWallet::HaveHybridKeyByHash(const uint160& keyHash) const
