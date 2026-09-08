@@ -402,7 +402,11 @@ Value gethybridaddress(const Array& params, bool fHelp) {
                            "Error: Please enter the wallet passphrase with "
                            "walletpassphrase first.");
 
-    // Keep at least 20 spare keys (top up when running low).
+    LOCK(pwalletMain->cs_wallet);
+
+    // Keep at least 20 spare keys (top up when running low). The container
+    // reads and the pool replenishment must happen under cs_wallet to avoid
+    // racing with other RPC/threads mutating the same containers.
     if (pwalletMain->setUnusedHybridKeys.size() < 5) {
         if (!pwalletMain->EnsureHybridKeyPool(
                 pwalletMain->mapHybridKeys.size() + 20)) {
@@ -414,8 +418,6 @@ Value gethybridaddress(const Array& params, bool fHelp) {
     if (pwalletMain->setUnusedHybridKeys.empty())
         throw JSONRPCError(RPC_WALLET_ERROR,
                            "Error: No unused hybrid keys available.");
-
-    LOCK(pwalletMain->cs_wallet);
 
     // Allocate one unused key.
     CHybridKeyID hybridID = *pwalletMain->setUnusedHybridKeys.begin();
