@@ -28,12 +28,62 @@ using namespace boost;
 
 // ==================== Hybrid Helpers ====================
 
-// Build the "hybrid message" from the sighash
-void BuildHybridMessage(const uint256& sighash, std::vector<unsigned char>& outMsg)
+// Canonical sighash preimage construction
+// This is the exact byte sequence that gets hashed for ECDSA verification
+// and domain-separated for ML-DSA verification.
+// Returns true on success, false on error (invalid nIn or SIGHASH_SINGLE index out of range)
+bool ConstructSignatureHashPreimage(
+    const CScript& scriptCode,
+    const CTransaction& txTo,
+    unsigned int nIn,
+    int nHashType,
+    std::vector<unsigned char>& preimageOut)
 {
-    // Copy the raw 32 bytes of the uint256
-    outMsg.resize(32);
-    memcpy(outMsg.data(), &sighash, 32);
+
+    if(nIn >= txTo.vin.size())
+        return false;  // Error: invalid input index
+
+    CScript scriptCodeTmp = scriptCode;
+    CTransaction txTmp(txTo);
+
+    // Remove codeseparators
+    scriptCodeTmp.FindAndDelete(CScript(OP_CODESEPARATOR));
+
+    // Blank out other inputs' signatures
+    for(unsigned int i = 0; i < txTmp.vin.size(); i++)
+        txTmp.vin[i].scriptSig = CScript();
+    txTmp.vin[nIn].scriptSig = scriptCodeTmp;
+
+    // Blank out some of the outputs based on sighash type
+    if((nHashType & 0x1f) == SIGHASH_NONE) {
+        txTmp.vout.clear();
+        for(unsigned int i = 0; i < txTmp.vin.size(); i++)
+            if(i != nIn)
+                txTmp.vin[i].nSequence = 0;
+    } else if((nHashType & 0x1f) == SIGHASH_SINGLE) {
+        unsigned int nOut = nIn;
+        if(nOut >= txTmp.vout.size())
+            return false;  // Error: index out of range
+        txTmp.vout.resize(nOut+1);
+        for(unsigned int i = 0; i < nOut; i++)
+            txTmp.vout[i].SetNull();
+        for(unsigned int i = 0; i < txTmp.vin.size(); i++)
+            if(i != nIn)
+                txTmp.vin[i].nSequence = 0;
+    }
+
+    // Blank out other inputs completely for SIGHASH_ANYONECANPAY
+    if(nHashType & SIGHASH_ANYONECANPAY) {
+        txTmp.vin[0] = txTmp.vin[nIn];
+        txTmp.vin.resize(1);
+    }
+
+    // Serialize the preimage
+    CDataStream ss(SER_GETHASH, 0);
+    ss.reserve(10000);
+    ss << txTmp << nHashType;
+    preimageOut.assign(ss.begin(), ss.end());
+    return true;
 }
 
 // -------------------- Hybrid-compatible CheckSig --------------------
@@ -396,7 +446,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
     valtype vchPushValue;
     vector<bool> vfExec;
     vector<valtype> altstack;
-    if(script.size() > 10000)
+    if(script.size() > MAX_SCRIPT_SIZE)
         return(false);
     int nOpCount = 0;
     try {
@@ -407,7 +457,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
             //
             if(!script.GetOp(pc, opcode, vchPushValue))
                 return(false);
-            if(vchPushValue.size() > 5520)
+            if(vchPushValue.size() > MAX_SCRIPT_ELEMENT_SIZE)
                 return(false);
             if(opcode > OP_16 && ++nOpCount > 201)
                 return(false);
@@ -1083,53 +1133,116 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                     // [pubEC1 pubML1 ... pubECn pubMLn] n
 
                     int i = 1;
-                    if((int)stack.size() < i)
+                    if ((int)stack.size() < i)
                         return(false);
 
                     // --- n (pubkeys) ---
                     int nKeysCount = CastToBigNum(stacktop(-i)).getint();
-                    if(nKeysCount < 0 || nKeysCount > 20)  // Max 20 keys per standard script
+                    if (nKeysCount < 0 || nKeysCount > 20)
                         return(false);
 
                     nOpCount += nKeysCount;
-                    if(nOpCount > 201)
+                    if (nOpCount > 201)
                         return(false);
 
                     int ikey = ++i;
                     i += nKeysCount * 2;
 
-                    if((int)stack.size() < i)
+                    if ((int)stack.size() < i)
                         return(false);
 
                     // --- m (signatures) ---
                     int nSigsCount = CastToBigNum(stacktop(-i)).getint();
-                    if(nSigsCount < 0 || nSigsCount > nKeysCount)
+                    if (nSigsCount < 0 || nSigsCount > nKeysCount)
                         return(false);
 
-                    int isig = ++i;
+                    int isig = i + 1;
                     i += nSigsCount * 2;
 
-                    if((int)stack.size() < i)
+                    if ((int)stack.size() < i)
                         return(false);
 
                     // --- Build scriptCode ---
                     CScript scriptCode(pbegincodehash, pend);
 
-                    for(int k = 0; k < nSigsCount; k++) {
-                        valtype& vchSigEC = stacktop(-isig - (k * 2) - 1);  // ECDSA sig
-                        valtype& vchSigML = stacktop(-isig - (k * 2));      // ML-DSA sig
+                    for (int k = 0; k < nSigsCount; k++) {
+                        valtype& vchSigEC =
+                            stacktop(-isig - (k * 2) - 1);
+                        valtype& vchSigML =
+                            stacktop(-isig - (k * 2));
+
+                        if (vchSigEC.empty() || vchSigML.empty())
+                            return(false);
+
                         scriptCode.FindAndDelete(CScript(vchSigEC));
                         scriptCode.FindAndDelete(CScript(vchSigML));
                     }
 
-                    // --- Precompute sighash + message ONCE ---
-                    uint256 sighash = SignatureHash(scriptCode, txTo, nIn, nHashType);
+                    /*
+                     * Every hybrid signature pair must use the same
+                     * transaction sighash type.
+                     *
+                     * The sighash type is carried by the final byte of
+                     * both the ECDSA and ML-DSA signatures.
+                     *
+                     * Do NOT calculate the sighash using nHashType here
+                     * when nHashType == 0.  In that case the signature
+                     * itself supplies the sighash type.
+                     */
+                    int sigHashType = 0;
 
-                    std::vector<unsigned char> msg;
-                    BuildHybridMessage(sighash, msg);
+                    if (nSigsCount > 0) {
+                        valtype& firstSigEC =
+                            stacktop(-isig - 1);
+                        valtype& firstSigML =
+                            stacktop(-isig);
 
-                    if(msg.size() != 32)
-                        return(false);
+                        sigHashType = firstSigEC.back();
+
+                        if ((int)firstSigML.back() != sigHashType)
+                            return(false);
+
+                        if (nHashType != 0 &&
+                            sigHashType != nHashType)
+                            return(false);
+
+                        for (int k = 1; k < nSigsCount; k++) {
+                            valtype& vchSigEC =
+                                stacktop(-isig - (k * 2) - 1);
+                            valtype& vchSigML =
+                                stacktop(-isig - (k * 2));
+
+                            if ((int)vchSigEC.back() != sigHashType ||
+                                (int)vchSigML.back() != sigHashType)
+                                return(false);
+                        }
+                    } else {
+                        /*
+                         * A 0-of-N multisig does not have a signature from
+                         * which to derive a sighash type.  There is nothing
+                         * to verify, so preserve the normal multisig
+                         * semantics.
+                         */
+                        while (i-- > 0)
+                            popstack(stack);
+
+                        stack.push_back(vchTrue);
+                        break;
+                    }
+
+                    // --- Compute the sighash using the signature's type ---
+                    uint256 sighash =
+                        SignatureHash(scriptCode, txTo, nIn, sigHashType);
+
+                    // Construct canonical preimage for ML-DSA domain separation
+                    std::vector<unsigned char> sighash_preimage;
+                    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn,
+                                                        sigHashType,
+                                                        sighash_preimage))
+                        return false;
+
+                    std::vector<unsigned char> hybridMsg =
+                        BuildHybridMessage(sighash_preimage);
 
                     // --- Two-pointer matching ---
                     int sigIndex = 0;
@@ -1137,31 +1250,53 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
 
                     bool fSuccess = true;
 
-                    while(sigIndex < nSigsCount && keyIndex < nKeysCount) {
-                        valtype& vchSigEC = stacktop(-isig - (sigIndex * 2) - 1);
-                        valtype& vchSigML = stacktop(-isig - (sigIndex * 2));
+                    while (sigIndex < nSigsCount &&
+                           keyIndex < nKeysCount) {
 
-                        valtype& vchPubKeyEC = stacktop(-ikey - (keyIndex * 2) - 1);
-                        valtype& vchPubKeyML = stacktop(-ikey - (keyIndex * 2));
+                        valtype& vchSigEC =
+                            stacktop(-isig - (sigIndex * 2) - 1);
+                        valtype& vchSigML =
+                            stacktop(-isig - (sigIndex * 2));
 
-                        // Try match current sig with current key
+                        valtype& vchPubKeyEC =
+                            stacktop(-ikey - (keyIndex * 2) - 1);
+                        valtype& vchPubKeyML =
+                            stacktop(-ikey - (keyIndex * 2));
+
+                        /*
+                         * Both components must verify against exactly the
+                         * same transaction sighash.
+                         */
                         bool match =
-                            CheckSig(vchSigEC, vchPubKeyEC, scriptCode, txTo, nIn, nHashType) &&
-                            VerifyMLDSA(vchSigML, vchPubKeyML, msg);
+                            CheckSig(
+                                vchSigEC,
+                                vchPubKeyEC,
+                                scriptCode,
+                                txTo,
+                                nIn,
+                                sigHashType,
+                                &sighash
+                            ) &&
+                            VerifyMLDSA(
+                                std::vector<unsigned char>(
+                                    vchSigML.begin(),
+                                    vchSigML.end() - 1
+                                ),
+                                vchPubKeyML,
+                                hybridMsg
+                            );
+                        if (match)
+                            sigIndex++;
 
-                        if(match) {
-                            sigIndex++;  // consume signature
-                        }
-
-                        keyIndex++;  // always advance key
+                        keyIndex++;
                     }
 
-                    // If not all signatures matched → fail
-                    if(sigIndex != nSigsCount)
+                    // All required signatures must have matched.
+                    if (sigIndex != nSigsCount)
                         fSuccess = false;
 
                     // --- Clean stack ---
-                    while(i-- > 0)
+                    while (i-- > 0)
                         popstack(stack);
 
                     stack.push_back(fSuccess ? vchTrue : vchFalse);
@@ -1182,53 +1317,16 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
     return(true);
 }
 
-uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType) {
-
-    if(nIn >= txTo.vin.size()) {
-        printf("ERROR: SignatureHash() : nIn=%d out of range\n", nIn);
+uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo,
+                      unsigned int nIn, int nHashType) {
+    std::vector<unsigned char> preimage;
+    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, nHashType,
+                                        preimage)) {
+        printf("ERROR: SignatureHash() : invalid parameters\n");
         return 1;
     }
-    CTransaction txTmp(txTo);
-    // In case concatenating two scripts ends up with two codeseparators,
-    // or an extra one at the end, this prevents all those possible incompatibilities.
-    scriptCode.FindAndDelete(CScript(OP_CODESEPARATOR));
-    // Blank out other inputs' signatures
-    for(unsigned int i = 0; i < txTmp.vin.size(); i++)
-        txTmp.vin[i].scriptSig = CScript();
-    txTmp.vin[nIn].scriptSig = scriptCode;
-    // Blank out some of the outputs
-    if((nHashType & 0x1f) == SIGHASH_NONE) {
-        // Wildcard payee
-        txTmp.vout.clear();
-        // Let the others update at will
-        for(unsigned int i = 0; i < txTmp.vin.size(); i++)
-            if(i != nIn)
-                txTmp.vin[i].nSequence = 0;
-    } else if((nHashType & 0x1f) == SIGHASH_SINGLE) {
-        // Only lock-in the txout payee at same index as txin
-        unsigned int nOut = nIn;
-        if(nOut >= txTmp.vout.size()) {
-            printf("ERROR: SignatureHash() : nOut=%d out of range\n", nOut);
-            return 1;
-        }
-        txTmp.vout.resize(nOut+1);
-        for(unsigned int i = 0; i < nOut; i++)
-            txTmp.vout[i].SetNull();
-        // Let the others update at will
-        for(unsigned int i = 0; i < txTmp.vin.size(); i++)
-            if(i != nIn)
-                txTmp.vin[i].nSequence = 0;
-    }
-    // Blank out other inputs completely, not recommended for open transactions
-    if(nHashType & SIGHASH_ANYONECANPAY) {
-        txTmp.vin[0] = txTmp.vin[nIn];
-        txTmp.vin.resize(1);
-    }
-    // Serialize and hash
-    CDataStream ss(SER_GETHASH, 0);
-    ss.reserve(10000);
-    ss << txTmp << nHashType;
-    return Hash(ss.begin(), ss.end());
+
+    return Hash(preimage.begin(), preimage.end());
 }
 
 // Valid signature cache, to avoid doing expensive ECDSA signature checking
@@ -1392,6 +1490,61 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
         }
     }
 
+    {
+        // Hybrid pay-to-hybrid-multisig:
+        //
+        //   OP_<m> <pubEC1> <pubML1> ... <pubECN> <pubMLN> OP_<n> OP_CHECKMULTIHYBRIDSIG
+        //
+        // Each hybrid key is two separate pushes (ECDSA then ML-DSA), matching
+        // the OP_CHECKMULTIHYBRIDSIG verifier's stack layout.
+        CScript::const_iterator pc = scriptPubKey.begin();
+        opcodetype opcode;
+        std::vector<unsigned char> vch;
+
+        // m
+        if (scriptPubKey.GetOp(pc, opcode) &&
+            (opcode == OP_0 || (opcode >= OP_1 && opcode <= OP_16))) {
+            int m = CScript::DecodeOP_N(opcode);
+
+            // pubkey pairs: <pubEC> <pubML> ...
+            bool fKeys = true;
+            std::vector<std::vector<unsigned char> > keys;
+            while (fKeys && scriptPubKey.GetOp(pc, opcode, vch)) {
+                if (vch.size() >= 33 && vch.size() <= 120) {
+                    keys.push_back(vch);
+                    if (!scriptPubKey.GetOp(pc, opcode, vch) ||
+                        vch.size() != ML_DSA_65_PUBKEY_SIZE) {
+                        fKeys = false;
+                        break;
+                    }
+                    keys.push_back(vch);
+                } else if (opcode >= OP_1 && opcode <= OP_16) {
+                    fKeys = false;   // reached n
+                } else {
+                    fKeys = false;
+                    keys.clear();
+                    break;
+                }
+            }
+
+            int n = fKeys ? 0 : CScript::DecodeOP_N(opcode);
+            if (n >= 1 && keys.size() % 2 == 0 &&
+                keys.size() / 2 == (size_t)n &&
+                scriptPubKey.GetOp(pc, opcode) &&
+                opcode == OP_CHECKMULTIHYBRIDSIG &&
+                pc == scriptPubKey.end() &&
+                m >= 1 && m <= n) {
+                typeRet = TX_HYBRID_MULTISIG;
+                vSolutionsRet.clear();
+                vSolutionsRet.push_back(valtype(1, (unsigned char)m));
+                vSolutionsRet.insert(vSolutionsRet.end(),
+                                     keys.begin(), keys.end());
+                vSolutionsRet.push_back(valtype(1, (unsigned char)n));
+                return true;
+            }
+        }
+    }
+
     // Templates
     static map<txnouttype, CScript> mTemplates;
     if(mTemplates.empty()) {
@@ -1474,156 +1627,6 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
     vSolutionsRet.clear();
     typeRet = TX_NONSTANDARD;
     return(false);
-}
-
-// Forward declaration (defined below)
-bool SignHybridTransaction(
-    const CKeyStore& keystore,
-    const CScript& scriptPubKey,
-    CTransaction& txTo,
-    unsigned int nIn,
-    int nHashType);
-
-// ===== IMPLEMENTATION OF HYBRID SIGNING =====
-
-bool SignHybridTransaction(
-    const CKeyStore& keystore,
-    const CScript& scriptPubKey,
-    CTransaction& txTo,
-    unsigned int nIn,
-    int nHashType)
-{
-    vector<vector<unsigned char>> solutions;
-    txnouttype scriptType;
-
-    if (!Solver(scriptPubKey, scriptType, solutions))
-        return false;
-
-    CScript scriptCode(scriptPubKey);
-    uint256 hash = SignatureHash(scriptCode, txTo, nIn, nHashType);
-    std::vector<unsigned char> hybridMsg;
-    BuildHybridMessage(hash, hybridMsg);
-
-    if (scriptType == TX_HYBRID_PUBKEY)
-    {
-        CPubKey ecdsaPubKey(solutions[0]);
-        CKeyID keyID = ecdsaPubKey.GetID();
-
-        CHybridKey hybridKey;
-        if (!keystore.GetHybridKey(keyID, hybridKey))
-            return false;
-
-        CKey ecdsaKey = hybridKey.GetCKey();
-        std::vector<unsigned char> ecdsaSig;
-        if (!ecdsaKey.Sign(hash, ecdsaSig))
-            return false;
-        ecdsaSig.push_back((unsigned char)nHashType);
-
-        std::vector<unsigned char> mldsaSig;
-        if (!hybridKey.mldsaSigner ||
-            !hybridKey.mldsaSigner->Sign(hybridMsg, mldsaSig))
-            return false;
-        mldsaSig.push_back((unsigned char)nHashType);
-
-        CScript scriptSig;
-        scriptSig << ecdsaSig << mldsaSig;
-        txTo.vin[nIn].scriptSig = scriptSig;
-        return true;
-    }
-
-
-    else if (scriptType == TX_HYBRID_PUBKEYHASH)
-    {
-        // vSolutions[0] = 32-byte hash, convert to uint160 by taking first 20 bytes
-        if (solutions[0].size() < 20)
-            return false;
-
-        // Create a vector from the first 20 bytes and pass to uint160 constructor
-        std::vector<unsigned char> hashBytes(solutions[0].begin(), solutions[0].begin() + 20);
-        uint160 keyHash160;
-        keyHash160.SetHex(HexStr(hashBytes));
-
-        CHybridKey hybridKey;
-        if (!keystore.GetHybridKeyByHash(keyHash160, hybridKey))
-            return false;
-
-        CKey ecdsaKey = hybridKey.GetCKey();
-        std::vector<unsigned char> ecdsaSig;
-        if (!ecdsaKey.Sign(hash, ecdsaSig))
-            return false;
-        ecdsaSig.push_back((unsigned char)nHashType);
-
-        std::vector<unsigned char> mldsaSig;
-        if (!hybridKey.mldsaSigner ||
-            !hybridKey.mldsaSigner->Sign(hybridMsg, mldsaSig))
-            return false;
-
-        mldsaSig.push_back((unsigned char)nHashType);
-
-        std::vector<unsigned char> ecdsaPub = hybridKey.secpPub.Raw();
-        std::vector<unsigned char> mldsaPub = hybridKey.mldsaSigner->GetPublicKey();
-
-        CScript scriptSig;
-        scriptSig
-            << ecdsaSig
-            << mldsaSig
-            << ecdsaPub
-            << mldsaPub;
-
-            txTo.vin[nIn].scriptSig = scriptSig;
-            return true;
-    }
-
-    else if (scriptType == TX_HYBRID_MULTISIG)
-    {
-        int nM = CScript::DecodeOP_N((opcodetype)solutions[0][0]);
-        int nN = CScript::DecodeOP_N((opcodetype)solutions[solutions.size() - 1][0]);
-
-        CScript scriptSig;
-        scriptSig << OP_0;
-
-        int signed_count = 0;
-        for (int i = 1; i <= nN && signed_count < nM; i++)
-        {
-            CPubKey pubKey(solutions[i]);
-            CKeyID keyID = pubKey.GetID();
-
-            CHybridKey hybridKey;
-            if (!keystore.GetHybridKey(keyID, hybridKey))
-                continue;
-
-            CKey ecdsaKey = hybridKey.GetCKey();
-            std::vector<unsigned char> ecdsaSig;
-            if (!ecdsaKey.Sign(hash, ecdsaSig))
-                continue;
-            ecdsaSig.push_back((unsigned char)nHashType);
-
-            std::vector<unsigned char> mldsaSig;
-            if (!hybridKey.mldsaSigner ||
-                !hybridKey.mldsaSigner->Sign(hybridMsg, mldsaSig))
-                continue;
-            mldsaSig.push_back((unsigned char)nHashType);
-
-            std::vector<unsigned char> ecdsaPub = hybridKey.secpPub.Raw();
-            std::vector<unsigned char> mldsaPub = hybridKey.mldsaSigner->GetPublicKey();
-
-            scriptSig
-                << ecdsaSig
-                << mldsaSig
-                << ecdsaPub
-                << mldsaPub;
-
-            signed_count++;
-        }
-
-        if (signed_count < nM)
-            return false;
-
-        txTo.vin[nIn].scriptSig = scriptSig;
-        return true;
-    }
-
-    return false;
 }
 
 bool Sign1(const CKeyID& address, const CKeyStore& keystore, uint256 hash, int nHashType, CScript& scriptSigRet) {
@@ -1719,7 +1722,10 @@ int ScriptSigArgsExpected(txnouttype t, const std::vector<std::vector<unsigned c
     case TX_HYBRID_PUBKEYHASH:
         return 4;
     case TX_HYBRID_MULTISIG:
-        return -1;
+        if(vSolutions.size() < 1 || vSolutions[0].size() < 1)
+            return -1;
+        // Each hybrid signature is a two-element stack item (sigEC, sigML).
+        return vSolutions[0][0] * 2;
     }
     return -1;
 }
@@ -1733,6 +1739,16 @@ bool IsStandard(const CScript& scriptPubKey) {
         unsigned char m = vSolutions.front()[0];
         unsigned char n = vSolutions.back()[0];
         // Support up to x-of-3 multisig txns as standard
+        if(n < 1 || n > 3)
+            return(false);
+        if(m < 1 || m > n)
+            return(false);
+    }
+    if(whichType == TX_HYBRID_MULTISIG) {
+        unsigned char m = vSolutions.front()[0];
+        unsigned char n = vSolutions.back()[0];
+        // Keep parity with regular multisig: up to x-of-3.
+        // Each key is two pushes, so a full N-of-N is already large.
         if(n < 1 || n > 3)
             return(false);
         if(m < 1 || m > n)
@@ -1762,7 +1778,7 @@ public:
     bool operator()(const CKeyID &keyID) const { return(keystore->HaveKey(keyID)); }
     bool operator()(const CScriptID &scriptID) const { return(keystore->HaveCScript(scriptID)); }
     bool operator()(const CHybridKeyID &keyID) const{
-        return keystore->HaveHybridKey(CKeyID(keyID));
+        return keystore->HaveHybridKey(keyID);
     }
 };
 
@@ -1825,7 +1841,8 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
 
             CPubKey ecdsaPub(vSolutions[0]);
 
-            if (keystore.HaveHybridKey(ecdsaPub.GetID()))
+            if (!keystore.IsLocked() &&
+                keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
                 return MINE_SPENDABLE;
 
             break;
@@ -1834,16 +1851,31 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
         case TX_HYBRID_PUBKEYHASH: {
             uint160 hash(vSolutions[0]);
 
-            if (keystore.HaveHybridKeyByHash(hash))
+            if (!keystore.IsLocked() &&
+                keystore.HaveHybridKeyByHash(hash))
                 return MINE_SPENDABLE;
 
             break;
         }
 
         case TX_HYBRID_MULTISIG: {
-           // Phase 1:
-           // Multisig ownership can be implemented later.
-           return MINE_NO;
+            if (vSolutions.size() < 3 || vSolutions[0].size() != 1)
+                return MINE_NO;
+
+            int nN = vSolutions[vSolutions.size() - 1][0];
+            if (nN < 1 || vSolutions.size() != 2 + (size_t)nN * 2)
+                return MINE_NO;
+
+            bool fAll = true;
+            for (int i = 0; i < nN && fAll; ++i) {
+                CPubKey ecdsaPub(vSolutions[1 + i * 2]);
+                if (!keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                    fAll = false;
+            }
+
+            if (!keystore.IsLocked() && fAll)
+                return MINE_SPENDABLE;
+            break;
         }
     }
 
@@ -1888,7 +1920,11 @@ public:
     void operator()(const CHybridKeyID& keyId) const
     {
         if (keystore.HaveHybridKey(keyId))
-            vKeys.push_back(CKeyID(uint160(keyId)));
+        {
+            CHybridKey hybridKey;
+            if (keystore.GetHybridKeyByHash(uint160(keyId), hybridKey))
+                vKeys.push_back(hybridKey.GetKeyID());
+        }
     }
 
     void operator()(const CScriptID &scriptId) {
@@ -2077,7 +2113,13 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
     uint256 sighash = SignatureHash(scriptCode, txTo, nIn, nHashType);
 
     std::vector<unsigned char> hybridMsg;
-    BuildHybridMessage(sighash, hybridMsg);
+
+    std::vector<unsigned char> sighash_preimage;
+    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, nHashType,
+                                        sighash_preimage))
+    return false;
+
+    hybridMsg = BuildHybridMessage(sighash_preimage);
 
     if (scriptType == TX_HYBRID_PUBKEY)
     {
@@ -2085,7 +2127,7 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
         CKeyID keyID = ecdsaPubKey.GetID();
 
         CHybridKey hybridKey;
-        if (!keystore.GetHybridKey(keyID, hybridKey))
+        if (!keystore.GetHybridKeyByLegacyID(keyID, hybridKey))
             return false;
 
         CKey ecdsaKey = hybridKey.GetCKey();
@@ -2148,19 +2190,26 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
 
     else if (scriptType == TX_HYBRID_MULTISIG)
     {
-        int nM = CScript::DecodeOP_N((opcodetype)solutions[0][0]);
-        int nN = CScript::DecodeOP_N((opcodetype)solutions[solutions.size() - 1][0]);
+        // solutions: [0] = m, [1..2n] = key pairs (ecdsa, mldsa), [last] = n
+        // scriptSig layout (matches OP_CHECKMULTIHYBRIDSIG):
+        //   [sigEC1][sigML1] ... [sigECm][sigMLm]   (signatures only)
+        if (solutions.size() < 3 || solutions[0].size() != 1)
+            return false;
 
-        scriptSigRet << OP_0;
+        int nM = solutions[0][0];
+        int nN = solutions[solutions.size() - 1][0];
+        if (nM < 1 || nN < 1 || nM > nN ||
+            solutions.size() != 2 + (size_t)nN * 2)
+            return false;
 
         int signed_count = 0;
-        for (int i = 1; i <= nN && signed_count < nM; i++)
+        for (int key = 0; key < nN && signed_count < nM; key++)
         {
-            CPubKey pubKey(solutions[i]);
-            CKeyID keyID = pubKey.GetID();
+            CPubKey ecdsaPub(solutions[1 + key * 2]);
+            CKeyID keyID = ecdsaPub.GetID();
 
             CHybridKey hybridKey;
-            if (!keystore.GetHybridKey(keyID, hybridKey))
+            if (!keystore.GetHybridKeyByLegacyID(keyID, hybridKey))
                 continue;
 
             CKey ecdsaKey = hybridKey.GetCKey();
@@ -2171,22 +2220,15 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
             ecdsaSig.push_back((unsigned char)nHashType);
 
             std::vector<unsigned char> mldsaSig;
-            if (!hybridKey.mldsaSigner)
-                return false;
-
-            if (!hybridKey.mldsaSigner->Sign(hybridMsg, mldsaSig))
+            if (!hybridKey.mldsaSigner ||
+                !hybridKey.mldsaSigner->Sign(hybridMsg, mldsaSig))
                 return false;
 
             mldsaSig.push_back((unsigned char)nHashType);
 
-            std::vector<unsigned char> ecdsaPub = hybridKey.secpPub.Raw();
-            std::vector<unsigned char> mldsaPub = hybridKey.mldsaSigner->GetPublicKey();
-
             scriptSigRet
                 << ecdsaSig
-                << mldsaSig
-                << ecdsaPub
-                << mldsaPub;
+                << mldsaSig;
 
             signed_count++;
         }
@@ -2232,7 +2274,22 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
         txnouttype subType;
         bool fSolved =
             Solver(keystore, subscript, hash2, nHashType, scriptSigRet, subType) && subType != TX_SCRIPTHASH;
-        txin.scriptSig << static_cast<valtype>(subscript);
+        if (!fSolved) {
+            txnouttype templateType;
+            std::vector<valtype> templateSolutions;
+            if (Solver(subscript, templateType, templateSolutions)) {
+                CScript hybridSigRet;
+                if (templateType == TX_HYBRID_MULTISIG &&
+                    SignHybridTx(keystore, subscript, txTo, nIn, nHashType, hybridSigRet)) {
+                    scriptSigRet = hybridSigRet;
+                    fSolved = true;
+                }
+            }
+        }
+        if (fSolved) {
+            txin.scriptSig = scriptSigRet;
+            txin.scriptSig << static_cast<valtype>(subscript);
+        }
         if(!fSolved) return(false);
     } else {
         txin.scriptSig = scriptSigRet;
@@ -2332,6 +2389,51 @@ static CScript CombineMultisig(const CScript& scriptPubKey, const CTransaction& 
     return result;
 }
 
+static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,
+                                     const std::vector<valtype>& vSolutions,
+                                     std::vector<valtype>& sigs1, std::vector<valtype>& sigs2)
+{
+    if (vSolutions.size() < 3 || vSolutions[0].size() != 1)
+        return CScript();
+
+    unsigned int nN = vSolutions[vSolutions.size() - 1][0];
+    if (nN < 1 || vSolutions.size() != 2 + (size_t)nN * 2)
+        return CScript();
+
+    std::vector<valtype> both;
+    for (const valtype& v : sigs1)
+        if (!v.empty()) both.push_back(v);
+    for (const valtype& v : sigs2)
+        if (!v.empty()) both.push_back(v);
+
+    std::vector<bool> have(nN, false);
+    std::vector<valtype> ecSigFor(nN), mlSigFor(nN);
+
+    for (size_t bi = 0; bi + 1 < both.size(); bi += 2) {
+        const valtype& ecSig = both[bi];
+        const valtype& mlSig = both[bi + 1];
+        for (unsigned int i = 0; i < nN; i++) {
+            if (have[i]) continue;
+            const valtype& ecPub = vSolutions[1 + i * 2];
+            const valtype& mlPub = vSolutions[2 + i * 2];
+            if (VerifyHybridSignature(ecSig, mlSig, ecPub, mlPub,
+                                      scriptPubKey, txTo, nIn, 0)) {
+                have[i] = true;
+                ecSigFor[i] = ecSig;
+                mlSigFor[i] = mlSig;
+                break;
+            }
+        }
+    }
+
+    CScript result;
+    for (unsigned int i = 0; i < nN; i++) {
+        if (have[i])
+            result << ecSigFor[i] << mlSigFor[i];
+    }
+    return result;
+}
+
 static CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo, unsigned int nIn,
                                  const txnouttype txType, const vector<valtype>& vSolutions,
                                  vector<valtype>& sigs1, vector<valtype>& sigs2) {
@@ -2368,11 +2470,12 @@ static CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo,
     case TX_MULTISIG:
         return CombineMultisig(scriptPubKey, txTo, nIn, vSolutions, sigs1, sigs2);
 
-    // Hybrid signature types - use simple combination logic
+    // Hybrid signature types
+    case TX_HYBRID_MULTISIG:
+        return CombineHybridMultisig(scriptPubKey, txTo, nIn, vSolutions, sigs1, sigs2);
     case TX_HYBRID_PUBKEY:
     case TX_HYBRID_PUBKEYHASH:
-    case TX_HYBRID_MULTISIG:
-        // For hybrid sigs, prefer the more complete signature set
+        // Single-signature types: prefer the more complete signature set
         if (sigs1.size() >= sigs2.size())
             return PushAll(sigs1);
         return PushAll(sigs2);
@@ -2569,13 +2672,23 @@ return CScript()
 /**
  * Create an M-of-N Hybrid Multisignature output.
  *
- * Note:
- * Consensus support for OP_CHECKMULTIHYBRIDSIG is implemented.
- * This helper is currently unused by the wallet/RPC layer, but is
- * retained for future hybrid multisig support.
+ * Script layout (matches OP_CHECKMULTIHYBRIDSIG's expectations):
+ *
+ *   OP_<m> <ecdsaPub1> <mldsaPub1> ... <ecdsaPubN> <mldsaPubN> OP_<n> OP_CHECKMULTIHYBRIDSIG
+ *
+ * Each hybrid public key is pushed as TWO separate stack items (the ECDSA
+ * public key followed by the ML-DSA public key), matching how the verifier
+ * reads keys via stacktop(-ikey-1)/stacktop(-ikey).
  */
 CScript GetScriptForHybridMultisig(int nRequired,
                                   const std::vector<CHybridPubKey>& keys) {
+    if (nRequired < 1 || nRequired > 16)
+        return CScript();  // EncodeOP_N supports 1..16 only
+    if (keys.empty() || keys.size() > 16)
+        return CScript();  // EncodeOP_N supports 1..16 only
+    if ((size_t)nRequired > keys.size())
+        return CScript();  // cannot require more keys than supplied
+
     CScript script;
     script << CScript::EncodeOP_N(nRequired);
 
@@ -2583,7 +2696,7 @@ CScript GetScriptForHybridMultisig(int nRequired,
         if (!key.IsValid()) {
             return CScript();  // Invalid input
         }
-        script << key.Serialize();
+        script << key.ecdsaPubKey << key.mldsaPubKey;
     }
 
     script << CScript::EncodeOP_N(keys.size())

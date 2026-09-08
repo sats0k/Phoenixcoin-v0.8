@@ -117,7 +117,7 @@ private:
     CWalletDB(const CWalletDB&);
     void operator=(const CWalletDB&);
 public:
-    bool LoadAllHybridKeys(std::vector<CHybridKeyDisk> &vKeys);
+    bool LoadAllHybridKeys(std::vector<std::pair<CHybridKeyID, CHybridKeyDisk> > &vKeys);
 
     bool WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &disk);
 

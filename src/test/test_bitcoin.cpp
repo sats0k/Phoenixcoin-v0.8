@@ -4,9 +4,13 @@
 #include "db.h"
 #include "main.h"
 #include "wallet.h"
+#include "checkpoints.h"
 
 CWallet* pwalletMain;
 CClientUIInterface uiInterface;
+
+enum Checkpoints::CPMode CheckpointsMode;
+uint nMsgSleep;
 
 extern bool fPrintToConsole;
 extern void noui_connect();
@@ -32,7 +36,7 @@ struct TestingSetup {
 
 BOOST_GLOBAL_FIXTURE(TestingSetup);
 
-void Shutdown(void* parg)
+void Shutdown(void* /*parg*/)
 {
   exit(0);
 }

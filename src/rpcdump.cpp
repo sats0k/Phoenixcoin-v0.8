@@ -515,7 +515,11 @@ Value gethybridkey(const Array& params, bool fHelp) {
 
     hybridID = *pHybridID;
 
-    const CHybridKey* pHybridKey = NULL;
+    CPubKey secpPub;
+    std::string mldsaAlg;
+    int64_t nCreateTime = 0;
+    std::string strMldsaPubB64;
+    std::vector<unsigned char> mldsaPub;
 
     {
         LOCK(pwalletMain->cs_wallet);
@@ -528,51 +532,34 @@ Value gethybridkey(const Array& params, bool fHelp) {
                 RPC_INVALID_ADDRESS_OR_KEY,
                 "Address does not correspond to a hybrid key in this wallet");
 
-        pHybridKey = &it->second;
-    }
+        // Copy the needed fields (and the MLDSA public key bytes) while
+        // holding the lock; other threads may rebalance/erase this map entry.
+        secpPub = it->second.secpPub;
+        mldsaAlg = it->second.mldsaAlg;
+        nCreateTime = it->second.nCreateTime;
 
-    if (!pHybridKey)
-        throw JSONRPCError(
-            RPC_INVALID_ADDRESS_OR_KEY,
-            "Address does not correspond to a hybrid key in this wallet");
+        if (it->second.mldsaSigner) {
+            mldsaPub = it->second.mldsaSigner->GetPublicKey();
 
-    // Get MLDSA public key from signer
-    string strMldsaPubB64;
-    printf("Hybrid signers: %u\n",
-           (unsigned)pwalletMain->mapHybridSigners.size());
-
-    if (!pwalletMain->mapHybridSigners.count(hybridID)) {
-        printf("Signer NOT found\n");
-    } else {
-        printf("Signer found\n");
-
-        MLDSASigner* signer = pHybridKey->mldsaSigner.get();
-
-        if (!signer) {
-            printf("Signer pointer NULL\n");
-        } else {
-            EVP_PKEY* pkey = signer->GetKey();
-
-            printf("EVP_PKEY=%p\n", (void*)pkey);
-
-            if (!pkey) {
-                printf("GetKey() returned NULL\n");
-            } else {
-                std::vector<uint8_t> pub = signer->GetPublicKey();
-
-                if (!pub.empty())
-                    strMldsaPubB64 = EncodeBase64(pub.data(), pub.size());
-            }
+            if (!mldsaPub.empty())
+                strMldsaPubB64 = EncodeBase64(mldsaPub.data(), mldsaPub.size());
         }
     }
 
     // Build response
     Object result;
     result.push_back(Pair("address", strAddress));
-    result.push_back(Pair("pubkey_ecdsa", HexStr(pHybridKey->secpPub.Raw())));
+    result.push_back(Pair("pubkey_ecdsa", HexStr(secpPub.Raw())));
     result.push_back(Pair("pubkey_mldsa_b64", strMldsaPubB64));
-    result.push_back(Pair("algorithm_mldsa", pHybridKey->mldsaAlg));
-    result.push_back(Pair("created", (int64_t)pHybridKey->nCreateTime));
+    result.push_back(Pair("algorithm_mldsa", mldsaAlg));
+    result.push_back(Pair("created", nCreateTime));
+
+    if (secpPub.IsValid() &&
+        mldsaPub.size() == CHybridPubKey::MLDSA_SIZE) {
+        CHybridPubKey hybridPub(secpPub.Raw(), mldsaPub);
+        result.push_back(
+            Pair("pubkey_serialized_hex", HexStr(hybridPub.Serialize())));
+    }
 
     // Add label if exists
     {

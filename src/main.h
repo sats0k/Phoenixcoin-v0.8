@@ -916,15 +916,18 @@ public:
     /* Extracts block height from v2+ coin base;
      * ignores nVersion because it's unrealiable */
     int GetBlockHeight() const {
-        /* Prevents a crash if called on a block header alone */
-        if(vtx.size()) {
+        /* Prevents a crash if called on a block header alone or on a
+         * malformed/unvalidated block whose coinbase has no inputs or an
+         * empty scriptSig (vtx and vin are checked before any indexing). */
+        if(!vtx.empty() && !vtx[0].vin.empty() &&
+           !vtx[0].vin[0].scriptSig.empty()) {
             /* Serialised CScript */
-            std::vector<uchar>::const_iterator scriptsig = vtx[0].vin[0].scriptSig.begin();
+            const std::vector<uchar>& scriptsig = vtx[0].vin[0].scriptSig;
             uchar i, scount = scriptsig[0];
             /* Optimise: nTime is 4 bytes always,
              * nHeight must be less for a long time;
              * check against a threshold when the time comes */
-            if(scount < 4) {
+            if(scount < 4 && (size_t)scount + 1 <= scriptsig.size()) {
                 int height = 0;
                 uchar *pheight = (uchar *) &height;
                 for(i = 0; i < scount; i++)

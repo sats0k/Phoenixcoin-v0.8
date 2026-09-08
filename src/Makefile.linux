@@ -143,6 +143,7 @@ all: phoenixcoind
 
 # Auto-generated dependencies
 -include obj/*.P
+-include obj-test/*.P
 
 obj/build.h: FORCE
 	/bin/sh ../share/genbuild.sh obj/build.h
@@ -185,7 +186,9 @@ obj/wallet_hybrid_address.o: hs/wallet_hybrid_address.cpp
 phoenixcoind: $(OBJS:obj/%=obj/%)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-TESTOBJS := $(patsubst test/%.cpp,obj-test/%.o,$(wildcard test/*.cpp))
+TESTOBJS := \
+    obj-test/test_bitcoin.o \
+    obj-test/hybrid_multisig_tests.o
 
 obj-test/%.o: test/%.cpp
 	$(CXX) -c $(CXXFLAGS) $(DEFS) $(TESTDEFS) $(INCS) -MMD -MF $(@:%.o=%.d) -o $@ $<
@@ -199,6 +202,7 @@ test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
+	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
 	-rm -f phoenixcoind test_phoenixcoin
 
 FORCE:

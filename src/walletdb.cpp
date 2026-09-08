@@ -28,7 +28,7 @@ static uint64 nAccountingEntryNumber = 0;
 // CWalletDB
 //
 
-bool CWalletDB::LoadAllHybridKeys(std::vector<CHybridKeyDisk> &vKeys)
+bool CWalletDB::LoadAllHybridKeys(std::vector<std::pair<CHybridKeyID, CHybridKeyDisk> > &vKeys)
 {
     vKeys.clear();
     Dbc* pcursor = GetCursor();
@@ -44,13 +44,30 @@ bool CWalletDB::LoadAllHybridKeys(std::vector<CHybridKeyDisk> &vKeys)
         ssKey >> strType;
         if (strType != "hyb") continue; // must match write prefix
 
-        CKeyID keyID;
-        ssKey >> keyID;
+        CHybridKeyID hybridID;
+        ssKey >> hybridID;
 
         CHybridKeyDisk disk;
-        ssValue >> disk;
+        bool fParsed = false;
+        try {
+            // Newest layout: the first field is the record's own nVersion.
+            CDataStream ssCopy(ssValue.begin(), ssValue.end(), SER_DISK, CLIENT_VERSION);
+            ssCopy >> disk;
+            if (disk.nVersion == HYBRIDKEY_DISK_VERSION ||
+                disk.nVersion == HYBRIDKEY_DISK_VERSION_ENCRYPTED)
+                fParsed = true;
+        } catch (const std::exception&) {}
 
-        vKeys.push_back(disk);
+        if (!fParsed) {
+            // Fall back to the original layout (whose first field is the
+            // stream serialization version, i.e. CLIENT_VERSION).
+            if (!CHybridKeyDisk::FromLegacyDiskFormat(ssValue, disk)) {
+                printf("WARNING: skipping undecipherable hybrid key record\n");
+                continue;
+            }
+        }
+
+        vKeys.push_back(std::make_pair(hybridID, disk));
     }
 
     pcursor->close();
@@ -59,11 +76,13 @@ bool CWalletDB::LoadAllHybridKeys(std::vector<CHybridKeyDisk> &vKeys)
 
 bool CWalletDB::WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &disk)
 {
+    nWalletDBUpdated++;
     return Write(std::make_pair(std::string("hyb"), keyID), disk);
 }
 
 bool CWalletDB::WriteHybridKeyMetadata(const CHybridKeyID& keyid, const CHybridKeyMetadata& meta)
 {
+    nWalletDBUpdated++;
     return Write(std::make_pair(std::string("hybridkeymeta"), keyid), meta);
 }
 

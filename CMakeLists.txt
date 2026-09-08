@@ -10,13 +10,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # ---------------------------------------------------------------------------
-# OpenSSL (ML-DSA requires OpenSSL 3.2+)
+# OpenSSL (ML-DSA requires OpenSSL 3.5+)
 # ---------------------------------------------------------------------------
 find_package(OpenSSL REQUIRED)
 
-if (OPENSSL_VERSION_NUMBER LESS 0x30200000L)
+if (OPENSSL_VERSION_NUMBER LESS 0x30500000L)
     message(FATAL_ERROR
-        "OpenSSL >= 3.2.0 required for ML-DSA support")
+        "OpenSSL >= 3.5.0 required for ML-DSA support")
 endif()
 
 message(STATUS "OpenSSL version: ${OPENSSL_VERSION}")
@@ -138,3 +138,17 @@ add_fuzzer(fuzz_encrypted_keys
 
 add_fuzzer(fuzz_hybrid_verify
     src/test/fuzz/fuzz_hybrid_verify.cpp)
+
+# ---------------------------------------------------------------------------
+# Encrypted ML-DSA serialization round-trip test
+# ---------------------------------------------------------------------------
+add_executable(test_encrypted_keys
+    src/test/test_encrypted_keys.cpp
+)
+
+target_link_libraries(test_encrypted_keys
+    PRIVATE
+        hybrid_signer
+        phoenixcoin_fuzz_support
+        OpenSSL::Crypto
+)

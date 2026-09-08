@@ -6,7 +6,6 @@
 // Project
 #include "key.h"
 #include "ecies/ecies.h"
-#include "hs/crypto_context.h"
 
 // C / C++
 #include <vector>
@@ -29,31 +28,6 @@
 // libsecp256k1
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
-
-/* ---------- OQS Loader ---------- */
-OSSL_LIB_CTX* GetOqsLibCtx()
-{
-    static OSSL_LIB_CTX* ctx = [] {
-        OSSL_LIB_CTX* c = OSSL_LIB_CTX_new();
-        if (!c)
-            throw std::runtime_error("OSSL_LIB_CTX_new failed");
-
-        if (!OSSL_PROVIDER_load(c, "default") ||
-            !OSSL_PROVIDER_load(c, "oqs"))
-        {
-            unsigned long e;
-            while ((e = ERR_get_error()) != 0) {
-                char buf[256];
-                ERR_error_string_n(e, buf, sizeof(buf));
-                fprintf(stderr, "OpenSSL error: %s\n", buf);
-            }
-            throw std::runtime_error("Failed to load OQS provider");
-        }
-
-        return c;
-    }();
-    return ctx;
-}
 
 /* ----------  Global secp256k1 context ---------- */
 static secp256k1_context* g_secp256k1_verify_ctx = [] {

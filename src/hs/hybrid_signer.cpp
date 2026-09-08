@@ -13,10 +13,12 @@
 #include <cassert>
 #include <vector>
 #include <memory>
+#include <set>
 #include <cstring>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 
 #include <secp256k1.h>
 
@@ -29,14 +31,20 @@
  *  - secp256k1 context is VERIFY-only and never mutated after initialization
  *  - ML-DSA-65 support must be present and functional at runtime
  *  - Hybrid verification requires exactly one signature per algorithm
+ *  - ConstructSignatureHashPreimage() is the canonical preimage constructor
+ *  - BuildHybridMessage() applies domain separation to the preimage for ML-DSA
+ *  - The caller is responsible for constructing the canonical preimage.
  */
+
+using EVP_MD_CTX_ptr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
+using EVP_PKEY_ptr   = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 
 std::unique_ptr<MLDSASigner> MLDSASigner::GenerateNew() {
 
     EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ML_DSA_65, nullptr);
     if (!ctx) {
         fprintf(stderr, "Failed to create EVP_PKEY_CTX for ML-DSA-65\n");
-        std::abort();
+        return nullptr;
     }
 
     if (EVP_PKEY_keygen_init(ctx) <= 0) {
@@ -45,43 +53,35 @@ std::unique_ptr<MLDSASigner> MLDSASigner::GenerateNew() {
         return nullptr;
     }
 
-    EVP_PKEY* pkey = nullptr;
-    if (EVP_PKEY_keygen(ctx, &pkey) <= 0) {
+    EVP_PKEY* raw_pkey = nullptr;
+    if (EVP_PKEY_keygen(ctx, &raw_pkey) <= 0) {
         fprintf(stderr, "EVP_PKEY_keygen failed\n");
         EVP_PKEY_CTX_free(ctx);
         return nullptr;
     }
 
     EVP_PKEY_CTX_free(ctx);
-    std::unique_ptr<MLDSASigner> signer =
-    std::make_unique<MLDSASigner>(pkey);
 
-    EVP_PKEY_free(pkey);
-    pkey = nullptr;
-
-    return signer;
+    EVP_PKEY_ptr pkey(raw_pkey, &EVP_PKEY_free);
+    return std::make_unique<MLDSASigner>(pkey.get());
 }
 
-static void AbortCryptoMisconfig(const char* msg) {
+static void ThrowCryptoMisconfig(const char* msg) {
     ERR_print_errors_fp(stderr);
     fprintf(stderr, "FATAL CRYPTO ERROR: %s\n", msg);
-    std::abort();
+    throw std::runtime_error(msg);
 }
 
 static void EnsureMlDsaAvailable() {
-    static bool checked = false;
-    if (checked) return;
-    checked = true;
-
-    EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ML_DSA_65, nullptr);
-    if (!ctx) {
-        AbortCryptoMisconfig("ML-DSA-65 not available in this OpenSSL build");
-    }
-    EVP_PKEY_CTX_free(ctx);
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        EVP_PKEY_CTX* ctx = EVP_PKEY_CTX_new_id(EVP_PKEY_ML_DSA_65, nullptr);
+        if (!ctx) {
+            ThrowCryptoMisconfig("ML-DSA-65 not available in this OpenSSL build");
+        }
+        EVP_PKEY_CTX_free(ctx);
+    });
 }
-
-using EVP_MD_CTX_ptr = std::unique_ptr<EVP_MD_CTX, decltype(&EVP_MD_CTX_free)>;
-using EVP_PKEY_ptr   = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
 
 static EVP_MD_CTX_ptr MakeMdCtx() {
     return EVP_MD_CTX_ptr(EVP_MD_CTX_new(), &EVP_MD_CTX_free);
@@ -227,8 +227,9 @@ static uint256 HashHybridMessage(const std::vector<uint8_t>& msg) {
 bool ParseHybridSignature(const std::vector<unsigned char>& in,
                           std::vector<Signature>& out)
 {
-    size_t off = 0;
+    out.clear();
 
+    size_t off = 0;
     if (in.size() < 6)
         return false;
 
@@ -244,26 +245,50 @@ bool ParseHybridSignature(const std::vector<unsigned char>& in,
     if (count != 2)
         return false;
 
+    std::set<SigAlg> algsSeen;
     for (int i = 0; i < 2; i++) {
-        if (off + 3 > in.size())
+        if (off + 3 > in.size()) {
+            out.clear();
             return false;
+        }
 
         uint8_t alg = in[off++];
+
+        if (alg != static_cast<uint8_t>(SigAlg::ECDSA_SECP256K1) &&
+            alg != static_cast<uint8_t>(SigAlg::ML_DSA_65)) {
+            out.clear();
+            return false;
+        }
+
+        SigAlg sig_alg = static_cast<SigAlg>(alg);
+        if (algsSeen.count(sig_alg) > 0) {
+            out.clear();
+            return false;
+        }
+        algsSeen.insert(sig_alg);
+
         uint16_t len = (uint16_t(in[off]) << 8) | uint16_t(in[off + 1]);
         off += 2;
 
-        if (len == 0 || off + len > in.size())
+        if (len == 0 || off + len > in.size()) {
+            out.clear();
             return false;
+        }
 
         out.push_back(Signature{
-            static_cast<SigAlg>(alg),
+            sig_alg,
             std::vector<uint8_t>(in.begin() + off,
                                  in.begin() + off + len)
         });
         off += len;
     }
 
-    return off == in.size(); // no trailing garbage
+    if (off != in.size()) {
+        out.clear();
+        return false;
+    }
+
+    return true;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -315,14 +340,14 @@ std::vector<uint8_t> Secp256k1Signer::GetPublicKey() const {
 
 MLDSASigner::MLDSASigner(EVP_PKEY* key) : pkey_(key) {
     if (!pkey_)
-        AbortCryptoMisconfig("Null EVP_PKEY passed to MLDSASigner");
+        ThrowCryptoMisconfig("Null EVP_PKEY passed to MLDSASigner");
 
     EnsureMlDsaAvailable();
 
     const char* type = EVP_PKEY_get0_type_name(pkey_);
     if (!type || std::string(type) != "ML-DSA-65") {
         fprintf(stderr, "MLDSA key type = %s\n", type ? type : "(null)");
-        AbortCryptoMisconfig("Invalid EVP_PKEY passed to MLDSASigner");
+        ThrowCryptoMisconfig("Invalid EVP_PKEY passed to MLDSASigner");
     }
 
     EVP_PKEY_up_ref(pkey_);
@@ -506,31 +531,50 @@ MLDSASigner::FromEncryptedSerialized(
     const std::vector<uint8_t>& password,
     const std::vector<uint8_t>& in) {
 
-    if (in.size() < 4 + 1 + ENC_SALT_LEN + ENC_NONCE_LEN + ENC_TAG_LEN)
+    constexpr size_t ENC_HEADER_LEN =
+        4 + 1 + 4 + 1 + ENC_SALT_LEN + ENC_NONCE_LEN;
+
+    if (in.size() < ENC_HEADER_LEN + ENC_TAG_LEN)
         return nullptr;
 
     Cursor c(in);
-    if (!c.expect_bytes(HYBRID_MAGIC, 4)) return nullptr;
+
+    // Outer encrypted-key header.
+    if (!c.expect_bytes(HYBRID_MAGIC, 4))
+        return nullptr;
 
     uint8_t ver;
     if (!c.read_u8(ver) || ver != HYBRID_VERSION_ENC)
         return nullptr;
 
+    // Inner hybrid-signature header.
+    if (!c.expect_bytes(HYBRID_SIG_MAGIC, 4))
+        return nullptr;
+
+    uint8_t sig_ver;
+    if (!c.read_u8(sig_ver) || sig_ver != HYBRID_SIG_VERSION)
+        return nullptr;
+
     const uint8_t* salt;
     const uint8_t* nonce;
+
     if (!c.read_bytes(salt, ENC_SALT_LEN) ||
         !c.read_bytes(nonce, ENC_NONCE_LEN))
         return nullptr;
 
-    size_t header_len =
-        4 + 1 + ENC_SALT_LEN + ENC_NONCE_LEN;
+    const size_t header_len = ENC_HEADER_LEN;
+
     if (in.size() < header_len + ENC_TAG_LEN)
         return nullptr;
-    size_t ct_len = in.size() - header_len - ENC_TAG_LEN;
-    const uint8_t* ct;
-    const uint8_t* tag = &in[in.size() - ENC_TAG_LEN];
 
-    if (!c.read_bytes(ct, ct_len)) return nullptr;
+    const size_t ct_len =
+        in.size() - header_len - ENC_TAG_LEN;
+
+    const uint8_t* ct;
+    if (!c.read_bytes(ct, ct_len))
+        return nullptr;
+
+    const uint8_t* tag = &in[in.size() - ENC_TAG_LEN];
 
     uint8_t key[32];
     if (!DeriveEncKey(password, salt, key, sizeof(key)))
@@ -538,7 +582,7 @@ MLDSASigner::FromEncryptedSerialized(
 
     std::vector<uint8_t> pt;
     std::vector<uint8_t> aad = {
-        'H','Y','B','K', HYBRID_VERSION_ENC
+        'H', 'Y', 'B', 'K', HYBRID_VERSION_ENC
     };
 
     std::vector<uint8_t> ciphertext(ct, ct + ct_len);
@@ -550,7 +594,10 @@ MLDSASigner::FromEncryptedSerialized(
     }
 
     OPENSSL_cleanse(key, sizeof(key));
-    return FromSerializedV2(pt);
+
+    auto signer = FromSerialized(pt);
+    OPENSSL_cleanse(pt.data(), pt.size());
+    return signer;
 }
 
 std::unique_ptr<MLDSASigner>
@@ -589,7 +636,14 @@ MLDSASigner::FromSerialized(const std::vector<uint8_t>& in) {
         return nullptr;
     }
 
-    return std::make_unique<MLDSASigner>(pkey);
+    try {
+        auto signer = std::make_unique<MLDSASigner>(pkey);
+        EVP_PKEY_free(pkey);
+        return signer;
+    } catch (const std::exception&) {
+        if (pkey) EVP_PKEY_free(pkey);
+        return nullptr;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -659,7 +713,15 @@ MLDSASigner::FromSerializedV2(const std::vector<uint8_t>& in) {
         EVP_PKEY_free(pkey);
         return nullptr;
     }
-    return std::make_unique<MLDSASigner>(pkey);
+
+    try {
+        auto signer = std::make_unique<MLDSASigner>(pkey);
+        EVP_PKEY_free(pkey);
+        return signer;
+    } catch (const std::exception&) {
+        if (pkey) EVP_PKEY_free(pkey);
+        return nullptr;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -669,7 +731,7 @@ MLDSASigner::FromSerializedV2(const std::vector<uint8_t>& in) {
 void HybridSigner::Add(std::unique_ptr<ISigner> signer) {
     for (const auto& s : signers_) {
         if (s->Algorithm() == signer->Algorithm())
-            AbortCryptoMisconfig("Duplicate signature algorithm added");
+            throw std::runtime_error("Duplicate signature algorithm added");
     }
     signers_.push_back(std::move(signer));
 }

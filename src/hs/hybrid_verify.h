@@ -68,17 +68,16 @@ inline bool VerifyMLDSA(
     const std::vector<unsigned char>& mldsaPubKey,
     const std::vector<unsigned char>& msg)
 {
-    // Validate inputs
-    if (mldsaSig.empty())
+
+    if (mldsaSig.size() != ML_DSA_65_SIG_SIZE - 1)
         return false;
 
     if (mldsaPubKey.size() != ML_DSA_65_PUBKEY_SIZE)
         return false;
 
-    if (msg.empty() || msg.size() > 1024)
+    if (msg.empty())
         return false;
 
-    // Import raw ML-DSA public key
     EVP_PKEY* pkey = EVP_PKEY_new_raw_public_key_ex(
         nullptr,
         "ML-DSA-65",
@@ -140,14 +139,12 @@ extern bool CheckSig(
 );
 
 /**
- * Forward declaration for BuildHybridMessage from script.cpp
+ * Forward declaration for BuildHybridMessage from hybrid_signer.cpp
  * Creates domain-separated message for hybrid signatures
  */
-extern void BuildHybridMessage(
-    const uint256& sighash,
-    std::vector<unsigned char>& outMsg
+extern std::vector<unsigned char> BuildHybridMessage(
+    const std::vector<unsigned char>& tx_sighash_preimage
 );
-
 
 /**
  * Forward declaration for SignatureHash from script.cpp
@@ -162,6 +159,18 @@ extern uint256 SignatureHash(
 );
 
 /**
+ * Forward declaration for ConstructSignatureHashPreimage from script.cpp
+ * Constructs the canonical sighash preimage used by ECDSA and ML-DSA.
+ */
+extern bool ConstructSignatureHashPreimage(
+    const CScript& scriptCode,
+    const CTransaction& txTo,
+    unsigned int nIn,
+    int nHashType,
+    std::vector<unsigned char>& preimageOut
+);
+
+/**
  * Verify a hybrid transaction signature.
  *
  * PhoenixCoin Quantum requires every hybrid spend to be authenticated by
@@ -173,11 +182,13 @@ extern uint256 SignatureHash(
  *     sigECDSA  sigMLDSA  pubkeyECDSA  pubkeyMLDSA  -- bool
  *
  * Verification sequence:
- *   1. Compute the transaction signature hash once.
- *   2. Verify the ECDSA signature using that hash.
- *   3. Build the domain-separated hybrid message from that hash.
- *   4. Verify the ML-DSA-65 signature.
- *   5. Return true only if both verifications succeed.
+ *   1. Construct the canonical transaction sighash preimage.
+ *   2. Hash the preimage for ECDSA verification.
+ *   3. Verify the ECDSA signature against that transaction hash.
+ *   4. Build the domain-separated ML-DSA message from the same
+ *      sighash preimage.
+ *   5. Verify the ML-DSA-65 signature against that message.
+ *   6. Return true only if both verifications succeed.
  *
  * Parameters:
  *   vchSigEC
@@ -253,8 +264,9 @@ inline bool VerifyHybridSignature(
         return false;
 
     // ------------------------------------------------------------
-    // Compute transaction sighash ONCE.
-    // Both ECDSA and ML-DSA use this same transaction digest.
+    // Compute the transaction sighash for ECDSA.
+    // ML-DSA independently uses the same canonical sighash preimage
+    // with hybrid domain separation.
     // ------------------------------------------------------------
     uint256 sighash =
         SignatureHash(scriptCode, txTo, nIn, hashTypeEC);
@@ -281,8 +293,13 @@ inline bool VerifyHybridSignature(
         vchSigML.begin(),
         vchSigML.end() - 1);
 
-    std::vector<unsigned char> hybridMsg;
-    BuildHybridMessage(sighash, hybridMsg);
+    // Construct the canonical sighash preimage using the same logic as SignatureHash()
+    std::vector<unsigned char> sighash_preimage;
+    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, hashTypeEC, sighash_preimage))
+        return false;
+
+    // Apply domain separation for ML-DSA
+    std::vector<unsigned char> hybridMsg = BuildHybridMessage(sighash_preimage);
 
     // ------------------------------------------------------------
     // Verify ML-DSA signature

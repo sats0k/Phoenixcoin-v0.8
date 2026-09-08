@@ -40,9 +40,9 @@ static constexpr size_t ENC_TAG_LEN   = 16;
 /*  Requirements                                                             */
 /* ------------------------------------------------------------------------- */
 
-// ML-DSA support landed in OpenSSL 3.2
-#if OPENSSL_VERSION_NUMBER < 0x30200000L
-#error "Hybrid signatures require OpenSSL 3.2+ (ML-DSA support)"
+// ML-DSA support landed in OpenSSL 3.5
+#if OPENSSL_VERSION_NUMBER < 0x30500000L
+#error "Hybrid signatures require OpenSSL 3.5+ (ML-DSA support)"
 #endif
 
 /* ------------------------------------------------------------------------- */
@@ -160,10 +160,6 @@ public:
 
     static std::unique_ptr<MLDSASigner> GenerateNew();
 
-    static std::unique_ptr<MLDSASigner>
-    FromSeed(const std::vector<uint8_t>& seed,
-             const CKeyID& keyid, const std::string& alg);
-
 private:
     EVP_PKEY* pkey_;
 };
@@ -195,8 +191,11 @@ private:
 /* ------------------------------------------------------------------------- */
 
 // Canonical message builder for hybrid signatures.
+// Takes the complete sighash preimage produced by the transaction
+// sighash construction, including SIGHASH type.
+// Prepends "BIT-HYBRID-SIG-v1" for cryptographic domain separation.
 // MUST be used by callers before SignAll().
-std::vector<uint8_t>
+extern std::vector<uint8_t>
 BuildHybridMessage(const std::vector<uint8_t>& tx_sighash_preimage);
 
 #endif  // HYBRID_SIGNER_H

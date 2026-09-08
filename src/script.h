@@ -33,6 +33,15 @@ enum isminetype {
     MINE_SPENDABLE = 2,
 };
 
+// Largest redeem-script element pushed by a hybrid multisig P2SH input
+// (OP_<n> <ec1> <mldsa1> ... <ecN> <mldsaN> OP_<m> OP_CHECKMULTIHYBRIDSIG,
+// N up to 20, ~1991 bytes per keypair, plus overhead).
+static const int MAX_SCRIPT_ELEMENT_SIZE = 66000;
+
+// Worst-case hybrid multisig P2SH scriptSig: up to N signatures
+// (each [sigEC ~73B][sigML 5+3369B]) followed by the redeem script.
+static const int MAX_SCRIPT_SIZE = 200000;
+
 enum txnouttype
 {
     TX_NONSTANDARD,
@@ -610,5 +619,16 @@ bool VerifySignature(const CTransaction& txFrom, const CTransaction& txTo, unsig
 // Given two sets of signatures for scriptPubKey, possibly with OP_0 placeholders,
 // combine them intelligently and return the result.
 CScript CombineSignatures(CScript scriptPubKey, const CTransaction& txTo, unsigned int nIn, const CScript& scriptSig1, const CScript& scriptSig2);
+
+/**
+ * Canonical sighash preimage construction
+ *
+ * Constructs the exact byte sequence that gets hashed for signature operations.
+ * This is used by both ECDSA (which hashes the result) and ML-DSA (which applies
+ * domain separation to the preimage).
+ */
+bool ConstructSignatureHashPreimage(
+    const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn,
+    int nHashType, std::vector<unsigned char>& preimageOut);
 
 #endif /* SCRIPT_H */

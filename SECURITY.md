@@ -55,6 +55,35 @@ Encrypted private keys use:
 Any modification to ciphertext, header, salt, nonce, or tag
 causes decryption failure.
 
+Encrypted hybrid key records (`CHybridKeyDisk`, version 3) are
+bound to the wallet master key rather than a per-record passphrase.
+They are therefore only decryptable while the wallet is unlocked
+with the correct password. Converting a plaintext hybrid key to its
+encrypted form also requires an unlocked wallet; attempting it while
+the wallet is locked fails rather than producing an unencrypted
+fallback.
+
+---
+
+### Hybrid Multisignature Partial Signing
+
+Hybrid multisig script-sigs are merged in the combining layer
+(`CombineSignatures`):
+
+- Every script element is an `[ECDSA][ML-DSA]` signature pair.
+- Both halves of each pair must verify — against the corresponding
+  ECDSA and ML-DSA public keys present in the script — before the pair
+  is accepted for combination; unverified, cross-key-mismatched, or
+  invalid-ML-DSA material is never propagated.
+- Combined pairs are ordered by the key index they correspond to.
+- Combined scripts must still pass the full consensus
+  `VerifyScript`; combining disjoint partials never relaxes the m-of-n
+  requirement, and a returned partial script-sig remains unspendable
+  until the required threshold of valid pairs is present.
+
+This prevents a combiner from inserting unverified, duplicated, or
+misordered signature data into a transaction that is then relayed.
+
 ---
 
 ## Threat Model
@@ -66,6 +95,7 @@ causes decryption failure.
 - Algorithm substitution attacks
 - Parsing ambiguities / length overflows
 - Timing attacks in key comparisons
+- Unverified or misordered hybrid multisig partial signatures
 - Post-quantum cryptanalytic attacks (via ML-DSA)
 
 ---

@@ -115,6 +115,8 @@ public:
     virtual void GetKeys(std::set<CKeyID> &setAddress) const =0;
     virtual bool GetPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const;
 
+    virtual bool IsLocked() const { return false; }
+
     // Support for BIP 0013 : see https://en.bitcoin.it/wiki/BIP_0013
     virtual bool AddCScript(const CScript& redeemScript) =0;
     virtual bool HaveCScript(const CScriptID &hash) const =0;
@@ -146,12 +148,29 @@ public:
         return false;
     }
 
+    // mapHybridKeys is keyed by CHybridKeyID = Hash160(secp || mldsa), which
+    // differs from the CKeyID = Hash160(secp) found in TX_HYBRID_PUBKEY and
+    // TX_HYBRID_MULTISIG script solutions.
+    virtual bool HaveHybridKeyByLegacyID(const CKeyID &/*keyID*/) const
+    {
+        return false;
+    }
+
     virtual bool GetHybridKey(const CHybridKeyID &/*address*/, CHybridKey &/*keyOut*/) const
     {
         return false;
     }
 
     virtual bool GetHybridKeyByHash(const uint160 &/*keyHash*/, CHybridKey &/*keyOut*/) const
+    {
+        return false;
+    }
+
+    // Look up a hybrid key by its legacy ECDSA public-key hash. mapHybridKeys
+    // is keyed by CHybridKeyID = Hash160(secp || mldsa), which differs from the
+    // CKeyID = Hash160(secp) used in TX_HYBRID_PUBKEY / TX_HYBRID_MULTISIG
+    // script solutions; the caller only has the ECDSA pubkey hash.
+    virtual bool GetHybridKeyByLegacyID(const CKeyID &/*keyID*/, CHybridKey &/*keyOut*/) const
     {
         return false;
     }
@@ -241,6 +260,13 @@ protected:
 
     bool Unlock(const CKeyingMaterial& vMasterKeyIn);
 
+    // In-memory wallet master key. Only valid while the wallet is unlocked
+    // (empty while locked). Callers must hold the wallet/keystore lock.
+    const CKeyingMaterial& GetMasterKey() const
+    {
+        return vMasterKey;
+    }
+
 public:
     CCryptoKeyStore() : fUseCrypto(false)
     {
@@ -251,7 +277,7 @@ public:
         return fUseCrypto;
     }
 
-    bool IsLocked() const
+    virtual bool IsLocked() const
     {
         if (!IsCrypted())
             return false;
@@ -263,7 +289,7 @@ public:
         return result;
     }
 
-    bool Lock();
+    virtual bool Lock();
 
     virtual bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
     bool AddKey(const CKey& key);

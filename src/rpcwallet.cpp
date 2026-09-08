@@ -840,6 +840,64 @@ Value addmultisigaddress(const Array &params, bool fHelp) {
     return(CCoinAddress(innerID).ToString());
 }
 
+Value addhybridmultisigaddress(const Array &params, bool fHelp) {
+
+    if(fHelp || (params.size() < 2) || (params.size() > 3)) {
+        string msg = "addhybridmultisigaddress <n-required> <'[\"hybridpubkey\",\"hybridpubkey\"]'> [account]\n"
+          "Adds an N-required-to-sign hybrid multisignature address to the wallet.\n"
+          "Each key is the hex-encoded serialized hybrid public key (33-byte ECDSA\n"
+          "followed by 1952-byte ML-DSA-65), returned as pubkey_serialized_hex by\n"
+          "'gethybridkey'. The output is wrapped in pay-to-script-hash.\n"
+          "If [account] is specified, assigns the address to it.";
+        throw(runtime_error(msg));
+    }
+
+    int nRequired = params[0].get_int();
+    const Array& keys = params[1].get_array();
+    string strAccount;
+    if (params.size() > 2)
+        strAccount = AccountFromValue(params[2]);
+
+    if(nRequired < 1) {
+        throw(runtime_error("a multisignature address must require at least one key to redeem"));
+    }
+
+    if(nRequired > 16 || (int)keys.size() > 16) {
+        throw(runtime_error("valid hybrid multisignature scripts support at most 16 keys"));
+    }
+
+    if((int)keys.size() < nRequired) {
+        throw(runtime_error(strprintf("not enough keys supplied " \
+          "(got %" PRIszu " keys, but need at least %d to redeem)", keys.size(), nRequired)));
+    }
+
+    std::vector<CHybridPubKey> pubkeys;
+    for (unsigned int i = 0; i < keys.size(); i++)
+    {
+        const std::string& ks = keys[i].get_str();
+
+        if (!IsHex(ks))
+            throw runtime_error(" Invalid hybrid public key (expected hex): "+ks);
+
+        std::vector<unsigned char> data = ParseHex(ks);
+        CHybridPubKey pub = CHybridPubKey::Deserialize(data);
+        if (!pub.IsValid())
+            throw runtime_error(" Invalid hybrid public key: "+ks);
+
+        pubkeys.push_back(pub);
+    }
+
+    CScript inner = GetScriptForHybridMultisig(nRequired, pubkeys);
+    if (inner.empty())
+        throw runtime_error(" Failed to construct hybrid multisig script");
+
+    CScriptID innerID = inner.GetID();
+    pwalletMain->AddCScript(inner);
+
+    pwalletMain->SetAddressBookName(innerID, strAccount);
+    return(CCoinAddress(innerID).ToString());
+}
+
 
 struct tallyitem
 {

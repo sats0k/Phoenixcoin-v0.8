@@ -95,17 +95,32 @@ public:
     bool GetUnusedHybridKey(CHybridKeyID& hybridID);
     bool fFillingKeyPool;
     void LoadHybridKeys();
+    bool DecryptHybridKeys(const CKeyingMaterial& vMasterKey);
     bool ZapWalletTransactions();
+
+    // Builds the at-rest CHybridKeyDisk for hk, encrypting the private
+    // material with the wallet master key when the wallet is encrypted.
+    // Throws if the wallet is encrypted but locked (cannot encrypt).
+    CHybridKeyDisk MakeHybridKeyDisk(const CHybridKey& hk);
 
     std::map<CHybridKeyID, CHybridKey> mapHybridKeys;
     std::map<CHybridKeyID, std::unique_ptr<MLDSASigner>> mapHybridSigners;
     std::set<CHybridKeyID> setUnusedHybridKeys;
 
+    // Encrypted-at-rest hybrid key records for encrypted wallets.
+    // Populated at startup while the wallet is locked; decrypted into
+    // mapHybridKeys/mapHybridSigners on first unlock.
+    std::map<CHybridKeyID, CHybridKeyDisk> mapHybridKeyDisk;
+
     // ===== Hybrid key access methods (override from CKeyStore) =====
     bool HaveHybridKey(const CHybridKeyID &address) const override;
     bool HaveHybridKeyByHash(const uint160 &keyHash) const override;
+    bool HaveHybridKeyByLegacyID(const CKeyID& keyID) const override;
     bool GetHybridKey(const CHybridKeyID &address, CHybridKey &keyOut) const override;
     bool GetHybridKeyByHash(const uint160 &keyHash, CHybridKey &keyOut) const override;
+    bool GetHybridKeyByLegacyID(const CKeyID& keyID, CHybridKey& keyOut) const override;
+    bool GetHybridKeyIDByLegacyKeyID(const CKeyID& keyID,
+                                     CHybridKeyID& hybridID) const;
 
     bool fFileBacked;
     std::string strWalletFile;
@@ -197,6 +212,7 @@ public:
     /* Adds a watch only address to the store without saving it to disk (used by LoadWallet) */
     bool LoadWatchOnly(const CScript &dest);
 
+    bool Lock() override;
     bool Unlock(const SecureString& strWalletPassphrase);
     bool ChangeWalletPassphrase(const SecureString& strOldWalletPassphrase, const SecureString& strNewWalletPassphrase);
     bool EncryptWallet(const SecureString& strWalletPassphrase);

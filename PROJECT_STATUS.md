@@ -26,6 +26,10 @@ Implemented components include:
 - Hybrid address book support
 - Hybrid key persistence in `wallet.dat`
 - Hybrid transaction creation and coin selection support
+- Hybrid multisig P2SH wallet spends
+- Partial-signature combining for hybrid multisig (`CombineSignatures`)
+- Encrypted-wallet hybrid key persistence and plaintext-to-encrypted migration
+- `addhybridmultisigaddress` RPC for creating N-of-M hybrid multisig P2SH addresses
 
 ## Verification
 
@@ -43,6 +47,31 @@ Testing on a fresh Quantum blockchain confirms that:
 - Multiple hybrid transactions can be included in the same block.
 - Hybrid transactions propagate and validate normally across the network.
 - Hybrid transactions are mined successfully by both internal and external miners.
+
+## Automated Test Suite
+
+`src/test/hybrid_multisig_tests.cpp` provides a unit/regression suite (12 test cases) covering:
+
+- Hybrid multisig IsMine and spend generation
+- Hybrid multisig P2SH spends
+- Hybrid signature-hash types
+- Encrypted-locked-wallet hybrid output recognition (`IsMine`)
+- Disjoint partial-signature combining into a redeemable script
+- m-of-n signature combination matrix (1/2/3-of-3, plus under-signed negative cases)
+- Signature pair ordering enforcement and cross-key mismatch rejection
+- Missing, malformed, and extra signature argument rejection
+- Wallet unlock failures keeping the wallet locked
+- Hybrid-key plaintext-to-encrypted serialization migration
+- Hybrid multisig script size limits (n-required and key-count bounds)
+- Combination rejecting signature pairs with valid ECDSA but invalid ML-DSA halves
+
+Build and run with:
+
+```bash
+cd src
+make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
+./test_phoenixcoin
+```
 
 ## Consensus
 
