@@ -1573,11 +1573,24 @@ string CWallet::SendMoneyToDestination(const CTxDestination& address, int64 nVal
         {
             LOCK(cs_wallet);
 
-            std::map<CHybridKeyID, CHybridKey>::const_iterator it =
-                mapHybridKeys.find(CHybridKeyID(*pKeyID));
-
-            if (it != mapHybridKeys.end())
+            // Convert the legacy CKeyID (=Hash160(secp)) into its hybrid
+            // CHybridKeyID (=Hash160(secp || mldsa)) by matching the legacy
+            // id against the wallet's hybrid keys. The direct cast
+            // CHybridKeyID(*pKeyID) would NOT convert the id correctly.
+            CHybridKeyID hybridID;
+            if (!GetHybridKeyIDByLegacyKeyID(*pKeyID, hybridID))
             {
+                // Legacy address (no matching hybrid key)
+                scriptPubKey.SetDestination(address);
+            }
+            else
+            {
+                std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+                    mapHybridKeys.find(hybridID);
+
+                if (it == mapHybridKeys.end())
+                    return "Error: hybrid key not found.";
+
                 std::unique_ptr<MLDSASigner> signer =
                     GetSignerFromKey(it->second);
 
@@ -1589,11 +1602,6 @@ string CWallet::SendMoneyToDestination(const CTxDestination& address, int64 nVal
                     signer->GetPublicKey());
 
                 scriptPubKey = GetScriptForHybridPubKey(hybridPub);
-            }
-            else
-            {
-                // Legacy address
-                scriptPubKey.SetDestination(address);
             }
         }
         else
