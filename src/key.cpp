@@ -113,7 +113,7 @@ static EVP_PKEY* MakePKeyFromSecret(const unsigned char* secret,
     }
 
     unsigned char bn_buf[32];
-    BN_bn2binpad(bn, bn_buf, sizeof(bn_buf));
+    BN_bn2nativepad(bn, bn_buf, sizeof(bn_buf));
     OSSL_PARAM params[] = {
         OSSL_PARAM_utf8_string(OSSL_PKEY_PARAM_GROUP_NAME, (char*)"secp256k1",
                                0),
