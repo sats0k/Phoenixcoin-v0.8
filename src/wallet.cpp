@@ -1826,7 +1826,7 @@ bool GetWalletFile(CWallet* pwallet, string &strWalletFileOut)
 // Mark old keypool keys as used,
 // and generate all new keys
 //
-bool CWallet::NewKeyPool()
+bool CWallet::NewKeyPool(unsigned int nSize)
 {
     {
         LOCK(cs_wallet);
@@ -1838,7 +1838,8 @@ bool CWallet::NewKeyPool()
         if (IsLocked())
             return false;
 
-        int64 nKeys = max(GetArg("-keypool", 100), (int64)0);
+        int64 nKeys = nSize > 0 ? (int64)nSize
+                                : max(GetArg("-keypool", 100), (int64)0);
         for (int i = 0; i < nKeys; i++)
         {
             int64 nIndex = i+1;

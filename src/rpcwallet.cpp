@@ -1405,14 +1405,21 @@ Value backupwallet(const Array &params, bool fHelp) {
 
 Value keypoolrefill(const Array &params, bool fHelp) {
 
-    if(fHelp || (params.size() > 0)) {
-        string msg = "keypoolrefill\n"
-          "Tops up the pool of ready-for-use private and public key pairs."
+    if(fHelp || (params.size() > 1)) {
+        string msg = "keypoolrefill (<newsize>)\n"
+          "Fills the keypool with <newsize> new keys.\n"
+          "If <newsize> is omitted, the pool is topped up to the -keypool size."
           + HelpRequiringPassphrase();
         throw(runtime_error(msg));
     }
 
     EnsureWalletIsUnlocked();
+
+    if (params.size() > 0) {
+        int64 nSize = params[0].get_int64();
+        if (nSize > 0)
+            pwalletMain->NewKeyPool((unsigned int)nSize);
+    }
 
     pwalletMain->TopUpKeyPool();
 
