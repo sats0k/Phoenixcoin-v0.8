@@ -37,20 +37,33 @@ static secp256k1_context* g_secp256k1_verify_ctx = [] {
     return ctx;
 }();
 
-static thread_local secp256k1_context* g_secp256k1_sign_ctx = [] {
-    auto* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
-    if (!ctx)
-        throw std::runtime_error("Failed to create secp256k1 sign context");
+// Per-thread sign context, owned. The destructor frees the context when its
+// thread exits, so terminating threads do not leak the allocation.
+struct Secp256k1SignContext {
+    secp256k1_context* const ctx;
 
-    unsigned char seed[32];
-    if (RAND_bytes(seed, sizeof(seed)) != 1)
-        throw std::runtime_error("RAND_bytes failed");
+    Secp256k1SignContext() : ctx(make_ctx()) {}
+    ~Secp256k1SignContext() { secp256k1_context_destroy(ctx); }
 
-    if (!secp256k1_context_randomize(ctx, seed))
-        throw std::runtime_error("Failed to randomize secp256k1 sign context");
+    operator secp256k1_context*() const { return ctx; }
 
-    return ctx;
-}();
+    static secp256k1_context* make_ctx() {
+        auto* context = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+        if (!context)
+            throw std::runtime_error("Failed to create secp256k1 sign context");
+
+        unsigned char seed[32];
+        if (RAND_bytes(seed, sizeof(seed)) != 1)
+            throw std::runtime_error("RAND_bytes failed");
+
+        if (!secp256k1_context_randomize(context, seed))
+            throw std::runtime_error("Failed to randomize secp256k1 sign context");
+
+        return context;
+    }
+};
+
+static thread_local Secp256k1SignContext g_secp256k1_sign_ctx;
 
 /* ---------- Forward declarations ---------- */
 
