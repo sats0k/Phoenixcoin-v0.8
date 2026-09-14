@@ -30,6 +30,7 @@
 #include "util.h"
 #include "main.h"
 #include "rpcmain.h"
+#include "hs/rpchybrid.h"
 
 using namespace std;
 using namespace boost;

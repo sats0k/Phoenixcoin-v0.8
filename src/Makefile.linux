@@ -134,6 +134,9 @@ OBJS = \
     obj/hybrid_verify.o \
     obj/wallethybrid.o \
     obj/wallet_hybrid_address.o \
+    obj/hybrid_consensus.o \
+    obj/walletdb_hybrid.o \
+    obj/rpchybrid.o \
     obj/neoscrypt.o \
     obj/neoscrypt_asm.o \
     obj/ecies.o \
@@ -181,6 +184,15 @@ obj/wallethybrid.o: hs/wallethybrid.cpp
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 obj/wallet_hybrid_address.o: hs/wallet_hybrid_address.cpp
+	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
+
+obj/hybrid_consensus.o: hs/hybrid_consensus.cpp
+	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
+
+obj/walletdb_hybrid.o: hs/walletdb_hybrid.cpp
+	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
+
+obj/rpchybrid.o: hs/rpchybrid.cpp
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 phoenixcoind: $(OBJS:obj/%=obj/%)

@@ -29,11 +29,6 @@ using namespace boost;
 
 extern CWallet *pwalletMain;
 
-bool IsHybridConsensusActive()
-{
-    return nBestHeight >= HYBRID_ACTIVATION_HEIGHT;
-}
-
 //
 // Global state
 //
