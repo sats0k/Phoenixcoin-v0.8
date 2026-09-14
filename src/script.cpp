@@ -1527,7 +1527,9 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
                 }
             }
 
-            int n = fKeys ? 0 : CScript::DecodeOP_N(opcode);
+            int n = 0;
+            if (!fKeys && opcode >= OP_1 && opcode <= OP_16)
+                n = CScript::DecodeOP_N(opcode);
             if (n >= 1 && keys.size() % 2 == 0 &&
                 keys.size() / 2 == (size_t)n &&
                 scriptPubKey.GetOp(pc, opcode) &&
