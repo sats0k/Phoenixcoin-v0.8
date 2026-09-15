@@ -211,6 +211,7 @@ TESTOBJS := \
     obj-test/DoS_tests.o \
     obj-test/getarg_tests.o \
     obj-test/key_tests.o \
+    obj-test/miner_tests.o \
     obj-test/mruset_tests.o \
     obj-test/netbase_tests.o \
     obj-test/rpc_tests.o \

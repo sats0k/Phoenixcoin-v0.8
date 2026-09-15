@@ -24,6 +24,7 @@ Checkpoints_tests.cpp
 DoS_tests.cpp
 getarg_tests.cpp
 key_tests.cpp
+miner_tests.cpp
 mruset_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
@@ -90,12 +91,17 @@ Walkthrough of the legacy test sources that were restored:
   checkpoint data in the test is Bitcoin blockchain data) and adapts the
   `-maxsigcachesize` block to deterministic RFC6979 signatures: re-signing
   now reproduces the identical `scriptSig` instead of a distinct one.
+- `miner_tests.cpp` was rewritten for Phoenixcoin: the original Bitcoin
+  PoW nonce table and `SHA256Transform` check depended on the SHA256
+  mining engine that was replaced by NeoScrypt, and `CreateNewBlock`
+  requires a live chain (it self-validates via `ConnectBlock`), so it is
+  not exercisable in the unit-test environment. The suite now verifies the
+  fork-based `GetProofOfWorkReward` / `GetMoneySupply` schedule (including
+  the bit-shift halving every 1M blocks) for mainnet and testnet, and
+  exercises `IncrementExtraNonce` without a chain.
 
 The following legacy test sources are intentionally not enabled:
 
-- `miner_tests.cpp` - depends on Bitcoin-era PoW nonces, `ProcessBlock`
-  against a live chain state, and Bitcoin-specific subsidy heights; it is
-  incompatible with Phoenixcoin's NeoScrypt mining.
 - `multisig_tests.cpp`, `script_tests.cpp`, `script_P2SH_tests.cpp`,
   `sigopcount_tests.cpp`, `transaction_tests.cpp` - compile but crash or
   fail at runtime against the current script engine (which was reworked
@@ -143,7 +149,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 58 test cases...
+Running 63 test cases...
 
 *** No errors detected
 ```
