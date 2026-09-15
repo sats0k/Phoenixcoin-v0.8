@@ -76,6 +76,10 @@ public:
     {
         return (exp_addrType == "none");
     }
+    bool operator()(const CHybridKeyID &id) const
+    {
+        return (exp_addrType == "hybrid");
+    }
 };
 
 // Visitor to check address payload
@@ -98,6 +102,11 @@ public:
     bool operator()(const CNoDestination &no) const
     {
         return exp_payload.size() == 0;
+    }
+    bool operator()(const CHybridKeyID &id) const
+    {
+        uint160 exp_key(exp_payload);
+        return exp_key == id;
     }
 };
 

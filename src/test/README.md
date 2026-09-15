@@ -14,7 +14,27 @@ The currently enabled test sources are:
 ```
 test_bitcoin.cpp
 hybrid_multisig_tests.cpp
+accounting_tests.cpp
+allocator_tests.cpp
+base32_tests.cpp
+base58_tests.cpp
+base64_tests.cpp
+bignum_tests.cpp
+Checkpoints_tests.cpp
+getarg_tests.cpp
+key_tests.cpp
+mruset_tests.cpp
+netbase_tests.cpp
+rpc_tests.cpp
+uint160_tests.cpp
+uint256_tests.cpp
+util_tests.cpp
+wallet_tests.cpp
+testutil.cpp
 ```
+
+`testutil.cpp` provides shared helpers (e.g. `read_json`) for the data
+driven tests.
 
 `hybrid_multisig_tests.cpp` contains tests for the hybrid multisignature
 implementation: sighash types, `IsMine` detection and direct spending of
@@ -47,9 +67,35 @@ candidate pair to verify (`VerifyHybridSignature`) before accepting it, so
 a pair with a valid ECDSA but invalid ML-DSA signature is never propagated
 into the combined scriptSig.
 
-Legacy test sources from the original Bitcoin/Phoenixcoin test suite
-are not currently enabled because they depend on interfaces or wallet
-behavior that have changed in the current codebase.
+Walkthrough of the legacy test sources that were restored:
+
+- `accounting_tests.cpp` needed an `extern CWallet* pwalletMain;`
+  declaration (the global is defined in `test_bitcoin.cpp`).
+- `base58_tests.cpp` gained `CHybridKeyID` overloads for its two visitors,
+  and the `base58_keys_valid.json` / `base58_encode_decode.json` data were
+  re-encoded from Bitcoin mainnet prefixes to Phoenixcoin prefixes
+  (`0x38`/`0x3F`/`0x6F`/`0x34` and private-key `0xB8`/`0xEF`).
+- `bignum_tests.cpp` was updated from the removed `setulong()` to the
+  current `setuint()`.
+- `Checkpoints_tests.cpp` was rewritten for the current `CheckHardened`
+  checkpoint API using real Phoenixcoin checkpoint heights.
+- `key_tests.cpp` uses Phoenixcoin base58 secret/address vectors (the
+  codebase always serializes public keys compressed).
+- `rpc_tests.cpp` includes `rpcmain.h` (the old `rpc.h` header is gone).
+- `wallet_tests.cpp` passes the new `fSpendable` argument to the
+  `COutput` constructor.
+
+The following legacy test sources are intentionally not enabled:
+
+- `DoS_tests.cpp` - depends on `ComputeMinWork`, which has been removed
+  from the base code.
+- `miner_tests.cpp` - depends on Bitcoin-era PoW nonces, `ProcessBlock`
+  against a live chain state, and Bitcoin-specific subsidy heights; it is
+  incompatible with Phoenixcoin's NeoScrypt mining.
+- `multisig_tests.cpp`, `script_tests.cpp`, `script_P2SH_tests.cpp`,
+  `sigopcount_tests.cpp`, `transaction_tests.cpp` - compile but crash or
+  fail at runtime against the current script engine (which was reworked
+  for hybrid multisig); fixing them would require base code changes.
 
 ## Building the tests
 
@@ -90,10 +136,10 @@ Run one specific test case, for example the P2SH spend test:
 ./test_phoenixcoin --run_test=hybrid_multisig_p2sh_ismine_and_spend
 ```
 
-A successful hybrid test run should report:
+A successful test run should report:
 
 ```
-Running 12 test cases...
+Running 52 test cases...
 
 *** No errors detected
 ```
@@ -119,8 +165,9 @@ BOOST_AUTO_TEST_CASE(my_test)
 BOOST_AUTO_TEST_SUITE_END()
 ```
 
-When adding a test source to the build, add its corresponding object to
-`TESTOBJS` in `src/Makefile.linux`.
+When adding a test source, add its corresponding object to `TESTOBJS`
+in `src/Makefile.linux` and perform a clean build (see above), since test
+objects are only rebuilt when their headers change.
 
 For example:
 

@@ -6,6 +6,8 @@
 #include "wallet.h"
 #include "walletdb.h"
 
+extern CWallet* pwalletMain;
+
 BOOST_AUTO_TEST_SUITE(accounting_tests)
 
 static void

@@ -10,14 +10,14 @@
 
 using namespace std;
 
-static const string strSecret1  ("5HxWvvfubhXpYYpS3tJkw6fq9jE9j18THftkZjHHfmFiWtmAbrj");
-static const string strSecret2  ("5KC4ejrDjv152FGwP386VD1i2NYc5KkfSMyv1nGy1VGDxGHqVY3");
-static const string strSecret1C ("Kwr371tjA9u2rFSMZjTNun2PXXP3WPZu2afRHTcta6KxEUdm1vEw");
-static const string strSecret2C ("L3Hq7a8FEQwJkW1M2GNKDW28546Vp5miewcCzSqUD9kCAXrJdS3g");
-static const CCoinAddress addr1 ("1QFqqMUD55ZV3PJEJZtaKCsQmjLT6JkjvJ");
-static const CCoinAddress addr2 ("1F5y5E5FMc5YzdJtB9hLaUe43GDxEKXENJ");
-static const CCoinAddress addr1C("1NoJrossxPBKfCHuJXT4HadJrXRE9Fxiqs");
-static const CCoinAddress addr2C("1CRj2HyM1CXWzHAXLQtiGLyggNT9WQqsDs");
+static const string strSecret1  ("7ApCouohKXQW6VMvpM4iM4FCS7iN8SKVMTrnE7oVLTdS9dyA7yb");
+static const string strSecret2  ("7C3kXiz1TjskaBpS9Vt3uAb5Jm2pUkwhW9wwgAoAgBdwb2FCLGH");
+static const string strSecret1C ("UEKM8456xmCjREBNXyZPVXKfTrdaFpkc9KYicu2C4tXp11ohovtP");
+static const string strSecret2C ("UKm98cJd32F1KUkMzWUKoFKQ1PM2ZWxRmgVWKtEmhwx3w51SKzUc");
+static const CCoinAddress addr1 ("Puj5zta1iV8PTU6kg26uSbsN6mr3xSfmrt");
+static const CCoinAddress addr2 ("PjMWANfUmJUanYyNhuYZRNDjvcsyMAfXy6");
+static const CCoinAddress addr1C("Puj5zta1iV8PTU6kg26uSbsN6mr3xSfmrt");
+static const CCoinAddress addr2C("PjMWANfUmJUanYyNhuYZRNDjvcsyMAfXy6");
 
 
 static const string strAddressBad("1HV9Lc3sNHZxwj4Zk6fB38tEmBryq2cBiF");

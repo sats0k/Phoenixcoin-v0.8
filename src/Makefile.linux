@@ -200,7 +200,24 @@ phoenixcoind: $(OBJS:obj/%=obj/%)
 
 TESTOBJS := \
     obj-test/test_bitcoin.o \
-    obj-test/hybrid_multisig_tests.o
+    obj-test/hybrid_multisig_tests.o \
+    obj-test/accounting_tests.o \
+    obj-test/allocator_tests.o \
+    obj-test/base32_tests.o \
+    obj-test/base58_tests.o \
+    obj-test/base64_tests.o \
+    obj-test/bignum_tests.o \
+    obj-test/Checkpoints_tests.o \
+    obj-test/getarg_tests.o \
+    obj-test/key_tests.o \
+    obj-test/mruset_tests.o \
+    obj-test/netbase_tests.o \
+    obj-test/rpc_tests.o \
+    obj-test/uint160_tests.o \
+    obj-test/uint256_tests.o \
+    obj-test/util_tests.o \
+    obj-test/testutil.o \
+    obj-test/wallet_tests.o
 
 obj-test/%.o: test/%.cpp
 	$(CXX) -c $(CXXFLAGS) $(DEFS) $(TESTDEFS) $(INCS) -MMD -MF $(@:%.o=%.d) -o $@ $<

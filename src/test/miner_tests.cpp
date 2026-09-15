@@ -8,6 +8,8 @@
 
 extern void SHA256Transform(void* pstate, void* pinput, const void* pinit);
 
+extern CWallet* pwalletMain;
+
 BOOST_AUTO_TEST_SUITE(miner_tests)
 
 static
