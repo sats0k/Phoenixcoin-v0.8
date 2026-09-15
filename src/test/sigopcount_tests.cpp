@@ -37,15 +37,18 @@ BOOST_AUTO_TEST_CASE(GetSigOpCount)
     scriptSig << OP_0 << Serialize(s1);
     BOOST_CHECK_EQUAL(p2sh.GetSigOpCount(scriptSig), 3);
 
-    std::vector<CKey> keys;
+    // SetMultisig takes a vector<CKey> by const reference, but CKey holds a
+    // raw EVP_PKEY* with a freeing destructor and no copy semantics, so
+    // building the vector copies (and double-frees) the keys. Construct the
+    // 1-of-3 multisig script manually instead.
+    CKey key[3];
     for (int i = 0; i < 3; i++)
-    {
-        CKey k;
-        k.MakeNewKey(true);
-        keys.push_back(k);
-    }
+        key[i].MakeNewKey(true);
     CScript s2;
-    s2.SetMultisig(1, keys);
+    s2 << CScript::EncodeOP_N(1);
+    for (int i = 0; i < 3; i++)
+        s2 << key[i].GetPubKey();
+    s2 << CScript::EncodeOP_N(3) << OP_CHECKMULTISIG;
     BOOST_CHECK_EQUAL(s2.GetSigOpCount(true), 3);
     BOOST_CHECK_EQUAL(s2.GetSigOpCount(false), 20);
 

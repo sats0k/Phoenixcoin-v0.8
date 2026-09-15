@@ -216,6 +216,7 @@ TESTOBJS := \
     obj-test/multisig_tests.o \
     obj-test/netbase_tests.o \
     obj-test/rpc_tests.o \
+    obj-test/sigopcount_tests.o \
     obj-test/uint160_tests.o \
     obj-test/uint256_tests.o \
     obj-test/util_tests.o \

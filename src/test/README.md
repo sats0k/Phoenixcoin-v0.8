@@ -29,6 +29,7 @@ mruset_tests.cpp
 multisig_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
+sigopcount_tests.cpp
 uint160_tests.cpp
 uint256_tests.cpp
 util_tests.cpp
@@ -105,13 +106,17 @@ Walkthrough of the legacy test sources that were restored:
   semantics, so passing by value caused double-frees) and by adding a
   minimal-DER-sig length guard in `CheckSig` to prevent a secp256k1 abort
   on non-signature values (e.g. the OP_1 data push).
+- `sigopcount_tests.cpp` had the same `CKey` copy/double-free issue in its
+  `vector<CKey>` construction; the 1-of-3 multisig script is now built
+  directly from a `CKey` array (only public keys are serialized), avoiding
+  the intermediate vector.
 
 The following legacy test sources are intentionally not enabled:
 
-- `script_tests.cpp`, `script_P2SH_tests.cpp`, `sigopcount_tests.cpp`,
-  `transaction_tests.cpp` - compile but crash or fail at runtime against
-  the current script engine (which was reworked for hybrid multisig);
-  fixing them would require base code changes.
+- `script_tests.cpp`, `script_P2SH_tests.cpp`, `transaction_tests.cpp` -
+  compile but crash or fail at runtime against the current script engine
+  (which was reworked for hybrid multisig); fixing them would require
+  base code changes.
 
 ## Building the tests
 
@@ -155,7 +160,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 67 test cases...
+Running 68 test cases...
 
 *** No errors detected
 ```
