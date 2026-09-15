@@ -1400,6 +1400,10 @@ bool CheckSig(const std::vector<unsigned char>& vchSig,
     // Remove sighash byte.
     std::vector<unsigned char> sig(vchSig.begin(), vchSig.end() - 1);
 
+    // A minimal DER-encoded ECDSA signature is 8 bytes.
+    if (sig.size() < 8)
+        return false;
+
     // Compute transaction sighash unless the caller already has it.
     uint256 sighash;
     if (precomputedSighash)

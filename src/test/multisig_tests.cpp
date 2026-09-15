@@ -25,17 +25,18 @@ extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, 
 
 BOOST_AUTO_TEST_SUITE(multisig_tests)
 
-CScript
-sign_multisig(CScript scriptPubKey, vector<CKey> keys, CTransaction transaction, int whichIn)
+// Build a 1-of-1 multisig scriptSig using the raw keys (no CKey copies).
+static CScript sign_multisig(CScript scriptPubKey, CKey* keys[], unsigned int nKeys,
+                             CTransaction transaction, int whichIn)
 {
     uint256 hash = SignatureHash(scriptPubKey, transaction, whichIn, SIGHASH_ALL);
 
     CScript result;
     result << OP_0; // CHECKMULTISIG bug workaround
-    BOOST_FOREACH(CKey key, keys)
+    for (unsigned int i = 0; i < nKeys; i++)
     {
         vector<unsigned char> vchSig;
-        BOOST_CHECK(key.Sign(hash, vchSig));
+        BOOST_CHECK(keys[i]->Sign(hash, vchSig));
         vchSig.push_back((unsigned char)SIGHASH_ALL);
         result << vchSig;
     }
@@ -73,34 +74,34 @@ BOOST_AUTO_TEST_CASE(multisig_verify)
         txTo[i].vout[0].nValue = 1;
     }
 
-    vector<CKey> keys;
     CScript s;
 
     // Test a AND b:
-    keys.clear();
-    keys += key[0],key[1]; // magic operator+= from boost.assign
-    s = sign_multisig(a_and_b, keys, txTo[0], 0);
-    BOOST_CHECK(VerifyScript(s, a_and_b, txTo[0], 0, true, 0));
+    {
+        CKey* k[] = { &key[0], &key[1] };
+        s = sign_multisig(a_and_b, k, 2, txTo[0], 0);
+        BOOST_CHECK(VerifyScript(s, a_and_b, txTo[0], 0, true, 0));
+    }
 
     for (int i = 0; i < 4; i++)
     {
-        keys.clear();
-        keys += key[i];
-        s = sign_multisig(a_and_b, keys, txTo[0], 0);
-        BOOST_CHECK_MESSAGE(!VerifyScript(s, a_and_b, txTo[0], 0, true, 0), strprintf("a&b 1: %d", i));
-
-        keys.clear();
-        keys += key[1],key[i];
-        s = sign_multisig(a_and_b, keys, txTo[0], 0);
-        BOOST_CHECK_MESSAGE(!VerifyScript(s, a_and_b, txTo[0], 0, true, 0), strprintf("a&b 2: %d", i));
+        {
+            CKey* k[] = { &key[i] };
+            s = sign_multisig(a_and_b, k, 1, txTo[0], 0);
+            BOOST_CHECK_MESSAGE(!VerifyScript(s, a_and_b, txTo[0], 0, true, 0), strprintf("a&b 1: %d", i));
+        }
+        {
+            CKey* k[] = { &key[1], &key[i] };
+            s = sign_multisig(a_and_b, k, 2, txTo[0], 0);
+            BOOST_CHECK_MESSAGE(!VerifyScript(s, a_and_b, txTo[0], 0, true, 0), strprintf("a&b 2: %d", i));
+        }
     }
 
     // Test a OR b:
     for (int i = 0; i < 4; i++)
     {
-        keys.clear();
-        keys += key[i];
-        s = sign_multisig(a_or_b, keys, txTo[1], 0);
+        CKey* k[] = { &key[i] };
+        s = sign_multisig(a_or_b, k, 1, txTo[1], 0);
         if (i == 0 || i == 1)
             BOOST_CHECK_MESSAGE(VerifyScript(s, a_or_b, txTo[1], 0, true, 0), strprintf("a|b: %d", i));
         else
@@ -117,9 +118,8 @@ BOOST_AUTO_TEST_CASE(multisig_verify)
     for (int i = 0; i < 4; i++)
         for (int j = 0; j < 4; j++)
         {
-            keys.clear();
-            keys += key[i],key[j];
-            s = sign_multisig(escrow, keys, txTo[2], 0);
+            CKey* k[] = { &key[i], &key[j] };
+            s = sign_multisig(escrow, k, 2, txTo[2], 0);
             if (i < j && i < 3 && j < 3)
                 BOOST_CHECK_MESSAGE(VerifyScript(s, escrow, txTo[2], 0, true, 0), strprintf("escrow 1: %d %d", i, j));
             else

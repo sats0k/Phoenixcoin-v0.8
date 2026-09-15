@@ -26,6 +26,7 @@ getarg_tests.cpp
 key_tests.cpp
 miner_tests.cpp
 mruset_tests.cpp
+multisig_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
 uint160_tests.cpp
@@ -99,13 +100,18 @@ Walkthrough of the legacy test sources that were restored:
   fork-based `GetProofOfWorkReward` / `GetMoneySupply` schedule (including
   the bit-shift halving every 1M blocks) for mainnet and testnet, and
   exercises `IncrementExtraNonce` without a chain.
+- `multisig_tests.cpp` was fixed by avoiding implicit `CKey` copies
+  (`CKey` holds a raw `EVP_PKEY*` with a freeing destructor and no copy
+  semantics, so passing by value caused double-frees) and by adding a
+  minimal-DER-sig length guard in `CheckSig` to prevent a secp256k1 abort
+  on non-signature values (e.g. the OP_1 data push).
 
 The following legacy test sources are intentionally not enabled:
 
-- `multisig_tests.cpp`, `script_tests.cpp`, `script_P2SH_tests.cpp`,
-  `sigopcount_tests.cpp`, `transaction_tests.cpp` - compile but crash or
-  fail at runtime against the current script engine (which was reworked
-  for hybrid multisig); fixing them would require base code changes.
+- `script_tests.cpp`, `script_P2SH_tests.cpp`, `sigopcount_tests.cpp`,
+  `transaction_tests.cpp` - compile but crash or fail at runtime against
+  the current script engine (which was reworked for hybrid multisig);
+  fixing them would require base code changes.
 
 ## Building the tests
 
@@ -149,7 +155,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 63 test cases...
+Running 67 test cases...
 
 *** No errors detected
 ```
