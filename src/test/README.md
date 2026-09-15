@@ -29,6 +29,7 @@ mruset_tests.cpp
 multisig_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
+script_tests.cpp
 sigopcount_tests.cpp
 transaction_tests.cpp
 uint160_tests.cpp
@@ -122,12 +123,22 @@ Walkthrough of the legacy test sources that were restored:
   Bitcoin's 100-byte coinbase scriptSig limit, which Phoenixcoin raises to
   200000 bytes. `ParseScript` was moved into `testutil.cpp` so the shared
   helper is available to both enabled data-driven suites.
+- `script_tests.cpp` drives the standard Bitcoin `script_valid.json` /
+  `script_invalid.json` vectors plus real multisig and `CombineSignatures`
+  round trips. Its `sign_multisig`/CHECKMULTISIG cases were converted to
+  the pointer-based `CKey*` pattern (no `vector<CKey>` copies, see the
+  `multisig_tests` note), the `SetMultisig` call in the combine test was
+  replaced by an equivalent manual script build, and the duplicate
+  `ParseScript`/`read_json` definitions were removed in favour of the
+  shared helpers in `testutil.cpp`. The `>520 byte push` and `10,001-byte
+  scriptPubKey` `script_invalid` vectors were removed because Phoenixcoin's
+  `MAX_SCRIPT_ELEMENT_SIZE` is 66000 bytes rather than Bitcoin's 520.
 
 The following legacy test sources are intentionally not enabled:
 
-- `script_tests.cpp`, `script_P2SH_tests.cpp` - compile but crash or fail
-  at runtime against the current script engine (which was reworked for
-  hybrid multisig); fixing them may require base code changes.
+- `script_P2SH_tests.cpp` - compile but crash or fail at runtime against
+  the current script engine (which was reworked for hybrid multisig);
+  fixing it may require base code changes.
 
 ## Building the tests
 
@@ -171,7 +182,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 73 test cases...
+Running 79 test cases...
 
 *** No errors detected
 ```
