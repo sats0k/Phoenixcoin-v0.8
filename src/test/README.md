@@ -30,6 +30,7 @@ multisig_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
 sigopcount_tests.cpp
+transaction_tests.cpp
 uint160_tests.cpp
 uint256_tests.cpp
 util_tests.cpp
@@ -110,13 +111,23 @@ Walkthrough of the legacy test sources that were restored:
   `vector<CKey>` construction; the 1-of-3 multisig script is now built
   directly from a `CKey` array (only public keys are serialized), avoiding
   the intermediate vector.
+- `transaction_tests.cpp` uses the Bitcoin consensus-vector JSON data with
+  vectors that do not apply to Phoenixcoin removed: the `23b397ed` and
+  `f7fdd091` transactions carry non-minimal DER signatures (integer
+  components with the high bit set without a leading zero byte) that
+  Bitcoin's historical OpenSSL verifier accepted but the current
+  libsecp256k1 parser rejects; and the Bitcoin `MAX_MONEY` output vectors
+  exceed Phoenixcoin's `MAX_MONEY`, so they are invalid outputs rather than
+  boundary-valid ones. The `tx_invalid` coinbase-size vectors relied on
+  Bitcoin's 100-byte coinbase scriptSig limit, which Phoenixcoin raises to
+  200000 bytes. `ParseScript` was moved into `testutil.cpp` so the shared
+  helper is available to both enabled data-driven suites.
 
 The following legacy test sources are intentionally not enabled:
 
-- `script_tests.cpp`, `script_P2SH_tests.cpp`, `transaction_tests.cpp` -
-  compile but crash or fail at runtime against the current script engine
-  (which was reworked for hybrid multisig); fixing them would require
-  base code changes.
+- `script_tests.cpp`, `script_P2SH_tests.cpp` - compile but crash or fail
+  at runtime against the current script engine (which was reworked for
+  hybrid multisig); fixing them may require base code changes.
 
 ## Building the tests
 
@@ -160,7 +171,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 68 test cases...
+Running 73 test cases...
 
 *** No errors detected
 ```
