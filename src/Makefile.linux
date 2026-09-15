@@ -208,6 +208,7 @@ TESTOBJS := \
     obj-test/base64_tests.o \
     obj-test/bignum_tests.o \
     obj-test/Checkpoints_tests.o \
+    obj-test/DoS_tests.o \
     obj-test/getarg_tests.o \
     obj-test/key_tests.o \
     obj-test/mruset_tests.o \

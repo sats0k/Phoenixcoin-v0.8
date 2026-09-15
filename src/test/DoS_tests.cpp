@@ -21,6 +21,35 @@ extern unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans);
 extern std::map<uint256, CDataStream*> mapOrphanTransactions;
 extern std::map<uint256, std::map<uint256, CDataStream*> > mapOrphanTransactionsByPrev;
 
+// ComputeMinWork used to live in main.cpp (see Bitcoin v0.6.x). It was dropped
+// when the Phoenixcoin difficulty algorithm was reworked into its phased form.
+// It is replicated here verbatim with its original (Bitcoin-era) parameters so
+// the checkpoint sanity checks below keep their original meaning.
+static const int64 nPoWTargetTimespan = 14 * 24 * 60 * 60; // two weeks
+static const int64 nPoWTargetSpacing = 10 * 60;
+static const CBigNum bnPoWLimit(~uint256(0) >> 32);
+
+static unsigned int ComputeMinWork(unsigned int nBase, int64 nTime)
+{
+    // Testnet has min-difficulty blocks
+    // after nTargetSpacing*2 time between blocks:
+    if (fTestNet && nTime > nPoWTargetSpacing*2)
+        return bnPoWLimit.GetCompact();
+
+    CBigNum bnResult;
+    bnResult.SetCompact(nBase);
+    while (nTime > 0 && bnResult < bnPoWLimit)
+    {
+        // Maximum 400% adjustment...
+        bnResult *= 4;
+        // ... in best-case exactly 4-times-normal target time
+        nTime -= nPoWTargetTimespan*4;
+    }
+    if (bnResult > bnPoWLimit)
+        bnResult = bnPoWLimit;
+    return bnResult.GetCompact();
+}
+
 CService ip(uint32_t i)
 {
     struct in_addr s;
@@ -300,10 +329,11 @@ BOOST_AUTO_TEST_CASE(DoS_checkSig)
 
     // Exercise -maxsigcachesize code:
     mapArgs["-maxsigcachesize"] = "10";
-    // Generate a new, different signature for vin[0] to trigger cache clear:
+    // Re-sign vin[0]. Signatures are deterministic (RFC6979), so the
+    // reproduced scriptSig must be identical to the one that was there.
     CScript oldSig = tx.vin[0].scriptSig;
     BOOST_CHECK(SignSignature(keystore, orphans[0], tx, 0));
-    BOOST_CHECK(tx.vin[0].scriptSig != oldSig);
+    BOOST_CHECK(tx.vin[0].scriptSig == oldSig);
     for (unsigned int j = 0; j < tx.vin.size(); j++)
         BOOST_CHECK(VerifySignature(orphans[j], tx, j, true, SIGHASH_ALL));
     mapArgs.erase("-maxsigcachesize");

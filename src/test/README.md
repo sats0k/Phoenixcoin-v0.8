@@ -21,6 +21,7 @@ base58_tests.cpp
 base64_tests.cpp
 bignum_tests.cpp
 Checkpoints_tests.cpp
+DoS_tests.cpp
 getarg_tests.cpp
 key_tests.cpp
 mruset_tests.cpp
@@ -84,11 +85,14 @@ Walkthrough of the legacy test sources that were restored:
 - `rpc_tests.cpp` includes `rpcmain.h` (the old `rpc.h` header is gone).
 - `wallet_tests.cpp` passes the new `fSpendable` argument to the
   `COutput` constructor.
+- `DoS_tests.cpp` re-implements the removed `ComputeMinWork` helper
+  locally (with its original Bitcoin-era parameters, since the
+  checkpoint data in the test is Bitcoin blockchain data) and adapts the
+  `-maxsigcachesize` block to deterministic RFC6979 signatures: re-signing
+  now reproduces the identical `scriptSig` instead of a distinct one.
 
 The following legacy test sources are intentionally not enabled:
 
-- `DoS_tests.cpp` - depends on `ComputeMinWork`, which has been removed
-  from the base code.
 - `miner_tests.cpp` - depends on Bitcoin-era PoW nonces, `ProcessBlock`
   against a live chain state, and Bitcoin-specific subsidy heights; it is
   incompatible with Phoenixcoin's NeoScrypt mining.
@@ -139,7 +143,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 52 test cases...
+Running 58 test cases...
 
 *** No errors detected
 ```
