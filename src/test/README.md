@@ -29,6 +29,7 @@ mruset_tests.cpp
 multisig_tests.cpp
 netbase_tests.cpp
 rpc_tests.cpp
+script_P2SH_tests.cpp
 script_tests.cpp
 sigopcount_tests.cpp
 transaction_tests.cpp
@@ -133,12 +134,23 @@ Walkthrough of the legacy test sources that were restored:
   shared helpers in `testutil.cpp`. The `>520 byte push` and `10,001-byte
   scriptPubKey` `script_invalid` vectors were removed because Phoenixcoin's
   `MAX_SCRIPT_ELEMENT_SIZE` is 66000 bytes rather than Bitcoin's 520.
+- `script_P2SH_tests.cpp` exercises `SignSignature`/`VerifySignature` and
+  the `Set*`/`IsPayToScriptHash`/`AreInputsStandard`/`GetP2SHSigOpCount`
+  logic. The `SetMultisig` calls (which require a `std::vector<CKey>`,
+  triggering implicit `CKey` copies, see the `multisig_tests` note) were
+  replaced with the same manual script build used by `script_tests.cpp`
+  (`EncodeOP_N` + public keys + `EncodeOP_N` + `OP_CHECKMULTISIG`) from a
+  `CKey*` pointer array.
 
-The following legacy test sources are intentionally not enabled:
+Enabling `script_P2SH_tests` also fixed a latent production bug in
+`CScript::operator=`: it previously performed `clear()` before copying the
+source, so self-assignment (`a = a`) silently emptied the script. The
+`sign` test deliberately assigns a transaction's own scriptSig to itself
+(within an exhaustive cross-verification loop); with upstream-style
+assignment delegating to `std::vector<uchar>::operator=` the 
+self-assignment is a correct no-op.
 
-- `script_P2SH_tests.cpp` - compile but crash or fail at runtime against
-  the current script engine (which was reworked for hybrid multisig);
-  fixing it may require base code changes.
+All of the disabled legacy test suites are now enabled again.
 
 ## Building the tests
 
@@ -182,7 +194,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 79 test cases...
+Running 85 test cases...
 
 *** No errors detected
 ```

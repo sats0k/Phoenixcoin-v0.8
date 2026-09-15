@@ -289,8 +289,7 @@ public:
 #endif
 
     CScript &operator=(const CScript &b) {
-        clear();
-        insert(begin(), b.begin(), b.end());
+        std::vector<unsigned char>::operator=(b);
         return(*this);
     }
 

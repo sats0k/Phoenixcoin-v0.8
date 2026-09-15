@@ -43,6 +43,17 @@ Verify(const CScript& scriptSig, const CScript& scriptPubKey, bool fStrict)
     return VerifyScript(scriptSig, scriptPubKey, txTo, 0, fStrict, 0);
 }
 
+static CScript
+MakeMultisig(int nRequired, CKey* keys[], unsigned int nKeys)
+{
+    CScript script;
+    script << CScript::EncodeOP_N(nRequired);
+    for (unsigned int i = 0; i < nKeys; i++)
+        script << keys[i]->GetPubKey();
+    script << CScript::EncodeOP_N(nKeys) << OP_CHECKMULTISIG;
+    return script;
+}
+
 
 BOOST_AUTO_TEST_SUITE(script_P2SH_tests)
 
@@ -145,19 +156,19 @@ BOOST_AUTO_TEST_CASE(set)
     // Test the CScript::Set* methods
     CBasicKeyStore keystore;
     CKey key[4];
-    std::vector<CKey> keys;
     for (int i = 0; i < 4; i++)
     {
         key[i].MakeNewKey(true);
         keystore.AddKey(key[i]);
-        keys.push_back(key[i]);
     }
+
+    CKey* keyPtrs[4] = { &key[0], &key[1], &key[2], &key[3] };
 
     CScript inner[4];
     inner[0].SetDestination(key[0].GetPubKey().GetID());
-    inner[1].SetMultisig(2, std::vector<CKey>(keys.begin(), keys.begin()+2));
-    inner[2].SetMultisig(1, std::vector<CKey>(keys.begin(), keys.begin()+2));
-    inner[3].SetMultisig(2, std::vector<CKey>(keys.begin(), keys.begin()+3));
+    inner[1] = MakeMultisig(2, keyPtrs, 2);
+    inner[2] = MakeMultisig(1, keyPtrs, 2);
+    inner[3] = MakeMultisig(2, keyPtrs, 3);
 
     CScript outer[4];
     for (int i = 0; i < 4; i++)
@@ -246,13 +257,12 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     std::map<uint256, std::pair<CTxIndex, CTransaction> > mapInputs;
     CBasicKeyStore keystore;
     CKey key[3];
-    vector<CKey> keys;
     for (int i = 0; i < 3; i++)
     {
         key[i].MakeNewKey(true);
         keystore.AddKey(key[i]);
-        keys.push_back(key[i]);
     }
+    CKey* keyPtrs[3] = { &key[0], &key[1], &key[2] };
 
     CTransaction txFrom;
     txFrom.vout.resize(6);
@@ -261,7 +271,7 @@ BOOST_AUTO_TEST_CASE(AreInputsStandard)
     CScript pay1; pay1.SetDestination(key[0].GetPubKey().GetID());
     keystore.AddCScript(pay1);
     CScript payScriptHash1; payScriptHash1.SetDestination(pay1.GetID());
-    CScript pay1of3; pay1of3.SetMultisig(1, keys);
+    CScript pay1of3; pay1of3 = MakeMultisig(1, keyPtrs, 3);
 
     txFrom.vout[0].scriptPubKey = payScriptHash1;
     txFrom.vout[1].scriptPubKey = pay1;
