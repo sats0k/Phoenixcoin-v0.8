@@ -211,31 +211,6 @@ Value listunspent(const Array &params, bool fHelp) {
 }
 
 
-Value decodescript(const Array &params, bool fHelp) {
-
-    if(fHelp || (params.size() != 1)) {
-        string msg = "decodescript <data>\n"
-          "Decodes hex encoded script <data>.";
-        throw(runtime_error(msg));
-    }
-
-    RPCTypeCheck(params, list_of(str_type));
-
-    Object r;
-    CScript script;
-    if (params[0].get_str().size() > 0){
-        vector<unsigned char> scriptData(ParseHexV(params[0], "argument"));
-        script = CScript(scriptData.begin(), scriptData.end());
-    } else {
-        /* Empty scripts are valid */
-    }
-    ScriptPubKeyToJSON(script, r);
-
-    r.push_back(Pair("p2sh", CCoinAddress(script.GetID()).ToString()));
-    return(r);
-}
-
-
 Value createrawtransaction(const Array &params, bool fHelp) {
 
     if(fHelp || (params.size() != 2)) {
