@@ -126,42 +126,6 @@ std::string HexBits(unsigned int nBits)
 }
 
 
-uint256 ParseHashV(const Value &v, string strName) {
-    uint256 result;
-    string strHex;
-
-    if(v.type() == str_type)
-      strHex = v.get_str();
-
-    if(!IsHex(strHex))
-      throw(JSONRPCError(RPC_INVALID_PARAMETER, strName + " must be hex string (not '"+strHex+"')"));
-
-    result.SetHex(strHex);
-
-    return(result);
-}
-
-uint256 ParseHashO(const Object &o, string strKey) {
-    return(ParseHashV(find_value(o, strKey), strKey));
-}
-
-vector<uchar> ParseHexV(const Value &v, string strName) {
-    string strHex;
-
-    if(v.type() == str_type)
-      strHex = v.get_str();
-
-    if(!IsHex(strHex))
-      throw(JSONRPCError(RPC_INVALID_PARAMETER, strName+" must be hex string (not '"+strHex+"')"));
-
-    return ParseHex(strHex);
-}
-
-vector<uchar> ParseHexO(const Object& o, string strKey) {
-    return ParseHexV(find_value(o, strKey), strKey);
-}
-
-
 ///
 /// Note: This interface may still be subject to change.
 ///

@@ -128,11 +128,6 @@ extern std::string HexBits(unsigned int nBits);
 extern std::string HelpRequiringPassphrase();
 extern void EnsureWalletIsUnlocked();
 
-extern uint256 ParseHashV(const json_spirit::Value &v, std::string strName);
-extern uint256 ParseHashO(const json_spirit::Object &o, std::string strKey);
-extern std::vector<uchar> ParseHexV(const json_spirit::Value &v, std::string strName);
-extern std::vector<uchar> ParseHexO(const json_spirit::Object &o, std::string strKey);
-
 /* in rpcblockchain.cpp */
 extern json_spirit::Value getblockcount(const json_spirit::Array &params, bool fHelp);
 extern json_spirit::Value getdifficulty(const json_spirit::Array &params, bool fHelp);
