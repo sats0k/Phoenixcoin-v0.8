@@ -53,25 +53,19 @@ namespace Checkpoints {
     /* Returns the last CBlockIndex * in mapBlockIndex that is a checkpoint */
     CBlockIndex *GetLastCheckpoint(const std::map<uint256, CBlockIndex *> &mapBlockIndex);
 
-    /* Returns the time stamp of the last checkpoint */
-    int GetLastCheckpointTime();
-
     extern uint256 hashSyncCheckpoint;
     extern CSyncCheckpoint checkpointMessage;
     extern uint256 hashInvalidCheckpoint;
     extern CCriticalSection cs_hashSyncCheckpoint;
 
-    CBlockIndex *GetLastSyncCheckpoint();
     bool WriteSyncCheckpoint(const uint256 &hashCheckpoint);
     bool AcceptPendingSyncCheckpoint();
     uint256 AutoSelectSyncCheckpoint();
     bool CheckSync(const uint256 &hashBlock, const CBlockIndex *pindexPrev);
-    bool WantedByPendingSyncCheckpoint(uint256 hashBlock);
     bool ResetSyncCheckpoint();
     void AskForPendingSyncCheckpoint(CNode *pfrom);
     bool SetCheckpointPrivKey(std::string strPrivKey);
     bool SendSyncCheckpoint(uint256 hashCheckpoint);
-    bool IsMatureSyncCheckpoint();
     bool IsSyncCheckpointTooOld(uint nSeconds);
 }
 

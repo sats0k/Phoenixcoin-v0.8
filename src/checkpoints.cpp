@@ -94,12 +94,6 @@ namespace Checkpoints {
         return(checkpoints.rbegin()->first);
     }
 
-    int GetLastCheckpointTime() {
-        MapCheckpoints &checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
-
-        return(checkpoints.rbegin()->second.second);
-    }
-
     CBlockIndex *GetLastCheckpoint(const std::map<uint256, CBlockIndex *> &mapBlockIndex) {
         MapCheckpoints &checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
 
@@ -119,17 +113,6 @@ namespace Checkpoints {
     CSyncCheckpoint checkpointMessagePending;
     uint256 hashInvalidCheckpoint = 0;
     CCriticalSection cs_hashSyncCheckpoint;
-
-    CBlockIndex *GetLastSyncCheckpoint() {
-        LOCK(cs_hashSyncCheckpoint);
-        if(!mapBlockIndex.count(hashSyncCheckpoint)) {
-          error("GetLastSyncCheckpoint(): block index missing for the current advanced checkpoint %s",
-            hashSyncCheckpoint.ToString().c_str());
-        } else {
-            return(mapBlockIndex[hashSyncCheckpoint]);
-        }
-        return(NULL);
-    }
 
     bool ValidateSyncCheckpoint(uint256 hashCheckpoint) {
 
@@ -316,17 +299,6 @@ namespace Checkpoints {
         return(true);
     }
 
-    bool WantedByPendingSyncCheckpoint(uint256 hashBlock) {
-        LOCK(cs_hashSyncCheckpoint);
-        if(hashPendingCheckpoint == 0) return(false);
-        if(hashBlock == hashPendingCheckpoint) return(true);
-        if(mapOrphanBlocks.count(hashPendingCheckpoint) &&
-          hashBlock == WantedByOrphan(mapOrphanBlocks[hashPendingCheckpoint])) {
-            return(true);
-        }
-        return(false);
-    }
-
     bool ResetSyncCheckpoint() {
         LOCK(cs_hashSyncCheckpoint);
 
@@ -420,14 +392,6 @@ namespace Checkpoints {
         }
 
         return(true);
-    }
-
-    bool IsMatureSyncCheckpoint() {
-        LOCK(cs_hashSyncCheckpoint);
-        /* Sync checkpoint should always be an accepted block */
-        assert(mapBlockIndex.count(hashSyncCheckpoint));
-        const CBlockIndex *pindexSync = mapBlockIndex[hashSyncCheckpoint];
-        return(nBestHeight >= (pindexSync->nHeight + nBaseMaturity));
     }
 
     bool IsSyncCheckpointTooOld(uint nSeconds) {
