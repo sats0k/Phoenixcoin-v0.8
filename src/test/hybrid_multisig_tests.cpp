@@ -912,6 +912,261 @@ BOOST_AUTO_TEST_CASE(hybrid_key_plaintext_to_encrypted_migration)
 }
 
 /*
+ * CHybridKeyDisk format tampering.
+ *
+ * Every field of both the plaintext (v2) and encrypted (v3) at-rest records
+ * is covered by the payload checksum (Hash of the serialized layout except
+ * hashChecksum itself), so a single-byte flip anywhere must invalidate the
+ * record. The version byte is the FIRST serialized byte, so flipping it
+ * forges a plaintext record as encrypted (or vice versa); the record then
+ * misparses and fails the checksum.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_key_disk_format_tampering)
+{
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+    BOOST_REQUIRE(hk.mldsaSigner);
+
+    CKeyingMaterial vMasterKey;
+    vMasterKey.resize(WALLET_CRYPTO_KEY_SIZE);
+    RAND_bytes(&vMasterKey[0], WALLET_CRYPTO_KEY_SIZE);
+
+    CHybridKeyDisk v2 = CHybridKeyDisk::FromMemory(hk);
+    BOOST_REQUIRE(!v2.IsEncrypted());
+    BOOST_REQUIRE(v2.CheckChecksum());
+    BOOST_REQUIRE(!v2.secpPriv.empty());
+    BOOST_REQUIRE(!v2.mldsaPrivKey.empty());
+
+    // v2: a byte flip in any payload field breaks the checksum.
+    {
+        CHybridKeyDisk d = v2;
+        d.secpPriv[d.secpPriv.size() / 2] ^= 0x01;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v2;
+        std::vector<unsigned char> pub = d.secpPub.Raw();
+        pub[pub.size() / 2] ^= 0x01;
+        d.secpPub = CPubKey(pub);
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v2;
+        d.mldsaAlg[d.mldsaAlg.size() / 2] ^= 0x01;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v2;
+        d.mldsaPrivKey[d.mldsaPrivKey.size() / 2] ^= 0x01;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v2;
+        d.nCreateTime += 1;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    // Corrupting the checksum field itself is also detected.
+    {
+        CHybridKeyDisk d = v2;
+        d.hashChecksum ^= uint256((uint64)1);
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+
+    // Serialization round trip preserves the record exactly, with the
+    // version byte first.
+    CDataStream ser(SER_DISK, CLIENT_VERSION);
+    ser << v2;
+    {
+        CHybridKeyDisk round;
+        CDataStream des(ser.begin(), ser.end(), SER_DISK, CLIENT_VERSION);
+        des >> round;
+        BOOST_CHECK(round.CheckChecksum());
+        BOOST_CHECK(!round.IsEncrypted());
+        BOOST_CHECK(round.secpPriv == v2.secpPriv);
+        BOOST_CHECK(round.mldsaPrivKey == v2.mldsaPrivKey);
+        std::vector<unsigned char> raw(ser.begin(), ser.end());
+        BOOST_REQUIRE(raw.size() >= 4);
+        BOOST_CHECK_EQUAL(raw[0], HYBRIDKEY_DISK_VERSION);
+    }
+
+    // v3 encrypted record.
+    CHybridKeyDisk v3 = CHybridKeyDisk::FromMemoryEncrypted(hk, vMasterKey);
+    BOOST_REQUIRE(v3.IsEncrypted());
+    BOOST_REQUIRE(v3.CheckChecksum());
+    BOOST_REQUIRE(!v3.vchCryptedPrivate.empty());
+
+    {
+        CHybridKeyDisk d = v3;
+        d.vchCryptedPrivate[d.vchCryptedPrivate.size() / 2] ^= 0x01;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v3;
+        d.mldsaAlg[d.mldsaAlg.size() / 2] ^= 0x01;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v3;
+        std::vector<unsigned char> pub = d.secpPub.Raw();
+        pub[pub.size() / 2] ^= 0x01;
+        d.secpPub = CPubKey(pub);
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v3;
+        d.nCreateTime += 1;
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v3;
+        d.hashChecksum ^= uint256((uint64)1);
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    // v3 serialization: version byte 3 first.
+    {
+        CDataStream s(SER_DISK, CLIENT_VERSION);
+        s << v3;
+        std::vector<unsigned char> raw(s.begin(), s.end());
+        BOOST_REQUIRE(raw.size() >= 4);
+        BOOST_CHECK_EQUAL(raw[0], HYBRIDKEY_DISK_VERSION_ENCRYPTED);
+    }
+
+    // Forged version byte: a plaintext record rewritten as v3 parses as
+    // encrypted (empty ciphertext blob); a v3 record rewritten as v2 parses
+    // as plaintext (empty private fields). Both fail the checksum.
+    {
+        CHybridKeyDisk d = v2;
+        d.nVersion = HYBRIDKEY_DISK_VERSION_ENCRYPTED;
+        BOOST_CHECK(d.IsEncrypted());
+        BOOST_CHECK(d.vchCryptedPrivate.empty());
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+    {
+        CHybridKeyDisk d = v3;
+        d.nVersion = HYBRIDKEY_DISK_VERSION;
+        BOOST_CHECK(!d.IsEncrypted());
+        BOOST_CHECK(d.secpPriv.empty());
+        BOOST_CHECK(d.mldsaPrivKey.empty());
+        BOOST_CHECK(!d.CheckChecksum());
+    }
+
+    // ---- FromLegacyDiskFormat ----
+    // A valid legacy record starts with the stream serialization version
+    // (not the member nVersion) and reuses the v2 payload checksum.
+    CHybridKeyDisk legacy = v2;
+    CDataStream legacyStream(SER_DISK, CLIENT_VERSION);
+    {
+        int32_t nStreamVersion = HYBRIDKEY_DISK_VERSION;
+        legacyStream << nStreamVersion;
+        legacyStream << legacy.nCreateTime;
+        legacyStream << legacy.secpPriv;
+        legacyStream << legacy.secpPub;
+        legacyStream << legacy.mldsaAlg;
+        legacyStream << legacy.mldsaPrivKey;
+        legacyStream << legacy.hashChecksum;
+    }
+    std::vector<unsigned char> legacyBytes(legacyStream.begin(),
+                                           legacyStream.end());
+    {
+        CDataStream ss(legacyBytes, SER_DISK, CLIENT_VERSION);
+        CHybridKeyDisk parsedLegacy;
+        BOOST_CHECK(CHybridKeyDisk::FromLegacyDiskFormat(ss,
+                                                         parsedLegacy));
+        BOOST_CHECK(parsedLegacy.fLegacyDisk);
+        BOOST_CHECK(!parsedLegacy.IsEncrypted());
+        BOOST_CHECK(parsedLegacy.CheckChecksum());
+        CPrivKey sOut;
+        std::vector<unsigned char> mOut;
+        BOOST_CHECK(parsedLegacy.DecryptPrivate(vMasterKey, sOut, mOut));
+        BOOST_CHECK(sOut == hk.secpPriv);
+        BOOST_CHECK(mOut == v2.mldsaPrivKey);
+    }
+
+    // Truncated legacy record (checksum cut short) is rejected.
+    {
+        std::vector<unsigned char> bytes = legacyBytes;
+        BOOST_REQUIRE(bytes.size() >= 40);
+        bytes.resize(bytes.size() - 4);
+        CDataStream ss(bytes, SER_DISK, CLIENT_VERSION);
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+
+    // An empty stream (which CDataStream would otherwise zero-fill) is
+    // rejected, as is a stream too short to hold the serialization version.
+    {
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+    {
+        std::vector<unsigned char> bytes(legacyBytes.begin(),
+                                         legacyBytes.begin() + 2);
+        CDataStream ss(bytes, SER_DISK, CLIENT_VERSION);
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+
+    // Trailing garbage after a well-formed legacy record is rejected.
+    {
+        CDataStream ss(legacyBytes, SER_DISK, CLIENT_VERSION);
+        ss.write("XXXX", 4);
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+
+    // Version/layout mismatch: stream declares serialization version 1 (no
+    // MLDSA fields) but carries MLDSA data, leaving trailing garbage.
+    {
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        int32_t nStreamVersion = 1;
+        ss << nStreamVersion;
+        ss << legacy.nCreateTime;
+        ss << legacy.secpPriv << legacy.secpPub;
+        ss << legacy.mldsaAlg << legacy.mldsaPrivKey;
+        ss << legacy.hashChecksum;
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+
+    // Version/layout mismatch: stream declares version 2 but omits the
+    // MLDSA fields, so the parse runs out of data.
+    {
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        int32_t nStreamVersion = 2;
+        ss << nStreamVersion;
+        ss << legacy.nCreateTime;
+        ss << legacy.secpPriv << legacy.secpPub;
+        ss << legacy.hashChecksum;
+        CHybridKeyDisk out;
+        BOOST_CHECK(!CHybridKeyDisk::FromLegacyDiskFormat(ss, out));
+    }
+
+    // ---- LoadHybridKey ----
+    // Load-time rejections: bad checksum, unsupported version, and an
+    // encrypted record in a plaintext wallet.
+    {
+        CWallet wallet;
+        CHybridKeyDisk bad = v2;
+        bad.secpPriv[bad.secpPriv.size() / 2] ^= 0x01;
+        CKeyingMaterial emptyKey;
+        BOOST_CHECK(!LoadHybridKey(&wallet, bad, emptyKey));
+    }
+    {
+        CWallet wallet;
+        CHybridKeyDisk bad = v2;
+        bad.nVersion = 99;
+        CKeyingMaterial emptyKey;
+        BOOST_CHECK(!LoadHybridKey(&wallet, bad, emptyKey));
+    }
+    {
+        CWallet wallet;
+        CKeyingMaterial emptyKey;
+        BOOST_CHECK(!LoadHybridKey(&wallet, v3, emptyKey));
+    }
+}
+
+/*
  * Regression test: GetScriptForHybridMultisig / addhybridmultisigaddress
  * must not reach CScript::EncodeOP_N (which ASSERTS on n outside 1..16)
  * with an out-of-range key count or required count.

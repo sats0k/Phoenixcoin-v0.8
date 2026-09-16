@@ -54,18 +54,36 @@ static CDataStream SerializeHybridDiskPayload(const CHybridKeyDisk& d)
 bool CHybridKeyDisk::FromLegacyDiskFormat(CDataStream& ss, CHybridKeyDisk& out)
 {
     try {
+        // CDataStream::read() zero-fills on short reads instead of
+        // throwing, so every scalar and variable-length field must be
+        // explicitly guarded against truncation below; otherwise a
+        // truncated or empty record would parse as zero-filled fields.
         int32_t nStreamVersion = 0;
+        if (ss.size() < (size_t)sizeof(nStreamVersion))
+            return false;
         ss >> nStreamVersion;
 
         CHybridKeyDisk disk;
         disk.nVersion = HYBRIDKEY_DISK_VERSION;
+        if (ss.size() < (size_t)sizeof(disk.nCreateTime))
+            return false;
         ss >> disk.nCreateTime;
+        if (ss.size() < 1)
+            return false;
         ss >> disk.secpPriv;
+        if (ss.size() < 1)
+            return false;
         ss >> disk.secpPub;
         if (nStreamVersion >= 2) {
+            if (ss.size() < 1)
+                return false;
             ss >> disk.mldsaAlg;
+            if (ss.size() < 1)
+                return false;
             ss >> disk.mldsaPrivKey;
         }
+        if (ss.size() < (size_t)sizeof(disk.hashChecksum))
+            return false;
         ss >> disk.hashChecksum;
         if (!ss.empty())
             return false;

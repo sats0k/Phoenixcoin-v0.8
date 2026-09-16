@@ -92,7 +92,26 @@ check: a valid pair is consumed and script execution continues, a byte flip
 in either signature aborts the whole script, and an under-supplied
 scriptSig hits the four-item stack guard. It also pins down that a
 VERIFY-terminated script solves as `TX_NONSTANDARD` (the Solver template
-only recognizes the plain `OP_CHECKHYBRIDSIG` form).
+only recognizes the plain `OP_CHECKHYBRIDSIG` form). A disk-format
+tampering test (`hybrid_key_disk_format_tampering`) verifies that every
+`CHybridKeyDisk` field of both the plaintext (v2) and encrypted (v3)
+at-rest records is covered by the payload checksum: single-byte flips in
+the private keys, public keys, algorithm string, creation time, or the
+checksum field itself are all detected, the serialization round trip is
+exact (version byte first), and forging the version byte to switch
+plaintext/encrypted misparses but fails the checksum. It also exercises
+`FromLegacyDiskFormat`: a valid legacy stream round-trips, while truncated,
+empty, trailing-garbage, and version/layout-mismatched streams are
+rejected, plus `LoadHybridKey` rejections for a bad checksum, an
+unsupported version, and an encrypted record in a plaintext wallet.
+Building the tampering test exposed that `FromLegacyDiskFormat` accepted
+truncated/empty records because `CDataStream::read()` zero-fills on short
+reads instead of throwing; the parser is now explicitly guarded field by
+field so such records are rejected. Running the suite prints a single
+expected stderr diagnostic, `ERROR: CDataStream::read() : end of data`
+(serialize.h), from the deliberately truncated v2-without-MLDSA negative
+case in this test; it is benign, the record is still rejected by the new
+field guards, and the suite reports no failures.
 
 Walkthrough of the legacy test sources that were restored:
 
@@ -214,7 +233,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 88 test cases...
+Running 89 test cases...
 
 *** No errors detected
 ```
