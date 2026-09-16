@@ -157,4 +157,7 @@ class CKey {
                      std::vector<unsigned char> &out);
 };
 
+CPubKey RecoverPubKey(const uint256 &hash, const unsigned char sig64[64],
+                      int recid, bool compressed);
+
 #endif /* KEY_H */
