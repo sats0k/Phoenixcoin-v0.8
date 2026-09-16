@@ -41,57 +41,6 @@ bool CWallet::SetHybridAddressBookName(const CHybridKeyID& keyID, const std::str
     return true;
 }
 
-bool CWallet::GetHybridAddressBookName(const CHybridKeyID& keyID, std::string& strNameOut) const
-{
-    LOCK(cs_wallet);
-    
-    auto it = mapHybridAddressBook.find(keyID);
-    if (it == mapHybridAddressBook.end()) {
-        return false;
-    }
-    
-    strNameOut = it->second.strLabel;
-    return true;
-}
-
-bool CWallet::DelHybridAddressBookName(const CHybridKeyID& keyID)
-{
-    LOCK(cs_wallet);
-    
-    // Remove from memory
-    auto it = mapHybridAddressBook.find(keyID);
-    if (it == mapHybridAddressBook.end()) {
-        return false;
-    }
-    
-    mapHybridAddressBook.erase(it);
-    
-    // Remove from database if backed
-    if (fFileBacked) {
-        CWalletDB walletdb(strWalletFile);
-        if (!walletdb.EraseHybridAddressEntry(keyID)) {
-            printf("WARNING: DelHybridAddressBookName: Failed to erase from database\n");
-            return false;
-        }
-    }
-    
-    printf("Hybrid address %s removed from address book\n", keyID.ToString().c_str());
-    return true;
-}
-
-std::vector<std::pair<CKeyID, std::string>> CWallet::ListHybridAddresses() const
-{
-    LOCK(cs_wallet);
-    
-    std::vector<std::pair<CKeyID, std::string>> result;
-    
-    for (const auto& entry : mapHybridAddressBook) {
-        result.push_back(std::make_pair(entry.first, entry.second.strLabel));
-    }
-    
-    return result;
-}
-
 void CWallet::LoadHybridAddressBook()
 {
     if (!fFileBacked) return;

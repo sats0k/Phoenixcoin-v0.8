@@ -163,9 +163,6 @@ public:
 
     // ---- Hybrid Address Book Functions ----
     bool SetHybridAddressBookName(const CHybridKeyID& hybridID, const std::string& strName, const std::string& strPurpose = "receive");
-    bool GetHybridAddressBookName(const CHybridKeyID& hybridID, std::string& strNameOut) const;
-    bool DelHybridAddressBookName(const CHybridKeyID& hybridID);
-    std::vector<std::pair<CKeyID, std::string>> ListHybridAddresses() const;
     void LoadHybridAddressBook();
 
     CPubKey vchDefaultKey;

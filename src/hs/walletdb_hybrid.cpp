@@ -67,29 +67,12 @@ bool CWalletDB::WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &
     return Write(make_pair(std::string("hyb"), keyID), disk);
 }
 
-bool CWalletDB::WriteHybridKeyMetadata(const CHybridKeyID& keyid, const CHybridKeyMetadata& meta)
-{
-    nWalletDBUpdated++;
-    return Write(make_pair(std::string("hybridkeymeta"), keyid), meta);
-}
-
 // ---- Hybrid Address Book Functions ----
 
 bool CWalletDB::WriteHybridAddressEntry(const CHybridKeyID& keyID, const CHybridAddressEntry& entry)
 {
     nWalletDBUpdated++;
     return Write(make_pair(std::string("hybaddr"), keyID), entry);
-}
-
-bool CWalletDB::EraseHybridAddressEntry(const CHybridKeyID& keyID)
-{
-    nWalletDBUpdated++;
-    return Erase(make_pair(std::string("hybaddr"), keyID));
-}
-
-bool CWalletDB::ReadHybridAddressEntry(const CHybridKeyID& keyID, CHybridAddressEntry& entry)
-{
-    return Read(make_pair(std::string("hybaddr"), keyID), entry);
 }
 
 bool CWalletDB::LoadAllHybridAddresses(map<CHybridKeyID, CHybridAddressEntry>& mapAddresses)

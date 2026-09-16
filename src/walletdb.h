@@ -80,15 +80,9 @@ public:
 
     bool WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &disk);
 
-    bool WriteHybridKeyMetadata(const CHybridKeyID& keyid, const CHybridKeyMetadata& meta);
-
     // ---- Hybrid Address Book Functions ----
 
     bool WriteHybridAddressEntry(const CHybridKeyID& keyID, const CHybridAddressEntry& entry);
-
-    bool EraseHybridAddressEntry(const CHybridKeyID& keyID);
-
-    bool ReadHybridAddressEntry(const CHybridKeyID& keyID, CHybridAddressEntry& entry);
 
     bool LoadAllHybridAddresses(std::map<CHybridKeyID, CHybridAddressEntry>& mapAddresses);
 
