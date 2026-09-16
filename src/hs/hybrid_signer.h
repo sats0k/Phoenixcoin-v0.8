@@ -15,8 +15,6 @@
 #include <openssl/opensslv.h>
 #include <openssl/evp.h>
 
-#include "key.h"
-
 /* ------------------------------------------------------------------------- */
 /* Serialization format constants                                            */
 /* ------------------------------------------------------------------------- */
@@ -93,30 +91,6 @@ public:
 };
 
 /* ------------------------------------------------------------------------- */
-/*  secp256k1 (Bitcoin) Signer                                               */
-/* ------------------------------------------------------------------------- */
-
-// Uses Bitcoin Core's CKey internally.
-// Signs HASH256(msg) using ECDSA/secp256k1.
-class Secp256k1Signer final : public ISigner {
-public:
-    explicit Secp256k1Signer(const CKey& key);
-
-    SigAlg Algorithm() const override;
-
-    bool Sign(const std::vector<uint8_t>& msg,
-              std::vector<uint8_t>& sig) const override;
-
-    bool Verify(const std::vector<uint8_t>& msg,
-                const std::vector<uint8_t>& sig) const override;
-
-    std::vector<uint8_t> GetPublicKey() const override;
-
-private:
-    CKey key_;
-};
-
-/* ------------------------------------------------------------------------- */
 /*  ML-DSA (Dilithium-65) Signer                                             */
 /* ------------------------------------------------------------------------- */
 
@@ -179,8 +153,6 @@ public:
 
     bool VerifyAll(const std::vector<uint8_t>& msg,
                    const std::vector<Signature>& sigs) const;
-
-    std::vector<std::vector<uint8_t>> SerializePrivateKeys() const;
 
 private:
     std::vector<std::unique_ptr<ISigner>> signers_;

@@ -10,17 +10,14 @@
 #include <openssl/crypto.h>
 #include <openssl/kdf.h>
 
-#include <cassert>
 #include <vector>
 #include <memory>
-#include <set>
+#include <mutex>
 #include <cstring>
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <stdexcept>
-
-#include <secp256k1.h>
 
 /* ------------------------------------------------------------------------- */
 /*  Helpers                                                                  */
@@ -28,7 +25,6 @@
 
 /*
  * Production invariants:
- *  - secp256k1 context is VERIFY-only and never mutated after initialization
  *  - ML-DSA-65 support must be present and functional at runtime
  *  - Hybrid verification requires exactly one signature per algorithm
  *  - ConstructSignatureHashPreimage() is the canonical preimage constructor
@@ -197,141 +193,6 @@ static bool DecryptAesGcm(const uint8_t* key,
 
     EVP_CIPHER_CTX_free(ctx);
     return ok;
-}
-
-static secp256k1_context* GetSecpVerifyCtx() {
-    static secp256k1_context* ctx = [] {
-        secp256k1_context* c =
-            secp256k1_context_create(SECP256K1_CONTEXT_VERIFY);
-
-
-        /* VERIFY-only context: must never be used for signing */
-        static_assert(SECP256K1_CONTEXT_VERIFY == SECP256K1_CONTEXT_VERIFY,
-                      "secp256k1 VERIFY context invariant violated");
-
-        unsigned char seed[32];
-        if (RAND_bytes(seed, sizeof(seed)) == 1) {
-            int rc = secp256k1_context_randomize(c, seed);
-            assert(rc == 1);
-            OPENSSL_cleanse(seed, sizeof(seed));
-        }
-        return c;
-    }();
-    return ctx;
-}
-
-static uint256 HashHybridMessage(const std::vector<uint8_t>& msg) {
-    return Hash(msg.begin(), msg.end());
-}
-
-bool ParseHybridSignature(const std::vector<unsigned char>& in,
-                          std::vector<Signature>& out)
-{
-    out.clear();
-
-    size_t off = 0;
-    if (in.size() < 6)
-        return false;
-
-    if (memcmp(&in[off], HYBRID_SIG_MAGIC, 4) != 0)
-        return false;
-    off += 4;
-
-    uint8_t ver = in[off++];
-    if (ver != HYBRID_SIG_VERSION)
-        return false;
-
-    uint8_t count = in[off++];
-    if (count != 2)
-        return false;
-
-    std::set<SigAlg> algsSeen;
-    for (int i = 0; i < 2; i++) {
-        if (off + 3 > in.size()) {
-            out.clear();
-            return false;
-        }
-
-        uint8_t alg = in[off++];
-
-        if (alg != static_cast<uint8_t>(SigAlg::ECDSA_SECP256K1) &&
-            alg != static_cast<uint8_t>(SigAlg::ML_DSA_65)) {
-            out.clear();
-            return false;
-        }
-
-        SigAlg sig_alg = static_cast<SigAlg>(alg);
-        if (algsSeen.count(sig_alg) > 0) {
-            out.clear();
-            return false;
-        }
-        algsSeen.insert(sig_alg);
-
-        uint16_t len = (uint16_t(in[off]) << 8) | uint16_t(in[off + 1]);
-        off += 2;
-
-        if (len == 0 || off + len > in.size()) {
-            out.clear();
-            return false;
-        }
-
-        out.push_back(Signature{
-            sig_alg,
-            std::vector<uint8_t>(in.begin() + off,
-                                 in.begin() + off + len)
-        });
-        off += len;
-    }
-
-    if (off != in.size()) {
-        out.clear();
-        return false;
-    }
-
-    return true;
-}
-
-/* ------------------------------------------------------------------------- */
-/*  Secp256k1Signer                                                          */
-/* ------------------------------------------------------------------------- */
-
-Secp256k1Signer::Secp256k1Signer(const CKey& key) : key_(key) {}
-
-SigAlg Secp256k1Signer::Algorithm() const {
-    return SigAlg::ECDSA_SECP256K1;
-}
-
-bool Secp256k1Signer::Sign(const std::vector<uint8_t>& msg,
-                           std::vector<uint8_t>& sig) const {
-    uint256 h = HashHybridMessage(msg);
-    return key_.Sign(h, sig);
-}
-
-bool Secp256k1Signer::Verify(const std::vector<uint8_t>& msg,
-                             const std::vector<uint8_t>& sig) const {
-    uint256 h = HashHybridMessage(msg);
-
-    secp256k1_context* ctx = GetSecpVerifyCtx();
-
-    secp256k1_pubkey pubkey;
-    auto pub = GetPublicKey();
-    if (!secp256k1_ec_pubkey_parse(ctx, &pubkey, pub.data(), pub.size())) {
-        return false;
-    }
-
-    secp256k1_ecdsa_signature signature;
-    if (!secp256k1_ecdsa_signature_parse_der(
-            ctx, &signature, sig.data(), sig.size())) {
-        return false;
-    }
-
-    secp256k1_ecdsa_signature_normalize(ctx, &signature, &signature);
-
-    return secp256k1_ecdsa_verify(ctx, &signature, h.begin(), &pubkey) == 1;
-}
-
-std::vector<uint8_t> Secp256k1Signer::GetPublicKey() const {
-    return key_.GetPubKey().Raw();
 }
 
 /* ------------------------------------------------------------------------- */
@@ -777,17 +638,6 @@ bool HybridSigner::VerifyAll(const std::vector<uint8_t>& msg,
     }
 
     return ok;
-}
-
-std::vector<std::vector<uint8_t>>
-HybridSigner::SerializePrivateKeys() const {
-    std::vector<std::vector<uint8_t>> out;
-    for (const auto& s : signers_) {
-        auto k = s->SerializePrivateKey();
-        if (!k.empty())
-            out.push_back(std::move(k));
-    }
-    return out;
 }
 
 /* ------------------------------------------------------------------------- */
