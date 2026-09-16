@@ -352,8 +352,10 @@ bool CKey::Sign(uint256 hash, std::vector<unsigned char>& sig) const {
 
 bool CKey::SignCompact(const uint256& hash,
                        std::vector<unsigned char>& vchSig) const {
+    if (!fSet || vchSecret.size() != 32) return false;
+
     unsigned char privkey[32];
-    std::memcpy(privkey, vchSecret.data(), 32);
+    std::memcpy(privkey, vchSecret.data(), sizeof(privkey));
     vchSig.clear();
     vchSig.resize(65);
 
