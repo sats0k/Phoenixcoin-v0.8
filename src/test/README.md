@@ -86,7 +86,13 @@ by the keystore, and verified. It asserts the `<sigEC> <sigML> <pubEC>
 <pubML>` scriptSig layout (the public keys must be revealed for
 `OP_DUPHYBRID`), and rejects byte flips in the stored hash and in the
 revealed ML-DSA public key as well as a signature-only scriptSig (the
-four-item `OP_DUPHYBRID` stack guard).
+four-item `OP_DUPHYBRID` stack guard). A `OP_CHECKHYBRIDSIGVERIFY` test
+(`hybrid_checksigverify_opcode`) covers the VERIFY variant of the single-key
+check: a valid pair is consumed and script execution continues, a byte flip
+in either signature aborts the whole script, and an under-supplied
+scriptSig hits the four-item stack guard. It also pins down that a
+VERIFY-terminated script solves as `TX_NONSTANDARD` (the Solver template
+only recognizes the plain `OP_CHECKHYBRIDSIG` form).
 
 Walkthrough of the legacy test sources that were restored:
 
@@ -208,7 +214,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 87 test cases...
+Running 88 test cases...
 
 *** No errors detected
 ```

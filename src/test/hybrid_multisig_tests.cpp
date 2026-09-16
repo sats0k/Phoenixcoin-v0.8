@@ -1132,3 +1132,83 @@ BOOST_AUTO_TEST_CASE(hybrid_p2hphk_spend)
         BOOST_CHECK(!VerifyScript(missingKeys, p2hphk, txTo, 0, false, 0));
     }
 }
+
+/*
+ * OP_CHECKHYBRIDSIGVERIFY: the VERIFY variant of the single-key hybrid
+ * check.
+ *
+ * Unlike OP_CHECKHYBRIDSIG (which pushes a boolean and continues), a
+ * successful VERIFY pops the four stack items and continues without
+ * pushing anything; a failed VERIFY aborts the entire script. The VERIFY
+ * form is not a recognized output template, so Solver reports it as
+ * TX_NONSTANDARD - it is intended for mid-script use.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_checksigverify_opcode)
+{
+    CHybridKey key;
+    GenerateHybridKey(key);
+
+    CHybridPubKey pub(key.secpPub.Raw(), key.mldsaSigner->GetPublicKey());
+    BOOST_REQUIRE(pub.IsValid());
+
+    CScript verifyScript;
+    verifyScript
+        << pub.ecdsaPubKey
+        << pub.mldsaPubKey
+        << OP_CHECKHYBRIDSIGVERIFY
+        << OP_1;
+
+    txnouttype whichType;
+    std::vector<std::vector<unsigned char> > solutions;
+    BOOST_CHECK(!Solver(verifyScript, whichType, solutions));
+    BOOST_CHECK_EQUAL(whichType, TX_NONSTANDARD);
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = verifyScript;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    std::vector<unsigned char> ecSig, mlSig;
+    CScript valid =
+        SignHybridPair(key, verifyScript, txTo, 0, SIGHASH_ALL, ecSig, mlSig);
+    BOOST_REQUIRE(!valid.empty());
+    BOOST_REQUIRE(!ecSig.empty());
+    BOOST_REQUIRE(!mlSig.empty());
+
+    // Baseline: a valid pair is consumed by the VERIFY opcode and the
+    // script continues to execute (OP_1 runs afterwards).
+    BOOST_CHECK(VerifyScript(valid, verifyScript, txTo, 0, false, 0));
+
+    // Negative: corrupting either signature abort the script in the
+    // VERIFY failure path (nothing is pushed on failure).
+    {
+        std::vector<unsigned char> badEc = ecSig;
+        BOOST_REQUIRE(badEc.size() > 2);
+        badEc[badEc.size() / 2] ^= 0x01;
+        CScript badScript;
+        badScript << badEc << mlSig;
+        BOOST_CHECK(!VerifyScript(badScript, verifyScript, txTo, 0, false, 0));
+    }
+    {
+        std::vector<unsigned char> badMl = mlSig;
+        BOOST_REQUIRE(badMl.size() > 2);
+        badMl[badMl.size() / 2] ^= 0x01;
+        CScript badScript;
+        badScript << ecSig << badMl;
+        BOOST_CHECK(!VerifyScript(badScript, verifyScript, txTo, 0, false, 0));
+    }
+
+    // Negative: the four-item stack guard. A scriptSig that only carries
+    // one of the two signatures leaves three items once the scriptPubKey
+    // pushes the public keys, which OP_CHECKHYBRIDSIGVERIFY rejects.
+    {
+        CScript singleSig;
+        singleSig << ecSig;
+        BOOST_CHECK(!VerifyScript(singleSig, verifyScript, txTo, 0, false, 0));
+    }
+}
