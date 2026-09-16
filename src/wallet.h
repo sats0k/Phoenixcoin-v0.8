@@ -925,8 +925,6 @@ private:
     std::vector<char> _ssExtra;
 };
 
-bool GetWalletFile(CWallet* pwallet, std::string &strWalletFileOut);
-
 
 /* The Coin Control: input and output operations */
 class CCoinControl {

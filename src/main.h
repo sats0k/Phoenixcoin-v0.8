@@ -173,8 +173,6 @@ bool GetTransaction(const uint256 &hash, CTransaction &tx, uint256 &hashBlock);
 uint256 WantedByOrphan(const CBlock *pblockOrphan);
 void ResendWalletTransactions(bool fForce = false);
 
-bool GetWalletFile(CWallet* pwallet, std::string &strWalletFileOut);
-
 /** Position on disk for a particular transaction. */
 class CDiskTxPos
 {
