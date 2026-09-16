@@ -903,15 +903,6 @@ int CWallet::ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate)
     return ret;
 }
 
-int CWallet::ScanForWalletTransaction(const uint256& hashTx)
-{
-    CTransaction tx;
-    tx.ReadFromDisk(COutPoint(hashTx, 0));
-    if (AddToWalletIfInvolvingMe(tx, NULL, true, true))
-        return 1;
-    return 0;
-}
-
 void CWallet::ReacceptWalletTransactions()
 {
     CTxDB txdb("r");
@@ -1899,21 +1890,6 @@ void CWallet::ReserveKeyFromKeyPool(int64& nIndex, CKeyPool& keypool)
     }
 }
 
-int64 CWallet::AddReserveKey(const CKeyPool& keypool)
-{
-    {
-        LOCK2(cs_main, cs_wallet);
-        CWalletDB walletdb(strWalletFile);
-
-        int64 nIndex = 1 + *(--setKeyPool.end());
-        if (!walletdb.WritePool(nIndex, keypool))
-            throw runtime_error("AddReserveKey() : writing added key failed");
-        setKeyPool.insert(nIndex);
-        return nIndex;
-    }
-    return -1;
-}
-
 void CWallet::KeepKey(int64 nIndex)
 {
     // Remove from key pool
@@ -2231,10 +2207,6 @@ void CWallet::LockCoin(COutPoint &output) {
 
 void CWallet::UnlockCoin(COutPoint &output) {
     setLockedCoins.erase(output);
-}
-
-void CWallet::UnlockAllCoins() {
-    setLockedCoins.clear();
 }
 
 bool CWallet::IsLockedCoin(uint256 hash, uint n) const {

@@ -183,7 +183,6 @@ public:
     bool IsLockedCoin(uint256 hash, uint n) const;
     void LockCoin(COutPoint &output);
     void UnlockCoin(COutPoint &output);
-    void UnlockAllCoins();
     void ListLockedCoins(std::vector<COutPoint> &vOutpts);
 
     // keystore implementation
@@ -241,7 +240,6 @@ public:
     bool EraseFromWallet(uint256 hash);
     void WalletUpdateSpent(const CTransaction& prevout);
     int ScanForWalletTransactions(CBlockIndex* pindexStart, bool fUpdate = false);
-    int ScanForWalletTransaction(const uint256& hashTx);
     void ReacceptWalletTransactions();
     void ResendWalletTransactions(bool fForce = false);
     int64 GetBalance() const;
@@ -257,7 +255,6 @@ public:
 
     bool NewKeyPool(unsigned int nSize = 0);
     bool TopUpKeyPool();
-    int64 AddReserveKey(const CKeyPool& keypool);
     void ReserveKeyFromKeyPool(int64& nIndex, CKeyPool& keypool);
     void KeepKey(int64 nIndex);
     void ReturnKey(int64 nIndex);
@@ -924,7 +921,6 @@ public:
 private:
     std::vector<char> _ssExtra;
 };
-
 
 /* The Coin Control: input and output operations */
 class CCoinControl {
