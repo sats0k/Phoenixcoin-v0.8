@@ -138,9 +138,7 @@ OBJS = \
     obj/walletdb_hybrid.o \
     obj/rpchybrid.o \
     obj/neoscrypt.o \
-    obj/neoscrypt_asm.o \
-    obj/ecies.o \
-    obj/secure.o
+    obj/neoscrypt_asm.o
 
 all: phoenixcoind
 
@@ -167,12 +165,6 @@ obj/neoscrypt.o: neoscrypt.c
 
 obj/neoscrypt_asm.o: neoscrypt_asm.S
 	$(CC) -c -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -o $@ $^
-
-obj/ecies.o: ecies/ecies.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/secure.o: ecies/secure.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 obj/hybrid_signer.o: hs/hybrid_signer.cpp
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@

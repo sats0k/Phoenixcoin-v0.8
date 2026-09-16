@@ -5,7 +5,6 @@
 
 // Project
 #include "key.h"
-#include "ecies/ecies.h"
 
 // C / C++
 #include <vector>

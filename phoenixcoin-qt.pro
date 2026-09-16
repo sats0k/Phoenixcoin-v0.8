@@ -227,7 +227,6 @@ HEADERS += src/qt/gui.h \
     src/netbase.h \
     src/clientversion.h \
     src/neoscrypt.h \
-    src/ecies/ecies.h \
     src/ntp.h \
     src/hs/hybrid_signer.h \
     src/hs/wallethybrid.h \
@@ -306,8 +305,6 @@ SOURCES += src/qt/phoenixcoin.cpp \
     src/noui.cpp \
     src/neoscrypt.c \
     src/neoscrypt_asm.S \
-    src/ecies/secure.cpp \
-    src/ecies/ecies.cpp \
     src/ntp.cpp \
     src/hs/hybrid_signer.cpp \
     src/hs/wallethybrid.cpp \
