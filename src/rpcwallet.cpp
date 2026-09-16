@@ -134,38 +134,6 @@ Value getnewaddress(const Array &params, bool fHelp) {
 }
 
 
-Value getnewpubkey(const Array &params, bool fHelp) {
-
-    if(fHelp || (params.size() > 1)) {
-        string msg = "getnewpubkey [account]\n"
-          "Picks up a new address from the key pool and displays the public key.\n"
-          "If [account] is specified (recommended), it is added to the address book,\n"
-          "so payments received with it will be credited to [account].";
-        throw(runtime_error(msg));
-    }
-
-    string strAccount;
-    if(params.size() > 0)
-      strAccount = AccountFromValue(params[0]);
-
-    if(!pwalletMain->IsLocked())
-      pwalletMain->TopUpKeyPool();
-
-    CPubKey newKey;
-    if(!pwalletMain->GetKeyFromPool(newKey, false)) {
-        throw(JSONRPCError(RPC_WALLET_KEYPOOL_RAN_OUT,
-          "Error: keypool empty, call keypoolrefill first"));
-    }
-    CKeyID keyID = newKey.GetID();
-
-    pwalletMain->SetAddressBookName(keyID, strAccount);
-
-    vector<uchar> vchPubKey = newKey.Raw();
-
-    return(HexStr(vchPubKey.begin(), vchPubKey.end()));
-}
-
-
 CCoinAddress GetAccountAddress(string strAccount, bool bForceNew = false) {
     CWalletDB walletdb(pwalletMain->strWalletFile);
 
