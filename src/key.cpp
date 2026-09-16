@@ -165,8 +165,6 @@ CPubKey RecoverPubKey(const uint256& hash, const unsigned char sig64[64],
 
 /* ----------  CKey methods ---------- */
 
-void CKey::SetCompressedPubKey() { fCompressedPubKey = true; }
-
 bool CKey::IsNull() const { return !fSet; }
 bool CKey::IsCompressed() const { return fCompressedPubKey; }
 

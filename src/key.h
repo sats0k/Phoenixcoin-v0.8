@@ -115,8 +115,6 @@ class CKey {
     bool fSet;
     bool fCompressedPubKey;
 
-    void SetCompressedPubKey();
-
    public:
     EVP_PKEY *GetEVPPrivKey() const;
     CKey() : pkey(nullptr), fSet(false), fCompressedPubKey(false) {}
