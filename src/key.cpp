@@ -443,17 +443,6 @@ bool CKey::Verify(uint256 hash, const std::vector<unsigned char>& sig) const {
                                   hash.begin(), &pub);
 }
 
-bool CKey::VerifyCompact(const uint256& hash,
-                         const std::vector<unsigned char>& vchSig) const {
-    CKey recovered;
-    if (!recovered.SetCompactSignature(hash, vchSig)) return false;
-
-    const auto& a = recovered.GetPubKey().Raw();
-    const auto& b = GetPubKey().Raw();
-    return a.size() == b.size() &&
-           CRYPTO_memcmp(a.data(), b.data(), a.size()) == 0;
-}
-
 bool CKey::IsValid() const {
     if (!fSet || !pkey) return false;
 

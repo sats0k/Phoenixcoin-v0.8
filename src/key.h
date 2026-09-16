@@ -151,8 +151,6 @@ class CKey {
                              const std::vector<unsigned char> &vchSig);
     bool Verify(const uint256 hash,
                 const std::vector<unsigned char> &vchSig) const;
-    bool VerifyCompact(const uint256 &hash,
-                       const std::vector<unsigned char> &vchSig) const;
     bool IsValid() const;
 
     void DecryptData(const std::vector<unsigned char> &enc,
