@@ -8,6 +8,7 @@
 #include "script.h"
 #include "keystore.h"
 #include "hs/hybrid_signer.h"
+#include "hs/hybrid_verify.h"
 #include "hs/wallethybrid.h"
 #include "wallet.h"
 #include "crypter.h"
@@ -954,4 +955,74 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_script_size_limits)
         CScript s = GetScriptForHybridMultisig(nReq, sixteen);
         BOOST_CHECK(!s.empty());
     }
+}
+
+/*
+ * Tamper tests on the single-signer (P2PH) path: corrupting a single byte
+ * of the ECDSA signature, a single byte of the ML-DSA signature, or a
+ * single byte of the ML-DSA public key must each cause verification to
+ * fail.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_single_tamper_rejected)
+{
+    CHybridKey key;
+    GenerateHybridKey(key);
+
+    CHybridPubKey pub(key.secpPub.Raw(), key.mldsaSigner->GetPublicKey());
+    BOOST_REQUIRE(pub.IsValid());
+
+    CScript scriptPubKey = GetScriptForHybridPubKey(pub);
+    BOOST_REQUIRE(!scriptPubKey.empty());
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = scriptPubKey;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    std::vector<unsigned char> ecSig, mlSig;
+    CScript valid =
+        SignHybridPair(key, scriptPubKey, txTo, 0, SIGHASH_ALL, ecSig, mlSig);
+    BOOST_REQUIRE(!valid.empty());
+    BOOST_REQUIRE(!ecSig.empty());
+    BOOST_REQUIRE(!mlSig.empty());
+
+    // Baseline: the untampered pair verifies.
+    BOOST_CHECK(VerifyScript(valid, scriptPubKey, txTo, 0, false, 0));
+
+    // 1) Corrupt a single byte in the middle of the ECDSA signature.
+    std::vector<unsigned char> badEc = ecSig;
+    BOOST_REQUIRE(badEc.size() > 2);
+    badEc[badEc.size() / 2] ^= 0x01;
+    CScript badEcScript;
+    badEcScript << badEc << mlSig;
+    BOOST_CHECK(!VerifyScript(badEcScript, scriptPubKey, txTo, 0, false, 0));
+
+    // 2) Corrupt a single byte in the middle of the ML-DSA signature.
+    std::vector<unsigned char> badMl = mlSig;
+    BOOST_REQUIRE(badMl.size() > 2);
+    badMl[badMl.size() / 2] ^= 0x01;
+    CScript badMlScript;
+    badMlScript << ecSig << badMl;
+    BOOST_CHECK(!VerifyScript(badMlScript, scriptPubKey, txTo, 0, false, 0));
+
+    // 3) Corrupt a single byte of the ML-DSA public key.
+    //    Verified directly against the hybrid message so the corruption is
+    //    isolated (a script-level re-check would also rehash the script).
+    std::vector<unsigned char> preimage;
+    BOOST_REQUIRE(ConstructSignatureHashPreimage(
+        scriptPubKey, txTo, 0, SIGHASH_ALL, preimage));
+    std::vector<unsigned char> msg = BuildHybridMessage(preimage);
+
+    std::vector<unsigned char> mldsaSigBody(mlSig.begin(), mlSig.end() - 1);
+    BOOST_CHECK(VerifyMLDSA(mldsaSigBody, pub.mldsaPubKey, msg));
+
+    std::vector<unsigned char> badMldsaPub = pub.mldsaPubKey;
+    BOOST_REQUIRE(badMldsaPub.size() > 2);
+    badMldsaPub[badMldsaPub.size() / 2] ^= 0x01;
+    BOOST_CHECK(!VerifyMLDSA(mldsaSigBody, badMldsaPub, msg));
 }

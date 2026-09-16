@@ -72,7 +72,12 @@ of crashing, including the positive 16-key boundary. A combine test
 combining layer requires BOTH the ECDSA and the ML-DSA half of each
 candidate pair to verify (`VerifyHybridSignature`) before accepting it, so
 a pair with a valid ECDSA but invalid ML-DSA signature is never propagated
-into the combined scriptSig.
+into the combined scriptSig. A tamper-rejection test
+(`hybrid_single_tamper_rejected`) flips a single byte in each of the ECDSA
+signature, the ML-DSA signature, and the ML-DSA public key of a valid P2PH
+spend and asserts that the corrupted variant fails to verify while the
+unmodified baseline still passes (the public-key case is checked directly
+via `VerifyMLDSA` so the corruption is isolated from script re-hashing).
 
 Walkthrough of the legacy test sources that were restored:
 
@@ -194,7 +199,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 85 test cases...
+Running 86 test cases...
 
 *** No errors detected
 ```
