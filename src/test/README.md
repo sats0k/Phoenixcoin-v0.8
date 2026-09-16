@@ -77,7 +77,16 @@ into the combined scriptSig. A tamper-rejection test
 signature, the ML-DSA signature, and the ML-DSA public key of a valid P2PH
 spend and asserts that the corrupted variant fails to verify while the
 unmodified baseline still passes (the public-key case is checked directly
-via `VerifyMLDSA` so the corruption is isolated from script re-hashing).
+via `VerifyMLDSA` so the corruption is isolated from script re-hashing). A
+P2HPKH spend test (`hybrid_p2hphk_spend`) exercises the
+`OP_DUPHYBRID`/`OP_HASHHYBRID160`/`OP_CHECKHYBRIDSIG` output used by hybrid
+mining coinbases (`GetScriptForHybridPubKeyHash`): the script is detected as
+`TX_HYBRID_PUBKEYHASH`, recognized as mine via `HaveHybridKeyByHash`, signed
+by the keystore, and verified. It asserts the `<sigEC> <sigML> <pubEC>
+<pubML>` scriptSig layout (the public keys must be revealed for
+`OP_DUPHYBRID`), and rejects byte flips in the stored hash and in the
+revealed ML-DSA public key as well as a signature-only scriptSig (the
+four-item `OP_DUPHYBRID` stack guard).
 
 Walkthrough of the legacy test sources that were restored:
 
@@ -199,7 +208,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 86 test cases...
+Running 87 test cases...
 
 *** No errors detected
 ```

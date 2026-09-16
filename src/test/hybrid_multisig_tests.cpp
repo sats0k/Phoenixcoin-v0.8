@@ -377,6 +377,18 @@ static CScript SignHybridPartial(const CHybridKey& key,
     return SignHybridPair(key, scriptPubKey, txTo, nIn, nHashType, ecSig, mlSig);
 }
 
+static std::vector<std::vector<unsigned char> > ScriptSigItems(const CScript& script)
+{
+    std::vector<std::vector<unsigned char> > items;
+    CScript::const_iterator it = script.begin();
+    opcodetype opcode;
+    std::vector<unsigned char> vch;
+    while (script.GetOp(it, opcode, vch)) {
+        items.push_back(vch);
+    }
+    return items;
+}
+
 BOOST_AUTO_TEST_CASE(hybrid_multisig_ismine_and_spend)
 {
     CHybridTestKeyStore keystore;
@@ -1025,4 +1037,98 @@ BOOST_AUTO_TEST_CASE(hybrid_single_tamper_rejected)
     BOOST_REQUIRE(badMldsaPub.size() > 2);
     badMldsaPub[badMldsaPub.size() / 2] ^= 0x01;
     BOOST_CHECK(!VerifyMLDSA(mldsaSigBody, badMldsaPub, msg));
+}
+
+/*
+ * Pay-to-Hybrid-Public-Key-Hash (P2HPKH) spend path.
+ *
+ * scriptPubKey is:
+ *
+ *   OP_DUPHYBRID OP_HASHHYBRID160 <Hash160(pubEC || pubML)>
+ *   OP_EQUALVERIFY OP_CHECKHYBRIDSIG
+ *
+ * and is what hybrid coinbase outputs use (`main.cpp` CreateNewBlock with
+ * -minehybrid, via GetScriptForHybridPubKeyHash). Unlike P2PH the public
+ * keys are NOT in the script, so the spender must reveal them: the
+ * scriptSig is <sigEC> <sigML> <pubEC> <pubML>. OP_DUPHYBRID duplicates
+ * the top two stack items (the two public keys) before they are hashed.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_p2hphk_spend)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 1);
+    BOOST_REQUIRE_EQUAL(pubs.size(), 1U);
+    BOOST_REQUIRE(pubs[0].IsValid());
+
+    // Mirror main.cpp: coinbase output for a hybrid mining key.
+    CScript p2hphk = GetScriptForHybridPubKeyHash(uint160(pubs[0].GetID()));
+    BOOST_REQUIRE(!p2hphk.empty());
+
+    txnouttype whichType;
+    std::vector<std::vector<unsigned char> > solutions;
+    BOOST_CHECK(Solver(p2hphk, whichType, solutions));
+    BOOST_CHECK_EQUAL(whichType, TX_HYBRID_PUBKEYHASH);
+    BOOST_CHECK_EQUAL(ScriptSigArgsExpected(whichType, solutions), 4);
+
+    CHybridTestKeyStore empty;
+    BOOST_CHECK(IsMine(empty, p2hphk) == MINE_NO);
+    BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_SPENDABLE);
+
+    CTransaction txFrom;
+    txFrom.vout.resize(1);
+    txFrom.vout[0].scriptPubKey = p2hphk;
+
+    CTransaction txTo;
+    txTo.vin.resize(1);
+    txTo.vout.resize(1);
+    txTo.vin[0].prevout.hash = txFrom.GetHash();
+    txTo.vin[0].prevout.n = 0;
+
+    // The wallet keystore signs the P2HPKH output (SignHybridTx's
+    // TX_HYBRID_PUBKEYHASH branch).
+    BOOST_REQUIRE(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+    BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig, p2hphk, txTo, 0, false, 0));
+
+    // The scriptSig must reveal <sigEC> <sigML> <pubEC> <pubML> so that
+    // OP_DUPHYBRID finds the public keys on the stack.
+    std::vector<std::vector<unsigned char> > items =
+        ScriptSigItems(txTo.vin[0].scriptSig);
+    BOOST_REQUIRE_EQUAL(items.size(), 4U);
+    BOOST_CHECK(items[0].size() >= 70 && items[0].size() <= 73); // DER sig + sighash byte
+    BOOST_CHECK_EQUAL(items[1].size(), 3310U);                   // ML-DSA-65 + sighash byte
+    BOOST_CHECK_EQUAL(items[2].size(), 33U);                     // compressed secp pubkey
+    BOOST_CHECK_EQUAL(items[3].size(), 1952U);                   // raw ML-DSA-65 pubkey
+    BOOST_CHECK(items[2] == pubs[0].ecdsaPubKey);
+    BOOST_CHECK(items[3] == pubs[0].mldsaPubKey);
+
+    // Negative: a byte flip anywhere in the scriptPubKey hash makes
+    // OP_EQUALVERIFY fail.
+    {
+        std::vector<unsigned char> badScript(p2hphk.begin(), p2hphk.end());
+        BOOST_REQUIRE(badScript.size() > 0);
+        badScript[badScript.size() / 2] ^= 0x01;
+        CScript p2hphkBad(badScript.begin(), badScript.end());
+        BOOST_CHECK(!VerifyScript(txTo.vin[0].scriptSig, p2hphkBad, txTo, 0, false, 0));
+    }
+
+    // Negative: a byte flip in the revealed ML-DSA public key changes the
+    // Hash160, so OP_EQUALVERIFY aborts before any signature check.
+    {
+        std::vector<unsigned char> badMldsaPub = items[3];
+        BOOST_REQUIRE(badMldsaPub.size() > 2);
+        badMldsaPub[badMldsaPub.size() / 2] ^= 0x01;
+
+        CScript badScriptSig;
+        badScriptSig << items[0] << items[1] << items[2] << badMldsaPub;
+        BOOST_CHECK(!VerifyScript(badScriptSig, p2hphk, txTo, 0, false, 0));
+    }
+
+    // Negative: OP_DUPHYBRID requires four stack items
+    // (sigEC sigML pubEC pubML); a scriptSig with only the signatures
+    // (public keys missing) must be rejected before any hashing.
+    {
+        CScript missingKeys;
+        missingKeys << items[0] << items[1];
+        BOOST_CHECK(!VerifyScript(missingKeys, p2hphk, txTo, 0, false, 0));
+    }
 }
