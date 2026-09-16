@@ -569,8 +569,7 @@ MLDSASigner::FromSerializedV2(const std::vector<uint8_t>& in) {
     if (!pkey)
         return nullptr;
 
-    if (EVP_PKEY_id(pkey) != EVP_PKEY_ML_DSA_65 ||
-        !VerifyRawPublicKey(pkey, pub, pub_len)) {
+    if (!VerifyRawPublicKey(pkey, pub, pub_len)) {
         EVP_PKEY_free(pkey);
         return nullptr;
     }

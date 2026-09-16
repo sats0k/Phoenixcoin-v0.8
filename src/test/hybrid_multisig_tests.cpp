@@ -389,6 +389,42 @@ static std::vector<std::vector<unsigned char> > ScriptSigItems(const CScript& sc
     return items;
 }
 
+static std::vector<unsigned char> Bytes(const std::string& s)
+{
+    return std::vector<unsigned char>(s.begin(), s.end());
+}
+
+// Builds the v1 ML-DSA-65 private-key record parsed by FromSerialized():
+//   [alg:1] [pub_len:2 BE] pub [priv_len:2 BE] priv
+static std::vector<unsigned char> MakeV1Record(
+    uint16_t pubLen, const std::vector<unsigned char>& pub,
+    uint16_t privLen, const std::vector<unsigned char>& priv)
+{
+    std::vector<unsigned char> out;
+    out.push_back(static_cast<unsigned char>(SigAlg::ML_DSA_65));
+    out.push_back(pubLen >> 8);
+    out.push_back(pubLen & 0xff);
+    out.insert(out.end(), pub.begin(), pub.end());
+    out.push_back(privLen >> 8);
+    out.push_back(privLen & 0xff);
+    out.insert(out.end(), priv.begin(), priv.end());
+    return out;
+}
+
+// Re-wraps a v1 record into the v2 disk record parsed by
+// FromSerializedV2():
+//   'HYBK' [version:1] [alg:1] [flags:1] <v1 tail>
+static std::vector<unsigned char> MakeV2Record(const std::vector<unsigned char>& v1)
+{
+    std::vector<unsigned char> out(HYBRID_MAGIC, HYBRID_MAGIC + 4);
+    out.push_back(HYBRID_VERSION);
+    out.push_back(v1[0]);
+    out.push_back(0); // flags
+    for (size_t i = 1; i < v1.size(); ++i)
+        out.push_back(v1[i]);
+    return out;
+}
+
 BOOST_AUTO_TEST_CASE(hybrid_multisig_ismine_and_spend)
 {
     CHybridTestKeyStore keystore;
@@ -1465,5 +1501,320 @@ BOOST_AUTO_TEST_CASE(hybrid_checksigverify_opcode)
         CScript singleSig;
         singleSig << ecSig;
         BOOST_CHECK(!VerifyScript(singleSig, verifyScript, txTo, 0, false, 0));
+    }
+}
+
+BOOST_AUTO_TEST_CASE(ml_dsa_signer_serializer_edges)
+{
+    /*
+     * Edge cases for the MLDSASigner private-key serializers.
+     *
+     * Three wire formats exist:
+     *   v1: [alg] [pub_len:2] pub [priv_len:2] priv        (FromSerialized)
+     *   v2: 'HYBK' ver alg flags [pub_len:2] pub [priv_len:2] priv
+     *                                                    (FromSerializedV2)
+     *   v3: 'HYBK' 3 'HYBS' 1 salt[16] nonce[12] ct tag[16]  (encrypted)
+     *
+     * The round-trips must reopen the exact same key material and the
+     * parsers must reject truncated, oversized, mismatched, or
+     * wrong-password payloads instead of half-parsing them.
+     */
+
+    std::unique_ptr<MLDSASigner> keyA = MLDSASigner::GenerateNew();
+    BOOST_REQUIRE(keyA);
+
+    const std::vector<unsigned char> pubA = keyA->GetPublicKey();
+    BOOST_REQUIRE_EQUAL(pubA.size(), 1952U);
+
+    std::vector<unsigned char> v1 = keyA->SerializePrivateKey();
+    BOOST_REQUIRE_EQUAL(v1.size(), 5989U); // 1 + 2 + 1952 + 2 + 4032
+    BOOST_REQUIRE_EQUAL(v1[0], (unsigned char)SigAlg::ML_DSA_65);
+
+    // -- v1 round trip: reopened key signs/verifies identically ---------
+    {
+        std::unique_ptr<MLDSASigner> parsed = MLDSASigner::FromSerialized(v1);
+        BOOST_REQUIRE(parsed);
+        BOOST_CHECK(parsed->Algorithm() == SigAlg::ML_DSA_65);
+        BOOST_CHECK(parsed->GetPublicKey() == pubA);
+        BOOST_CHECK(parsed->SerializePrivateKey() == v1);
+
+        const std::vector<unsigned char> msg =
+            Bytes("v1 round trip");
+        std::vector<unsigned char> sig;
+        BOOST_CHECK(keyA->Sign(msg, sig));
+        BOOST_REQUIRE(!sig.empty());
+        BOOST_CHECK(parsed->Verify(msg, sig));
+
+        std::vector<unsigned char> sig2;
+        BOOST_CHECK(parsed->Sign(msg, sig2));
+        BOOST_CHECK(keyA->Verify(msg, sig2));
+    }
+
+    // -- v2 round trip ------------------------------------------------
+    {
+        std::vector<unsigned char> v2 = MakeV2Record(v1);
+        BOOST_REQUIRE_EQUAL(v2.size(), v1.size() + 6);
+        BOOST_REQUIRE(std::equal(HYBRID_MAGIC, HYBRID_MAGIC + 4, v2.begin()));
+
+        std::unique_ptr<MLDSASigner> parsed = MLDSASigner::FromSerializedV2(v2);
+        BOOST_REQUIRE(parsed);
+        BOOST_CHECK(parsed->GetPublicKey() == pubA);
+        BOOST_CHECK(parsed->SerializePrivateKey() == v1);
+
+        const std::vector<unsigned char> msg =
+            Bytes("v2 round trip");
+        std::vector<unsigned char> sig;
+        BOOST_CHECK(keyA->Sign(msg, sig));
+        BOOST_REQUIRE(!sig.empty());
+        BOOST_CHECK(parsed->Verify(msg, sig));
+    }
+
+    // -- v3 encrypted round trip (and empty password) ------------------
+    {
+        const std::vector<unsigned char> pw =
+            Bytes("correct horse battery staple");
+        std::vector<unsigned char> enc = keyA->SerializePrivateKeyEncrypted(pw);
+        BOOST_REQUIRE(!enc.empty());
+        BOOST_REQUIRE_GE(enc.size(), 38U + 16U);
+        BOOST_REQUIRE(std::equal(HYBRID_MAGIC, HYBRID_MAGIC + 4, enc.begin()));
+        BOOST_CHECK_EQUAL(enc[4], HYBRID_VERSION_ENC);
+
+        std::unique_ptr<MLDSASigner> parsed =
+            MLDSASigner::FromEncryptedSerialized(pw, enc);
+        BOOST_REQUIRE(parsed);
+        BOOST_CHECK(parsed->GetPublicKey() == pubA);
+        BOOST_CHECK(parsed->SerializePrivateKey() == v1);
+
+        const std::vector<unsigned char> msg =
+            Bytes("v3 round trip");
+        std::vector<unsigned char> sig;
+        BOOST_CHECK(keyA->Sign(msg, sig));
+        BOOST_REQUIRE(!sig.empty());
+        BOOST_CHECK(parsed->Verify(msg, sig));
+
+        // The empty password is valid both ways.
+        std::vector<unsigned char> encEmpty =
+            keyA->SerializePrivateKeyEncrypted(std::vector<unsigned char>());
+        BOOST_REQUIRE(!encEmpty.empty());
+        std::unique_ptr<MLDSASigner> parsedEmpty =
+            MLDSASigner::FromEncryptedSerialized(std::vector<unsigned char>(),
+                                                 encEmpty);
+        BOOST_REQUIRE(parsedEmpty);
+        BOOST_CHECK(parsedEmpty->GetPublicKey() == pubA);
+    }
+
+    // -- v1 rejection cases --------------------------------------------
+    {
+        // Empty / too short to hold a header.
+        BOOST_CHECK(!MLDSASigner::FromSerialized(std::vector<unsigned char>()));
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            std::vector<unsigned char>(1, 0x02)));
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            std::vector<unsigned char>{0x02, 0x07, 0xa0}));
+
+        // Wrong algorithm byte (not ML_DSA_65).
+        {
+            std::vector<unsigned char> b = v1;
+            b[0] = static_cast<unsigned char>(SigAlg::ECDSA_SECP256K1);
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+        {
+            std::vector<unsigned char> b = v1;
+            b[0] = 0x00;
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+
+        // Zero-length and over-size length fields.
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            MakeV1Record(0, {}, 1, {0x01})));
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            MakeV1Record(2049, {}, 1, {0x01})));
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            MakeV1Record(1, {0x00}, 0, {})));
+        BOOST_CHECK(!MLDSASigner::FromSerialized(
+            MakeV1Record(1, {0x00}, 4097, {})));
+
+        // A length at the accepted limit still passes only if the key
+        // material verifies; garbage content must be rejected.
+        {
+            std::vector<unsigned char> pub(2048, 0), priv(4032, 0);
+            BOOST_CHECK(!MLDSASigner::FromSerialized(
+                MakeV1Record(2048, pub, 4032, priv)));
+        }
+
+        // Truncation inside the public key and inside the private key.
+        {
+            std::vector<unsigned char> b(v1.begin(), v1.begin() + 1000);
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+        {
+            std::vector<unsigned char> b = v1;
+            b.resize(b.size() - 1);
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+
+        // Trailing garbage after the private key.
+        {
+            std::vector<unsigned char> b = v1;
+            b.push_back(0x00);
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+
+        // A flipped byte inside the private key no longer derives the
+        // matching public key.
+        {
+            std::vector<unsigned char> b = v1;
+            b[b.size() / 2] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+
+        // The public key of a different key: the private key is intact
+        // but no longer matches the embedded public key, so the record
+        // is rejected.
+        {
+            std::unique_ptr<MLDSASigner> keyB = MLDSASigner::GenerateNew();
+            BOOST_REQUIRE(keyB);
+            const std::vector<unsigned char> pubB = keyB->GetPublicKey();
+            BOOST_REQUIRE_EQUAL(pubB.size(), pubA.size());
+            std::vector<unsigned char> b = v1;
+            for (size_t i = 0; i < pubA.size(); ++i)
+                b[3 + i] = pubB[i];
+            BOOST_CHECK(!MLDSASigner::FromSerialized(b));
+        }
+    }
+
+    // -- v2 rejection cases ---------------------------------------------
+    {
+        std::vector<unsigned char> v2 = MakeV2Record(v1);
+
+        // Wrong magic.
+        {
+            std::vector<unsigned char> b = v2;
+            b[3] = 'X';
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Wrong version: 1 (unknown) and 3 (reserved for encrypted).
+        {
+            std::vector<unsigned char> b = v2;
+            b[4] = 1;
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        {
+            std::vector<unsigned char> b = v2;
+            b[4] = HYBRID_VERSION_ENC;
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Wrong algorithm byte.
+        {
+            std::vector<unsigned char> b = v2;
+            b[5] = static_cast<unsigned char>(SigAlg::ECDSA_SECP256K1);
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Reserved flags must be zero.
+        {
+            std::vector<unsigned char> b = v2;
+            b[6] = 0x01;
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Zero-length public key.
+        {
+            std::vector<unsigned char> b = v2;
+            b[7] = 0x00;
+            b[8] = 0x00;
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Truncated record (last private-key byte dropped).
+        {
+            std::vector<unsigned char> b(v2.begin(), v2.begin() + (v2.size() - 1));
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+        // Trailing garbage.
+        {
+            std::vector<unsigned char> b = v2;
+            b.push_back(0x00);
+            BOOST_CHECK(!MLDSASigner::FromSerializedV2(b));
+        }
+    }
+
+    // -- v3 rejection cases ---------------------------------------------
+    {
+        const std::vector<unsigned char> pw =
+            Bytes("correct horse battery staple");
+        const std::vector<unsigned char> wrongPw = Bytes("wrong password");
+        std::vector<unsigned char> enc = keyA->SerializePrivateKeyEncrypted(pw);
+        BOOST_REQUIRE(!enc.empty());
+
+        // Wrong password: authentication tag fails.
+        BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(wrongPw, enc));
+        // Empty password cannot open a non-empty-password record.
+        BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(
+            std::vector<unsigned char>(), enc));
+
+        // Empty input.
+        BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(
+            pw, std::vector<unsigned char>()));
+
+        // Corrupt magic ('HYBK').
+        {
+            std::vector<unsigned char> b = enc;
+            b[0] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // Outer version must be HYBRID_VERSION_ENC (3).
+        {
+            std::vector<unsigned char> b = enc;
+            b[4] = HYBRID_VERSION;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        {
+            std::vector<unsigned char> b = enc;
+            b[4] = 0x09;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // Inner hybrid-signature version must be 1.
+        {
+            std::vector<unsigned char> b = enc;
+            b[9] = HYBRID_SIG_VERSION + 1;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // A flipped salt byte derives a different key -> auth failure.
+        {
+            std::vector<unsigned char> b = enc;
+            b[13] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // A flipped nonce byte fails GCM decryption.
+        {
+            std::vector<unsigned char> b = enc;
+            b[26] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // A flipped ciphertext byte fails the tag.
+        {
+            std::vector<unsigned char> b = enc;
+            b[enc.size() / 2] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // A flipped authentication-tag byte fails GCM.
+        {
+            std::vector<unsigned char> b = enc;
+            b[b.size() - 1] ^= 0x01;
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        // Truncation that shaves the tail tag, and a cut to exactly the
+        // header+tag minimum.
+        {
+            std::vector<unsigned char> b(enc.begin(),
+                                         enc.begin() + (enc.size() - 4));
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        {
+            std::vector<unsigned char> b(enc.begin(), enc.begin() + 54);
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
+        {
+            std::vector<unsigned char> b(enc.begin(), enc.begin() + 53);
+            BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
+        }
     }
 }

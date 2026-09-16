@@ -111,7 +111,23 @@ field so such records are rejected. Running the suite prints a single
 expected stderr diagnostic, `ERROR: CDataStream::read() : end of data`
 (serialize.h), from the deliberately truncated v2-without-MLDSA negative
 case in this test; it is benign, the record is still rejected by the new
-field guards, and the suite reports no failures.
+field guards, and the suite reports no failures. A serializer edge-case test
+(`ml_dsa_signer_serializer_edges`) covers all three `MLDSASigner`
+private-key wire formats. For each format a record reopens to the exact
+same key material (public key and private-key re-serialization identical,
+cross signing/verifying against the original signer). The v1 and v2
+parsers reject wrong algorithm bytes, zero-length and over-limit length
+fields (2048/4096), truncation inside either key, trailing garbage, and
+(shared) mismatched public keys; v2 additionally rejects a bad magic
+byte, wrong versions, and non-zero reserved flags. The v3 encrypted
+format rejects wrong and empty-vs-nonempty passwords via the GCM
+authentication tag, corrupted magic, outer/inner version bytes, salt,
+nonce, ciphertext, or tag bytes, truncation, and the header+tag minimum
+size. Building this test exposed a real defect: `FromSerializedV2`
+rejected every valid record because `EVP_PKEY_id()` returns -1 for
+provider-created ML-DSA-65 keys; the redundant type check was removed to
+match the v1 parser (the type is already fixed by
+`EVP_PKEY_new_raw_private_key`).
 
 Walkthrough of the legacy test sources that were restored:
 
@@ -233,7 +249,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 89 test cases...
+Running 90 test cases...
 
 *** No errors detected
 ```
