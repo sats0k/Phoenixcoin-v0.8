@@ -64,19 +64,19 @@ private:
     std::string exp_addrType;
 public:
     TestAddrTypeVisitor(const std::string &exp_addrType) : exp_addrType(exp_addrType) { }
-    bool operator()(const CKeyID &id) const
+    bool operator()(const CKeyID &/*id*/) const
     {
         return (exp_addrType == "pubkey");
     }
-    bool operator()(const CScriptID &id) const
+    bool operator()(const CScriptID &/*id*/) const
     {
         return (exp_addrType == "script");
     }
-    bool operator()(const CNoDestination &no) const
+    bool operator()(const CNoDestination &/*no*/) const
     {
         return (exp_addrType == "none");
     }
-    bool operator()(const CHybridKeyID &id) const
+    bool operator()(const CHybridKeyID &/*id*/) const
     {
         return (exp_addrType == "hybrid");
     }
@@ -99,7 +99,7 @@ public:
         uint160 exp_key(exp_payload);
         return exp_key == id;
     }
-    bool operator()(const CNoDestination &no) const
+    bool operator()(const CNoDestination &/*no*/) const
     {
         return exp_payload.size() == 0;
     }
