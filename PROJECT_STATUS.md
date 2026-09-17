@@ -50,8 +50,11 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides a unit/regression suite (12 test cases) covering:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (17 test cases) inside the full Boost suite, which reports **90 test cases** and passes with no errors. Coverage:
 
+- ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
+- Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
+- Encrypted ML-DSA serialization round-trip (standalone `test_encrypted_keys` check)
 - Hybrid multisig IsMine and spend generation
 - Hybrid multisig P2SH spends
 - Hybrid signature-hash types
@@ -72,6 +75,8 @@ cd src
 make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
 ./test_phoenixcoin
 ```
+
+Three libFuzzer targets (`fuzz_MLDSASigner_deserialize`, `fuzz_encrypted_keys`, `fuzz_hybrid_verify`) build and run cleanly under Clang with ASan/UBSan; see `fuzzREADME.md` at the repository root.
 
 ## Consensus
 
@@ -121,11 +126,12 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
+Automated testing is complete: the Boost unit suite passes all 90 test cases with no errors, and the three libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan.
+
 Remaining work focuses on:
 
 - Define the Quantum hard fork height.
-- Finalize wallet usability improvements.
-- Expand automated consensus and regression testing.
+- Finalize wallet usability improvements, including hybrid support in message RPCs (`signmessage`/`verifymessage`/`encryptmessage`/`decryptmessage` currently reject hybrid addresses).
 - Release Quantum node software.
 - Release updated wallet binaries.
 - Coordinate network activation.
@@ -136,4 +142,4 @@ The hybrid cryptographic implementation is complete and operational.
 
 Hybrid transactions are fully functional, consensus-enforced, wallet-supported, and successfully mined by the internal miner, external miners, and P2Pool without requiring modifications to mining software.
 
-The remaining work is primarily related to wallet improvements, testing, release preparation, and coordinated network deployment through a hard fork.
+The remaining work is primarily related to wallet improvements, release preparation, and coordinated network deployment through a hard fork.

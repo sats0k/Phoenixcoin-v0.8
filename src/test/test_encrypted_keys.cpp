@@ -1,4 +1,5 @@
 #include "hs/hybrid_signer.h"
+#include "util.h"
 
 #include <cstdio>
 
