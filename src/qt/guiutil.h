@@ -26,6 +26,9 @@ namespace GUIUtil {
     /* Render addresses in the monospace font */
     QFont AddressFont();
 
+    /* Apply the modern light or dark Fusion palette application-wide */
+    void applyTheme(bool fDarkTheme);
+
     // Set up widgets for address and amounts
     void setupAddressWidget(QLineEdit *widget, QWidget *parent);
     void setupAmountWidget(QLineEdit *widget, QWidget *parent);

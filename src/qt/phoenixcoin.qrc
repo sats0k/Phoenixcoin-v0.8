@@ -79,6 +79,9 @@
         <file alias="spinner-23">res/movies/spinner-23.png</file>
         <file alias="spinner-24">res/movies/spinner-24.png</file>
     </qresource>
+    <qresource prefix="/fonts">
+        <file alias="fontawesome">res/fonts/fa-solid-900.ttf</file>
+    </qresource>
     <qresource prefix="/translations">
         <file alias="de">locale/phoenixcoin_de.qm</file>
         <file alias="en">locale/phoenixcoin_en.qm</file>

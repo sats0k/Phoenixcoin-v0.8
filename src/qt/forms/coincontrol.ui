@@ -51,7 +51,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -83,7 +83,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -131,7 +131,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -163,7 +163,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -211,7 +211,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -249,7 +249,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -297,7 +297,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">
@@ -335,7 +335,7 @@
          <property name="font">
           <font>
            <family>Monospace</family>
-           <pointsize>10</pointsize>
+           <pointsize>8</pointsize>
           </font>
          </property>
          <property name="cursor">

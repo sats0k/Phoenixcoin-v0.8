@@ -13,6 +13,8 @@
 #include <QDesktopServices>
 #include <QThread>
 #include <QLocale>
+#include <QPalette>
+#include <QList>
 
 #if (QT_VERSION < 0x050000)
 #include <QUrl>
@@ -49,6 +51,7 @@ QString dateTimeStr(qint64 nTime)
 
 QFont AddressFont() {
     QFont font("Monospace");
+    font.setPointSize(8);
     font.setStyleHint(QFont::TypeWriter);
     return(font);
 }
@@ -57,6 +60,61 @@ void setupAddressWidget(QLineEdit *widget, QWidget *parent) {
     widget->setMaxLength(AddressValidator::MaxAddressLength);
     widget->setValidator(new AddressValidator(parent));
     widget->setFont(AddressFont());
+}
+
+void applyTheme(bool fDarkTheme) {
+    QPalette pal;
+    if (fDarkTheme)
+    {
+        pal.setColor(QPalette::Window,          QColor(30,  30,  46));
+        pal.setColor(QPalette::WindowText,      QColor(205, 214, 244));
+        pal.setColor(QPalette::Base,            QColor(24,  24,  37));
+        pal.setColor(QPalette::AlternateBase,   QColor(30,  30,  46));
+        pal.setColor(QPalette::ToolTipBase,     QColor(30,  30,  46));
+        pal.setColor(QPalette::ToolTipText,     QColor(205, 214, 244));
+        pal.setColor(QPalette::Text,            QColor(205, 214, 244));
+        pal.setColor(QPalette::Button,          QColor(49,  50,  68));
+        pal.setColor(QPalette::ButtonText,      QColor(205, 214, 244));
+        pal.setColor(QPalette::BrightText,      QColor(243, 139, 168));
+        pal.setColor(QPalette::Highlight,       QColor(223, 142, 29));
+        pal.setColor(QPalette::HighlightedText, QColor(30,  30,  46));
+        pal.setColor(QPalette::Mid,             QColor(108, 110, 133));
+        pal.setColor(QPalette::Midlight,        QColor(53,  54,  73));
+        pal.setColor(QPalette::Light,           QColor(71,  73,  93));
+        pal.setColor(QPalette::Dark,            QColor(24,  24,  37));
+        pal.setColor(QPalette::Shadow,          QColor(26,  26,  39));
+        pal.setColor(QPalette::Link,            QColor(137, 180, 250));
+        pal.setColor(QPalette::LinkVisited,     QColor(203, 166, 247));
+    }
+    else
+    {
+        pal.setColor(QPalette::Window,          QColor(239, 241, 245));
+        pal.setColor(QPalette::WindowText,      QColor(76,  79,  105));
+        pal.setColor(QPalette::Base,            QColor(255, 255, 255));
+        pal.setColor(QPalette::AlternateBase,   QColor(230, 233, 239));
+        pal.setColor(QPalette::ToolTipBase,     QColor(255, 255, 255));
+        pal.setColor(QPalette::ToolTipText,     QColor(76,  79,  105));
+        pal.setColor(QPalette::Text,            QColor(76,  79,  105));
+        pal.setColor(QPalette::Button,          QColor(230, 233, 239));
+        pal.setColor(QPalette::ButtonText,      QColor(76,  79,  105));
+        pal.setColor(QPalette::BrightText,      QColor(210, 15,  57));
+        pal.setColor(QPalette::Highlight,       QColor(223, 142, 29));
+        pal.setColor(QPalette::HighlightedText, QColor(255, 255, 255));
+        pal.setColor(QPalette::Mid,             QColor(140, 143, 161));
+        pal.setColor(QPalette::Midlight,        QColor(230, 233, 239));
+        pal.setColor(QPalette::Light,           QColor(255, 255, 255));
+        pal.setColor(QPalette::Dark,            QColor(204, 208, 218));
+        pal.setColor(QPalette::Shadow,          QColor(124, 127, 147));
+        pal.setColor(QPalette::Link,            QColor(30,  102, 245));
+        pal.setColor(QPalette::LinkVisited,     QColor(136, 57,  239));
+    }
+    QApplication::setPalette(pal);
+    QWidgetList widgets = QApplication::allWidgets();
+    for (int i = 0; i < widgets.size(); ++i) {
+        QWidget *w = widgets.at(i);
+        w->setPalette(pal);
+        w->update();
+    }
 }
 
 void setupAmountWidget(QLineEdit *widget, QWidget *parent)

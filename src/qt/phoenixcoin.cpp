@@ -3,6 +3,11 @@
  */
 
 #include <QApplication>
+#include <QFont>
+#include <QPalette>
+#include <QStyle>
+#include <QStyleFactory>
+#include <QSettings>
 #include <QMessageBox>
 #include <QLocale>
 #include <QTranslator>
@@ -132,6 +137,10 @@ int main(int argc, char *argv[])
     Q_INIT_RESOURCE(phoenixcoin);
     QApplication app(argc, argv);
 
+    // Use Cantarell as the default font (static Qt is built without fontconfig)
+    app.setFont(QFont("Cantarell", 9));
+
+
     // Install global event filter that makes sure that long tooltips can be word-wrapped
     app.installEventFilter(new GUIUtil::ToolTipToRichTextFilter(TOOLTIP_WRAP_THRESHOLD, &app));
 
@@ -159,6 +168,28 @@ int main(int argc, char *argv[])
         app.setApplicationName("Phoenixcoin-Qt-testnet");
     else
         app.setApplicationName("Phoenixcoin-Qt");
+    // Modern theme: Fusion style (built into static Qt) + light or dark palette.
+    // Select with  -theme=light|dark  (command line or phoenixcoin.conf),
+    // or with the saved -theme option from earlier runs (default: light).
+    app.setStyle(QStyleFactory::create("Fusion"));
+
+    // Read theme: -theme=light|dark, fall back to saved setting, default light
+    QSettings themeSettings;
+    QString strTheme = QString::fromStdString(GetArg("-theme", ""));
+    if (strTheme.isEmpty())
+        strTheme = themeSettings.value("strTheme", "light").toString();
+    if (QString::compare(strTheme, "light", Qt::CaseInsensitive) == 0 ||
+        QString::compare(strTheme, "1",    Qt::CaseInsensitive) == 0)
+        strTheme = "light";
+    else if (QString::compare(strTheme, "dark", Qt::CaseInsensitive) == 0)
+        strTheme = "dark";
+    else
+        strTheme = "light";
+    themeSettings.setValue("strTheme", strTheme);
+    bool fDarkTheme = (QString::compare(strTheme, "dark", Qt::CaseInsensitive) == 0);
+
+    GUIUtil::applyTheme(fDarkTheme);
+
 
     // ... then GUI settings:
     OptionsModel optionsModel;

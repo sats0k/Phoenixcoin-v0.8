@@ -19,6 +19,11 @@
 #include <QMessageBox>
 #include <QProgressBar>
 #include <QStackedWidget>
+#include <QSettings>
+#include <QToolButton>
+#include <QFontDatabase>
+#include <QPixmap>
+#include <QPainter>
 #include <QDateTime>
 #include <QFileDialog>
 #include <QTimer>
@@ -61,6 +66,20 @@
 #include "macdockiconhandler.h"
 #endif
 
+static QIcon faIcon(int codepoint, const QColor &color, int pixelSize = 14)
+{
+    QFont faFont("Font Awesome 6 Free");
+    faFont.setPixelSize(pixelSize);
+    QPixmap pm(pixelSize * 2, pixelSize * 2);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setPen(QPen(color));
+    p.setFont(faFont);
+    p.drawText(pm.rect(), Qt::AlignCenter, QString(QChar(codepoint)));
+    return QIcon(pm);
+}
+
 GUI::GUI(QWidget *parent):
     QMainWindow(parent),
     clientModel(0),
@@ -74,6 +93,12 @@ GUI::GUI(QWidget *parent):
     prevBlocks(0),
     spinnerFrame(0)
 {
+    static bool bLoadedFaithFont = false;
+    if (!bLoadedFaithFont)
+    {
+        QFontDatabase::addApplicationFont(":/fonts/fontawesome");
+        bLoadedFaithFont = true;
+    }
     setWindowTitle(tr("Phoenixcoin") + " - " + tr("Wallet"));
 #ifndef Q_OS_MAC
     qApp->setWindowIcon(QIcon(":icons/phoenixcoin"));
@@ -418,6 +443,37 @@ void GUI::createMenuBar() {
     QMenu *help = appMenuBar->addMenu(tr("&Help"));
     help->addAction(aboutAction);
     help->addAction(aboutQtAction);
+
+    // Light/dark theme switch (visible in the top-right of the menu bar)
+    QSettings themeSettings;
+    bool fDark = (QString::compare(themeSettings.value("strTheme", "light").toString(),
+                                   "dark", Qt::CaseInsensitive) == 0);
+    QToolButton *themeSwitch = new QToolButton(appMenuBar);
+    themeSwitch->setCheckable(true);
+    themeSwitch->setChecked(fDark);
+    themeSwitch->setText(QString());
+    themeSwitch->setIcon(fDark ? faIcon(0xf185, QColor(230, 145, 20))      // sun
+                               : faIcon(0xf186, QColor(180, 190, 220, 220))); // moon
+    themeSwitch->setIconSize(QSize(20, 20));
+    themeSwitch->setToolTip(tr("Switch between light and dark theme"));
+    themeSwitch->setStatusTip(tr("Switch between light and dark theme"));
+    themeSwitch->setStyleSheet("QToolButton { padding: 2px 6px; margin: 1px; border: none; }");
+    connect(themeSwitch, SIGNAL(toggled(bool)), this, SLOT(toggleTheme(bool)));
+    appMenuBar->setCornerWidget(themeSwitch, Qt::TopRightCorner);
+}
+
+void GUI::toggleTheme(bool fDark)
+{
+    QSettings themeSettings;
+    themeSettings.setValue("strTheme", fDark ? "dark" : "light");
+    GUIUtil::applyTheme(fDark);
+    QToolButton *themeSwitch = qobject_cast<QToolButton *>(appMenuBar->cornerWidget(Qt::TopRightCorner));
+    if (themeSwitch)
+    {
+        themeSwitch->setChecked(fDark);
+        themeSwitch->setIcon(fDark ? faIcon(0xf185, QColor(230, 145, 20))      // sun
+                                   : faIcon(0xf186, QColor(180, 190, 220, 220))); // moon
+    }
 }
 
 void GUI::createToolBars() {

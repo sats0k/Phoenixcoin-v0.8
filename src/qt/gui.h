@@ -116,6 +116,8 @@ private:
     void createTrayIcon();
 
 public slots:
+    /** Toggle between light and dark theme */
+    void toggleTheme(bool fDark);
     /** Set number of connections shown in the UI */
     void setNumConnections(int count);
     /** Set number of blocks shown in the UI */
