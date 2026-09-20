@@ -119,24 +119,12 @@ Value gethybridaddress(const Array& params, bool fHelp) {
 
     LOCK(pwalletMain->cs_wallet);
 
-    // Keep at least 20 spare keys (top up when running low). The container
-    // reads and the pool replenishment must happen under cs_wallet to avoid
-    // racing with other RPC/threads mutating the same containers.
-    if (pwalletMain->setUnusedHybridKeys.size() < 5) {
-        if (!pwalletMain->EnsureHybridKeyPool(
-                pwalletMain->mapHybridKeys.size() + 20)) {
-            throw JSONRPCError(RPC_WALLET_ERROR,
-                               "Error: Failed to replenish hybrid key pool.");
-        }
-    }
-
-    if (pwalletMain->setUnusedHybridKeys.empty())
+    // Allocate one unused key; this also tops up the pool when running low
+    // and persists the key as used so it is never re-issued after a restart.
+    CHybridKeyID hybridID;
+    if (!pwalletMain->GetUnusedHybridKey(hybridID))
         throw JSONRPCError(RPC_WALLET_ERROR,
                            "Error: No unused hybrid keys available.");
-
-    // Allocate one unused key.
-    CHybridKeyID hybridID = *pwalletMain->setUnusedHybridKeys.begin();
-    pwalletMain->setUnusedHybridKeys.erase(hybridID);
 
     // Optional address label.
     if (params.size() > 0) {

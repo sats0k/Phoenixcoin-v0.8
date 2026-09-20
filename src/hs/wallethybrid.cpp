@@ -561,6 +561,11 @@ void CWallet::LoadHybridKeys()
 
     LOCK(cs_wallet);
     CWalletDB walletdb(strWalletFile);
+
+    if (!walletdb.LoadHybridUsedKeys(setUsedHybridKeys))
+        printf("No recorded used-hybrid-key set; scanning wallet "
+               "transactions for historically used keys\n");
+
     std::vector<std::pair<CHybridKeyID, CHybridKeyDisk>> keyDisks;
 
     if (!walletdb.LoadAllHybridKeys(keyDisks)) {
@@ -694,7 +699,8 @@ bool CWallet::DecryptHybridKeys(const CKeyingMaterial& vMasterKey)
 
         mapHybridKeys.emplace(hybridID, std::move(mem));
         mapHybridSigners.emplace(hybridID, std::move(signer));
-        setUnusedHybridKeys.insert(hybridID);
+        if (!setUsedHybridKeys.count(hybridID))
+            setUnusedHybridKeys.insert(hybridID);
 
         // Migrate legacy plaintext records to the encrypted format so that
         // future unlocks (or a cold wallet.dat) no longer expose the private
@@ -848,9 +854,13 @@ bool CWallet::RebuildUnusedHybridKeySet()
 
     setUnusedHybridKeys.clear();
 
+    // Keys that were allocated as receive/change addresses in the past are
+    // excluded so that previously issued addresses are never reused after a
+    // wallet restart.
     for (const auto& it : mapHybridKeys)
     {
-        setUnusedHybridKeys.insert(it.first);
+        if (!setUsedHybridKeys.count(it.first))
+            setUnusedHybridKeys.insert(it.first);
     }
 
     // Encrypted wallets keep at-rest records in mapHybridKeyDisk while locked;
@@ -858,16 +868,95 @@ bool CWallet::RebuildUnusedHybridKeySet()
     // decrypted on unlock).
     for (const auto& it : mapHybridKeyDisk)
     {
-        setUnusedHybridKeys.insert(it.first);
+        if (!setUsedHybridKeys.count(it.first))
+            setUnusedHybridKeys.insert(it.first);
     }
 
     return true;
+}
 
-    // TODO:
-    // RebuildUnusedHybridKeySet() currently assumes every stored hybrid key
-    // is unused after wallet restart. This may cause previously issued receive
-    // addresses to be reused. Funds remain safe, but address reuse reduces
-    // privacy. A persistent "used" flag should be added in a future revision.
+// Scans the wallet's own transactions and address book for hybrid keys that
+// have been used as receive/change addresses in the past and records them in
+// setUsedHybridKeys so they are never issued again after a restart.
+void CWallet::BackfillHybridUsedKeys()
+{
+    LOCK(cs_wallet);
+
+    bool fChanged = false;
+
+    for (std::map<CHybridKeyID, CHybridAddressEntry>::const_iterator it =
+             mapHybridAddressBook.begin();
+         it != mapHybridAddressBook.end(); ++it)
+    {
+        if (setUsedHybridKeys.insert(it->first).second)
+            fChanged = true;
+    }
+
+    for (std::map<uint256, CWalletTx>::const_iterator it = mapWallet.begin();
+         it != mapWallet.end(); ++it)
+    {
+        const CWalletTx& wtx = it->second;
+        for (unsigned int i = 0; i < wtx.vout.size(); ++i)
+        {
+            CTxDestination dest;
+            if (!ExtractDestination(wtx.vout[i].scriptPubKey, dest))
+                continue;
+
+            CHybridKeyID hybridID;
+            bool fFound = false;
+
+            if (const CHybridKeyID* pHybridID = boost::get<CHybridKeyID>(&dest))
+            {
+                hybridID = *pHybridID;
+                fFound = true;
+            }
+            else if (const CKeyID* pKeyID = boost::get<CKeyID>(&dest))
+            {
+                // A payment made to the legacy (secp) address of a hybrid key.
+                // match by the embedded public key, which is present in the
+                // at-rest records even while an encrypted wallet is locked.
+                for (std::map<CHybridKeyID, CHybridKey>::const_iterator hk =
+                         mapHybridKeys.begin();
+                     hk != mapHybridKeys.end(); ++hk)
+                {
+                    if (hk->second.GetKeyID() == *pKeyID)
+                    {
+                        hybridID = hk->first;
+                        fFound = true;
+                        break;
+                    }
+                }
+                if (!fFound)
+                {
+                    for (std::map<CHybridKeyID, CHybridKeyDisk>::const_iterator
+                             dk = mapHybridKeyDisk.begin();
+                         dk != mapHybridKeyDisk.end(); ++dk)
+                    {
+                        if (dk->second.secpPub.GetID() == *pKeyID)
+                        {
+                            hybridID = dk->first;
+                            fFound = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (fFound && (mapHybridKeys.count(hybridID) ||
+                           mapHybridKeyDisk.count(hybridID)))
+            {
+                if (setUsedHybridKeys.insert(hybridID).second)
+                    fChanged = true;
+            }
+        }
+    }
+
+    if (fChanged && fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        if (!walletdb.WriteHybridUsedKeys(setUsedHybridKeys))
+            printf("WARNING: failed to persist backfilled used-hybrid-key set\n");
+    }
 }
 
 bool CWallet::GetUnusedHybridKey(CHybridKeyID& hybridID)
@@ -887,6 +976,15 @@ bool CWallet::GetUnusedHybridKey(CHybridKeyID& hybridID)
     // Allocate the oldest unused key.
     hybridID = *setUnusedHybridKeys.begin();
     setUnusedHybridKeys.erase(setUnusedHybridKeys.begin());
+
+    // Persist usage so the address is never issued again after a restart.
+    setUsedHybridKeys.insert(hybridID);
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        if (!walletdb.WriteHybridUsedKeys(setUsedHybridKeys))
+            printf("WARNING: failed to persist used-hybrid-key set\n");
+    }
 
     return true;
 }

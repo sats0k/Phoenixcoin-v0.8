@@ -75,6 +75,20 @@ bool CWalletDB::WriteHybridAddressEntry(const CHybridKeyID& keyID, const CHybrid
     return Write(make_pair(std::string("hybaddr"), keyID), entry);
 }
 
+// ---- Hybrid Used-Key Set Functions ----
+
+bool CWalletDB::WriteHybridUsedKeys(const std::set<CHybridKeyID>& setUsed)
+{
+    nWalletDBUpdated++;
+    return Write(std::string("hybused"), setUsed);
+}
+
+bool CWalletDB::LoadHybridUsedKeys(std::set<CHybridKeyID>& setUsed)
+{
+    setUsed.clear();
+    return Read(std::string("hybused"), setUsed);
+}
+
 bool CWalletDB::LoadAllHybridAddresses(map<CHybridKeyID, CHybridAddressEntry>& mapAddresses)
 {
     mapAddresses.clear();

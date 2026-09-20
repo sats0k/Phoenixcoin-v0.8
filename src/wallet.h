@@ -93,6 +93,7 @@ public:
     bool EnsureHybridKeyPool(unsigned int nTarget = 20);
     bool RebuildUnusedHybridKeySet();
     bool GetUnusedHybridKey(CHybridKeyID& hybridID);
+    void BackfillHybridUsedKeys();
     bool fFillingKeyPool;
     void LoadHybridKeys();
     bool DecryptHybridKeys(const CKeyingMaterial& vMasterKey);
@@ -106,6 +107,11 @@ public:
     std::map<CHybridKeyID, CHybridKey> mapHybridKeys;
     std::map<CHybridKeyID, std::unique_ptr<MLDSASigner>> mapHybridSigners;
     std::set<CHybridKeyID> setUnusedHybridKeys;
+
+    // Hybrid key IDs that have been allocated as receive/change addresses in
+    // the past. Persisted so that previously issued addresses are never
+    // re-issued after a wallet restart or unlock.
+    std::set<CHybridKeyID> setUsedHybridKeys;
 
     // Encrypted-at-rest hybrid key records for encrypted wallets.
     // Populated at startup while the wallet is locked; decrypted into

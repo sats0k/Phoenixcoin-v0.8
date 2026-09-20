@@ -1739,6 +1739,7 @@ DBErrors CWallet::LoadWallet(bool& fFirstRunRet)
         return nLoadWalletRet;
 
     LoadHybridKeys();
+    BackfillHybridUsedKeys();
     EnsureHybridKeyPool();
     RebuildUnusedHybridKeySet();
 

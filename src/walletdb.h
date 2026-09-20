@@ -12,6 +12,7 @@
 #include <string>
 #include <list>
 #include <vector>
+#include <set>
 
 #include "db.h"
 #include "key.h"
@@ -85,6 +86,10 @@ public:
     bool WriteHybridAddressEntry(const CHybridKeyID& keyID, const CHybridAddressEntry& entry);
 
     bool LoadAllHybridAddresses(std::map<CHybridKeyID, CHybridAddressEntry>& mapAddresses);
+
+    bool WriteHybridUsedKeys(const std::set<CHybridKeyID>& setUsed);
+
+    bool LoadHybridUsedKeys(std::set<CHybridKeyID>& setUsed);
 
     bool WriteName(const std::string& strAddress, const std::string& strName);
 
