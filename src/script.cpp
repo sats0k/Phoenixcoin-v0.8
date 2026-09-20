@@ -1673,11 +1673,10 @@ bool Solver(const CKeyStore& keystore, const CScript& scriptPubKey, uint256 hash
     case TX_HYBRID_PUBKEYHASH:
     case TX_HYBRID_MULTISIG:
     {
-        // Hybrid signing requires access to wallet/keystore to retrieve hybrid keys
-        // For now, return false as these require special handling at a higher level
-        // (in SignSignature which has access to both the transaction and keystore)
-        //
-        // TODO: These are handled in SignSignature() wrapper below
+        // Hybrid signing needs access to both the transaction and input index
+        // (the ML-DSA signature is over the signature-hash preimage), which are
+        // not available to this overload. Hybrid scripts are signed by
+        // SignHybridTx(), reached from the SignSignature() wrapper below.
         return false;
     }
     }
@@ -2260,7 +2259,9 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
             std::vector<valtype> templateSolutions;
             if (Solver(subscript, templateType, templateSolutions)) {
                 CScript hybridSigRet;
-                if (templateType == TX_HYBRID_MULTISIG &&
+                if ((templateType == TX_HYBRID_PUBKEY ||
+                     templateType == TX_HYBRID_PUBKEYHASH ||
+                     templateType == TX_HYBRID_MULTISIG) &&
                     SignHybridTx(keystore, subscript, txTo, nIn, nHashType, hybridSigRet)) {
                     scriptSigRet = hybridSigRet;
                     fSolved = true;
