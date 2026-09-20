@@ -739,9 +739,12 @@ static void RPCAcceptHandler(boost::shared_ptr< basic_socket_acceptor<Protocol> 
 
     AcceptedConnectionImpl<ip::tcp>* tcp_conn = dynamic_cast< AcceptedConnectionImpl<ip::tcp>* >(conn);
 
-    // TODO: Actually handle errors
+    // Log unexpected accept errors so RPC availability problems are visible.
+    // operation_aborted is the normal error when the listener shuts down.
     if (error)
     {
+        if (error != asio::error::operation_aborted)
+            printf("RPC accept failed: %s\n", error.message().c_str());
         delete conn;
     }
 
