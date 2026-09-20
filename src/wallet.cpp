@@ -969,8 +969,35 @@ void CWallet::ReacceptWalletTransactions()
         }
         if (!vMissingTx.empty())
         {
-            // TODO: optimize this to scan just part of the block chain?
-            if (ScanForWalletTransactions(pindexGenesisBlock))
+            // vMissingTx entries carry the on-disk position of the block that
+            // contains each missing transaction, so scan just those blocks
+            // instead of re-scanning the whole chain from genesis.
+            std::set<int64> setMissingBlocks;
+            BOOST_FOREACH(const CDiskTxPos& pos, vMissingTx)
+                setMissingBlocks.insert(((int64)pos.nFile << 32) | pos.nBlockPos);
+
+            bool fScanFailed = false;
+            int nFound = 0;
+            BOOST_FOREACH(int64 nBlockKey, setMissingBlocks)
+            {
+                CBlock block;
+                if (!block.ReadFromDisk((unsigned int)(nBlockKey >> 32), (unsigned int)nBlockKey))
+                {
+                    fScanFailed = true;
+                    break;
+                }
+                BOOST_FOREACH(CTransaction& tx, block.vtx)
+                    if (AddToWalletIfInvolvingMe(tx, &block))
+                        nFound++;
+            }
+
+            if (fScanFailed)
+            {
+                // Block files could not be read; fall back to a full scan.
+                if (ScanForWalletTransactions(pindexGenesisBlock))
+                    fRepeat = true;
+            }
+            else if (nFound > 0)
                 fRepeat = true;  // Found missing transactions: re-do re-accept.
         }
     }
