@@ -304,9 +304,21 @@ void CAddrMan::Good_(const CService &addr, int64 nTime)
         }
     }
 
-    // if no bucket is found, something bad happened;
-    // TODO: maybe re-add the node, but for now, just bail out
-    if (nUBucket == -1) return;
+    // if no bucket is found, the entry is missing from all "new" buckets
+    // (e.g. after loading an addr.dat with changed bucket parameters).
+    // Re-add it so the successful connection isn't silently dropped and it
+    // can still be promoted to the "tried" table below.
+    if (nUBucket == -1)
+    {
+        nUBucket = info.GetNewBucket(nKey);
+        std::set<int> &vNew = vvNew[nUBucket];
+        if (vNew.count(nId) || info.nRefCount >= ADDRMAN_NEW_BUCKETS_PER_ADDRESS)
+            return;
+        info.nRefCount++;
+        if (vNew.size() == ADDRMAN_NEW_BUCKET_SIZE)
+            ShrinkNew(nUBucket);
+        vvNew[nUBucket].insert(nId);
+    }
 
     printf("Moving %s to tried\n", addr.ToString().c_str());
 
