@@ -978,12 +978,23 @@ bool CWallet::GetUnusedHybridKey(CHybridKeyID& hybridID)
     setUnusedHybridKeys.erase(setUnusedHybridKeys.begin());
 
     // Persist usage so the address is never issued again after a restart.
+    const bool fWasUsed = setUsedHybridKeys.count(hybridID) != 0;
     setUsedHybridKeys.insert(hybridID);
+
     if (fFileBacked)
     {
         CWalletDB walletdb(strWalletFile);
         if (!walletdb.WriteHybridUsedKeys(setUsedHybridKeys))
+        {
             printf("WARNING: failed to persist used-hybrid-key set\n");
+
+            // Roll back the in-memory allocation because persistence failed.
+            if (!fWasUsed)
+                setUsedHybridKeys.erase(hybridID);
+
+            setUnusedHybridKeys.insert(hybridID);
+            return false;
+        }
     }
 
     return true;
