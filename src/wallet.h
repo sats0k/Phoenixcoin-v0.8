@@ -446,6 +446,7 @@ public:
     char fFromMe;
     std::string strFromAccount;
     std::vector<char> vfSpent; // which outputs are already spent
+    std::vector<unsigned char> vfChange; // which outputs are change
     int64 nOrderPos;  // position in ordered transaction list
 
     // memory only
@@ -490,6 +491,7 @@ public:
         fFromMe = false;
         strFromAccount.clear();
         vfSpent.clear();
+        vfChange.clear();
         fDebitCached = false;
         fCreditCached = false;
         fAvailableCreditCached = false;
@@ -525,6 +527,13 @@ public:
 
             if (nTimeSmart)
                 pthis->mapValue["timesmart"] = strprintf("%u", nTimeSmart);
+
+            std::string strChange;
+            for (unsigned int i = 0; i < pthis->vfChange.size() && i < pthis->vout.size(); i++)
+                if (pthis->vfChange[i])
+                    strChange += (strChange.empty() ? "" : ",") + strprintf("%u", i);
+            if (!strChange.empty())
+                pthis->mapValue["change"] = strChange;
         }
 
         nSerSize += SerReadWrite(s, *(CMerkleTx*)this, nType, nVersion,ser_action);
@@ -549,6 +558,23 @@ public:
             ReadOrderPos(pthis->nOrderPos, pthis->mapValue);
 
             pthis->nTimeSmart = mapValue.count("timesmart") ? (unsigned int)atoi64(pthis->mapValue["timesmart"]) : 0;
+
+            pthis->vfChange.assign(pthis->vout.size(), 0);
+            if (mapValue.count("change"))
+            {
+                std::string strChange = pthis->mapValue["change"];
+                std::string::size_type pos = 0;
+                while (pos < strChange.size())
+                {
+                    std::string::size_type nComma = strChange.find(',', pos);
+                    if (nComma == std::string::npos)
+                        nComma = strChange.size();
+                    unsigned int nIndex = (unsigned int)atoi64(strChange.substr(pos, nComma - pos).c_str());
+                    if (nIndex < pthis->vfChange.size())
+                        pthis->vfChange[nIndex] = 1;
+                    pos = (nComma == strChange.size()) ? strChange.size() : nComma + 1;
+                }
+            }
         }
 
         pthis->mapValue.erase("fromaccount");
@@ -556,7 +582,11 @@ public:
         pthis->mapValue.erase("spent");
         pthis->mapValue.erase("n");
         pthis->mapValue.erase("timesmart");
+        pthis->mapValue.erase("change");
     )
+
+    // returns true if the output at nIndex is change
+    bool IsChange(unsigned int nIndex) const;
 
     // marks certain txout's as spent
     // returns true if any update took place

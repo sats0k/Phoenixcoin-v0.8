@@ -677,13 +677,10 @@ bool CWallet::IsChange(const CTxOut& txout) const
 {
     CTxDestination address;
 
-    // TODO: fix handling of 'change' outputs. The assumption is that any
-    // payment to a TX_PUBKEYHASH that is mine but isn't in the address book
-    // is change. That assumption is likely to break when we implement multisignature
-    // wallets that return change back into a multi-signature-protected address;
-    // a better way of identifying which outputs are 'the send' and which are
-    // 'the change' will need to be implemented (maybe extend CWalletTx to remember
-    // which output, if any, was change).
+    // Heuristic used as a fallback for transactions created before change
+    // tracking: any payment to a script that is mine but isn't in the address
+    // book is assumed to be change. Transactions created by CreateTransaction()
+    // carry an explicit change marker instead and go through CWalletTx::IsChange().
     if (ExtractDestination(txout.scriptPubKey, address) && ::IsMine(*this, address))
     {
         LOCK(cs_wallet);
@@ -691,6 +688,20 @@ bool CWallet::IsChange(const CTxOut& txout) const
             return true;
     }
     return false;
+}
+
+bool CWalletTx::IsChange(unsigned int nIndex) const
+{
+    // Prefer the recorded change marker set by CreateTransaction (covers
+    // hybrid/multisig/custom change destinations that the heuristic below
+    // cannot identify), falling back to the address-book heuristic only for
+    // transactions created before change tracking was added.
+    if (!vfChange.empty())
+        return nIndex < vfChange.size() && vfChange[nIndex];
+
+    if (!pwallet || nIndex >= vout.size())
+        return false;
+    return pwallet->IsChange(vout[nIndex]);
 }
 
 int64 CWalletTx::GetTxTime() const
@@ -755,8 +766,9 @@ void CWalletTx::GetAmounts(list<pair<CTxDestination, int64> >& listReceived,
     }
 
     // Sent/received.
-    BOOST_FOREACH(const CTxOut& txout, vout)
+    for (unsigned int i = 0; i < vout.size(); i++)
     {
+        const CTxOut& txout = vout[i];
         CTxDestination address;
         vector<unsigned char> vchPubKey;
         if (!ExtractDestination(txout.scriptPubKey, address))
@@ -766,7 +778,7 @@ void CWalletTx::GetAmounts(list<pair<CTxDestination, int64> >& listReceived,
         }
 
         // Don't report 'change' txouts
-        if (nDebit > 0 && pwallet->IsChange(txout))
+        if (nDebit > 0 && IsChange(i))
             continue;
 
         if (nDebit > 0)
@@ -1314,6 +1326,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
             while(true) {
                 wtxNew.vin.clear();
                 wtxNew.vout.clear();
+                wtxNew.vfChange.clear();
                 wtxNew.fFromMe = true;
 
                 int64 nTotalValue = nValue + nFeeRet;
@@ -1359,9 +1372,9 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
 
                 if(nChange >= TX_DUST) {
 
-                    // Fill a vout to ourself
-                    // TODO: pass in scriptChange instead of reservekey so
-                    // change transaction isn't always pay-to-phoenixcoin-address
+                    // Fill a vout to ourself. The change destination is chosen below:
+                    // a coin-control destination, a hybrid address when spending
+                    // hybrid inputs, or a fresh regular address.
                     CScript scriptChange;
 
                     /* The Coin Control: send the change to a custom address */
@@ -1402,8 +1415,12 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                     }
 
                     // Insert change txn at random position:
-                    vector<CTxOut>::iterator position = wtxNew.vout.begin() + GetRandInt(wtxNew.vout.size());
-                    wtxNew.vout.insert(position, CTxOut(nChange, scriptChange));
+                    unsigned int nChangeIndex = GetRandInt(wtxNew.vout.size());
+                    wtxNew.vout.insert(wtxNew.vout.begin() + nChangeIndex, CTxOut(nChange, scriptChange));
+
+                    // Remember which output is change
+                    wtxNew.vfChange.assign(wtxNew.vout.size(), 0);
+                    wtxNew.vfChange[nChangeIndex] = 1;
 
                 } else {
 
@@ -1412,6 +1429,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                     nFeeRet += nChange;
                     nChange  = 0;
                     reservekey.ReturnKey();
+                    wtxNew.vfChange.assign(wtxNew.vout.size(), 0);
 
                 }
 
@@ -2008,12 +2026,12 @@ set< set<CTxDestination> > CWallet::GetAddressGroupings()
             }
 
             // group change with input addresses
-            BOOST_FOREACH(CTxOut txout, pcoin->vout)
-                if (IsChange(txout))
+            for (unsigned int i = 0; i < pcoin->vout.size(); i++)
+                if (pcoin->IsChange(i))
                 {
                     CWalletTx tx = mapWallet[pcoin->vin[0].prevout.hash];
                     CTxDestination txoutAddr;
-                    if(!ExtractDestination(txout.scriptPubKey, txoutAddr))
+                    if(!ExtractDestination(pcoin->vout[i].scriptPubKey, txoutAddr))
                         continue;
                     grouping.insert(txoutAddr);
                 }
