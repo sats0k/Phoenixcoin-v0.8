@@ -149,9 +149,15 @@ Value getwork(const Array &params, bool fHelp) {
       throw(JSONRPCError(RPC_CLIENT_IN_INITIAL_DOWNLOAD, "Phoenixcoin is downloading blocks..."));
 
     typedef map<uint256, pair<CBlock*, CScript> > mapNewBlock_t;
-    static mapNewBlock_t mapNewBlock;    // FIXME: thread safety
+    static mapNewBlock_t mapNewBlock;
     static vector<CBlock*> vNewBlock;
     static CReserveKey reservekey(pwalletMain);
+
+    // The RPC server services each connection on its own thread, so getwork()
+    // calls may run concurrently.  Serialize access to the statics above
+    // (mapNewBlock, vNewBlock, reservekey as well as pblock/pindexPrev below).
+    static CCriticalSection cs_getwork;
+    LOCK(cs_getwork);
 
     if (params.size() == 0)
     {
