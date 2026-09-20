@@ -2259,12 +2259,25 @@ bool SignSignature(const CKeyStore &keystore, const CScript& fromPubKey, CTransa
             std::vector<valtype> templateSolutions;
             if (Solver(subscript, templateType, templateSolutions)) {
                 CScript hybridSigRet;
-                if ((templateType == TX_HYBRID_PUBKEY ||
-                     templateType == TX_HYBRID_PUBKEYHASH ||
-                     templateType == TX_HYBRID_MULTISIG) &&
-                    SignHybridTx(keystore, subscript, txTo, nIn, nHashType, hybridSigRet)) {
-                    scriptSigRet = hybridSigRet;
-                    fSolved = true;
+                if (templateType == TX_HYBRID_PUBKEY ||
+                    templateType == TX_HYBRID_PUBKEYHASH ||
+                    templateType == TX_HYBRID_MULTISIG)
+                {
+                    /*
+                     * Keep whatever signatures we produced even when the
+                     * multisig threshold has not been reached yet.  This
+                     * permits several wallets to sign a P2SH hybrid
+                     * multisig transaction one by one: the partial
+                     * scriptSig emitted here is merged with the signatures
+                     * of the other signers by CombineSignatures() the next
+                     * time signrawtransaction() is called.
+                     */
+                    SignHybridTx(keystore, subscript, txTo, nIn, nHashType, hybridSigRet);
+                    if (!hybridSigRet.empty())
+                    {
+                        scriptSigRet = hybridSigRet;
+                        fSolved = true;
+                    }
                 }
             }
         }
