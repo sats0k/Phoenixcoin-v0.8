@@ -82,6 +82,14 @@ non-standard (`ScriptSigArgsExpected` returns `nMa * 2`). It also documents
 that this fork has no clean-stack rule, so extra pairs still verify at
 consensus: the guard therefore belongs in the combiner, and the effective
 gate on a live chain is mempool standardness (`AreInputsStandard`). A
+hybrid-key-pool test (`hybrid_key_pool_invariants`) covers the wallet's
+pre-generated hybrid key pool: `EnsureHybridKeyPool` tops up to its target
+without duplicate `CHybridKeyID`s and is a no-op past it,
+`GetUnusedHybridKey` tops up by +20 when the unused set runs below 5, pool
+accounting holds (`mapHybridKeys == used + unused`), every legacy ECDSA key
+maps 1:1 back to its `CHybridKeyID` via `GetHybridKeyIDByLegacyKeyID`, and
+an encrypted/locked wallet refuses both top-up and allocation until
+unlocked. A
 tamper-rejection test
 (`hybrid_single_tamper_rejected`) flips a single byte in each of the ECDSA
 signature, the ML-DSA signature, and the ML-DSA public key of a valid P2PH
@@ -259,7 +267,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 91 test cases...
+Running 92 test cases...
 
 *** No errors detected
 ```

@@ -1070,6 +1070,106 @@ BOOST_AUTO_TEST_CASE(hybrid_key_plaintext_to_encrypted_migration)
 }
 
 /*
+ * Hybrid-key pool invariants.
+ *
+ * EnsureHybridKeyPool / GetUnusedHybridKey manage the wallet's pool of
+ * pre-generated hybrid keys:
+ *
+ *   - EnsureHybridKeyPool(nTarget) tops up until mapHybridKeys reaches
+ *     nTarget and is a no-op beyond it; every CHybridKeyID in the pool is
+ *     unique.
+ *   - GetUnusedHybridKey tops up when setUnusedHybridKeys runs below 5, so
+ *     pool exhaustion triggers a +20-key top-up.
+ *   - every pooled legacy ECDSA key maps 1:1 back to its CHybridKeyID via
+ *     GetHybridKeyIDByLegacyKeyID (and remains spendable as a plain key).
+ */
+BOOST_AUTO_TEST_CASE(hybrid_key_pool_invariants)
+{
+    CWallet wallet;
+
+    // Top-up 0 -> 20, then a repeat is a no-op (already at target).
+    BOOST_CHECK(wallet.EnsureHybridKeyPool(20));
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 20U);
+    BOOST_CHECK(wallet.EnsureHybridKeyPool(20));
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 20U);
+
+    // Rebuilding the unused set from the loaded pool keeps every key.
+    BOOST_CHECK(wallet.RebuildUnusedHybridKeySet());
+    BOOST_REQUIRE_EQUAL(wallet.setUnusedHybridKeys.size(), 20U);
+
+    // All pooled hybrid IDs are distinct, and each legacy ECDSA key maps
+    // 1:1 back to its own hybrid ID via GetHybridKeyIDByLegacyKeyID.
+    std::set<CHybridKeyID> seen;
+    std::set<CKeyID> seenLegacy;
+    for (const auto& entry : wallet.mapHybridKeys)
+    {
+        BOOST_CHECK(seen.insert(entry.first).second);
+        BOOST_CHECK(wallet.HaveHybridKey(entry.first));
+
+        CKeyID legacy = entry.second.GetKeyID();
+        BOOST_CHECK(seenLegacy.insert(legacy).second);
+        BOOST_CHECK(wallet.HaveKey(legacy));
+
+        CHybridKeyID reverse;
+        BOOST_CHECK(wallet.GetHybridKeyIDByLegacyKeyID(legacy, reverse));
+        BOOST_CHECK(reverse == entry.first);
+    }
+    BOOST_CHECK_EQUAL(seen.size(), 20U);
+    BOOST_CHECK_EQUAL(seenLegacy.size(), 20U);
+
+    // Drain the pool down to just below the top-up threshold (5).
+    std::vector<CHybridKeyID> issued;
+    while (wallet.setUnusedHybridKeys.size() >= 5)
+    {
+        CHybridKeyID id;
+        BOOST_CHECK(wallet.GetUnusedHybridKey(id));
+        issued.push_back(id);
+    }
+    BOOST_REQUIRE_EQUAL(wallet.setUnusedHybridKeys.size(), 4U);
+
+    // Pool exhaustion triggers a top-up of mapHybridKeys.size() + 20.
+    CHybridKeyID toppedUp;
+    BOOST_CHECK(wallet.GetUnusedHybridKey(toppedUp));
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 40U);
+    issued.push_back(toppedUp);
+
+    // Issued keys stay unique across top-ups, used == issued, and the
+    // pool accounting holds: map keys == used + unused.
+    std::set<CHybridKeyID> issuedSet(issued.begin(), issued.end());
+    BOOST_CHECK_EQUAL(issuedSet.size(), issued.size());
+    BOOST_CHECK_EQUAL(wallet.setUsedHybridKeys.size(), issued.size());
+    BOOST_CHECK_EQUAL(wallet.mapHybridKeys.size() - wallet.setUsedHybridKeys.size(),
+                      wallet.setUnusedHybridKeys.size());
+
+    // Every issued key still round-trips its legacy ID back to its hybrid
+    // ID after being allocated.
+    for (const CHybridKeyID& id : issued)
+    {
+        CHybridKey key;
+        BOOST_REQUIRE(wallet.GetHybridKey(id, key));
+        CHybridKeyID reverse;
+        BOOST_CHECK(wallet.GetHybridKeyIDByLegacyKeyID(key.GetKeyID(), reverse));
+        BOOST_CHECK(reverse == id);
+    }
+
+    // The pool refuses to grow while the wallet is locked; unlocking
+    // restores top-up and allocation.
+    CWallet lockedWallet;
+    CKey encKey;
+    CMasterKey masterKey;
+    BOOST_REQUIRE(SetupEncryptedTestWallet(lockedWallet, encKey, masterKey));
+    BOOST_CHECK(lockedWallet.IsLocked());
+    BOOST_CHECK(!lockedWallet.EnsureHybridKeyPool(2));
+    CHybridKeyID locker;
+    BOOST_CHECK(!lockedWallet.GetUnusedHybridKey(locker));
+
+    SecureString pass("correct horse battery staple\n");
+    BOOST_REQUIRE(lockedWallet.Unlock(pass));
+    BOOST_CHECK(lockedWallet.EnsureHybridKeyPool(2));
+    BOOST_CHECK(lockedWallet.GetUnusedHybridKey(locker));
+}
+
+/*
  * CHybridKeyDisk format tampering.
  *
  * Every field of both the plaintext (v2) and encrypted (v3) at-rest records
