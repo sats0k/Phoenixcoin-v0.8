@@ -93,7 +93,13 @@ ValidateHybridKey test (`validate_hybrid_key_negatives`) mutates a valid
 key in isolation and checks each gate rejects it: a wrong/blank/near-miss
 MLDSA algorithm tag, a null MLDSA signer, an uncompressed (65-byte)
 secp256k1 public key synthesized with libsecp256k1, and zero or negative
-creation time. A
+creation time. A signature-isolation test (`verify_hybrid_signature_isolation`)
+calls `VerifyHybridSignature` directly instead of through the script
+interpreter: the size guards on the EC (33) and ML-DSA (1952) public keys
+(empty, undersized, oversized), the shared-sighash-type requirement between
+the EC and ML halves, the `nHashType` enforcement gate, and tampered
+signature/public-key bodies — with positive controls proving genuine pairs
+still verify. A
 hybrid-key-pool test (`hybrid_key_pool_invariants`) covers the wallet's
 pre-generated hybrid key pool: `EnsureHybridKeyPool` tops up to its target
 without duplicate `CHybridKeyID`s and is a no-op past it,
@@ -279,7 +285,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 94 test cases...
+Running 95 test cases...
 
 *** No errors detected
 ```

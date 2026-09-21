@@ -1328,6 +1328,110 @@ BOOST_AUTO_TEST_CASE(validate_hybrid_key_negatives)
 }
 
 /*
+ * VerifyHybridSignature unit isolation.
+ *
+ * VerifyHybridSignature (hybrid_verify.h) is normally reached only from
+ * script execution (OP_CHECKHYBRIDSIG via EvalScript). Exercise it
+ * directly: the size guards on the two public keys
+ * (hybrid_verify.h:247-251), the shared sighash-type requirement between
+ * the EC and ML signatures, and the nHashType enforcement gate all run
+ * independent of any script interpreter.
+ */
+BOOST_AUTO_TEST_CASE(verify_hybrid_signature_isolation)
+{
+    CHybridKey key;
+    GenerateHybridKey(key);
+
+    CHybridPubKey pub(key.secpPub.Raw(), key.mldsaSigner->GetPublicKey());
+    BOOST_REQUIRE(pub.IsValid());
+
+    CScript scriptPubKey = GetScriptForHybridPubKey(pub);
+    BOOST_REQUIRE(!scriptPubKey.empty());
+
+    CTransaction txFrom, txTo;
+    MakeHybridSpend(scriptPubKey, txFrom, txTo);
+
+    const std::vector<unsigned char> ecPub = key.secpPub.Raw();
+    const std::vector<unsigned char> mlPub = key.mldsaSigner->GetPublicKey();
+    BOOST_REQUIRE_EQUAL(ecPub.size(), 33U);
+    BOOST_REQUIRE_EQUAL(mlPub.size(), 1952U);
+
+    std::vector<unsigned char> ecSig, mlSig;
+    BOOST_REQUIRE(!SignHybridPair(
+        key, scriptPubKey, txTo, 0, SIGHASH_ALL, ecSig, mlSig).empty());
+
+    // Positive controls: the exact hash type and the "any type" mode.
+    BOOST_CHECK(VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, SIGHASH_ALL));
+    BOOST_CHECK(VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+
+    // 1) nHashType enforcement: the signatures carry SIGHASH_ALL but the
+    //    caller demands a different type.
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, SIGHASH_NONE));
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, SIGHASH_SINGLE));
+
+    // 2) EC/ML sighash-type mismatch: resign with SIGHASH_NONE to get a
+    //    second pair in which both halves are individually valid...
+    std::vector<unsigned char> ecSigNone, mlSigNone;
+    BOOST_REQUIRE(!SignHybridPair(
+        key, scriptPubKey, txTo, 0, SIGHASH_NONE, ecSigNone, mlSigNone).empty());
+    BOOST_CHECK(VerifyHybridSignature(
+        ecSigNone, mlSigNone, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+
+    //    ...then cross the halves: EC=ALL + ML=NONE and EC=NONE + ML=ALL
+    //    must both be rejected (hashTypeEC != hashTypeML).
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSigNone, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSigNone, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+
+    // 3) Size guards on the public keys (hybrid_verify.h:247-251):
+    //    empty, undersized and oversized for the EC key...
+    const std::vector<unsigned char> empty;
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, empty, mlPub, scriptPubKey, txTo, 0, 0));
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, empty, scriptPubKey, txTo, 0, 0));
+
+    std::vector<unsigned char> ecSmall(ecPub.begin(), ecPub.end() - 1);
+    std::vector<unsigned char> ecBig = ecPub;
+    ecBig.push_back(0x01);
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecSmall, mlPub, scriptPubKey, txTo, 0, 0));
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecBig, mlPub, scriptPubKey, txTo, 0, 0));
+
+    //    ...and the ML-DSA key.
+    std::vector<unsigned char> mlSmall(mlPub.begin(), mlPub.end() - 1);
+    std::vector<unsigned char> mlBig = mlPub;
+    mlBig.push_back(0x01);
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlSmall, scriptPubKey, txTo, 0, 0));
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, mlBig, scriptPubKey, txTo, 0, 0));
+
+    // 4) Genuinely broken material still fails, so none of the gates above
+    //    are indiscriminately rejecting everything.
+    std::vector<unsigned char> badEc = ecSig;
+    badEc[badEc.size() / 2] ^= 0x01;
+    BOOST_CHECK(!VerifyHybridSignature(
+        badEc, mlSig, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+
+    std::vector<unsigned char> badMl = mlSig;
+    badMl[badMl.size() / 2] ^= 0x01;
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, badMl, ecPub, mlPub, scriptPubKey, txTo, 0, 0));
+
+    std::vector<unsigned char> badPub = mlPub;
+    badPub[badPub.size() / 2] ^= 0x01;
+    BOOST_CHECK(!VerifyHybridSignature(
+        ecSig, mlSig, ecPub, badPub, scriptPubKey, txTo, 0, 0));
+}
+
+/*
  * CHybridKeyDisk format tampering.
  *
  * Every field of both the plaintext (v2) and encrypted (v3) at-rest records
