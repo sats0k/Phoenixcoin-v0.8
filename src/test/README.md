@@ -81,7 +81,14 @@ P2SH paths and be a standard input, and a surplus pair makes the input
 non-standard (`ScriptSigArgsExpected` returns `nMa * 2`). It also documents
 that this fork has no clean-stack rule, so extra pairs still verify at
 consensus: the guard therefore belongs in the combiner, and the effective
-gate on a live chain is mempool standardness (`AreInputsStandard`). A
+gate on a live chain is mempool standardness (`AreInputsStandard`). An
+address-round-trip test (`hybrid_address_roundtrip`) encodes a
+`CHybridKeyID` with `CCoinAddress` and decodes it back to the same key ID
+through both `GetHybridKeyID` and the `CTxDestination` variant, checks
+`IsMine` (spendable with the key in the store, `MINE_NO` otherwise),
+verifies that the ECDSA-only PubKey address of the same legacy key is not a
+hybrid address, and confirms that flipping any single Base58 character
+breaks the checksum so the tampered string no longer parses. A
 hybrid-key-pool test (`hybrid_key_pool_invariants`) covers the wallet's
 pre-generated hybrid key pool: `EnsureHybridKeyPool` tops up to its target
 without duplicate `CHybridKeyID`s and is a no-op past it,
@@ -267,7 +274,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 92 test cases...
+Running 93 test cases...
 
 *** No errors detected
 ```

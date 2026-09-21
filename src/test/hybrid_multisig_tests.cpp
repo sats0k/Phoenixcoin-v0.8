@@ -7,6 +7,7 @@
 #include "main.h"
 #include "script.h"
 #include "keystore.h"
+#include "base58.h"
 #include "hs/hybrid_signer.h"
 #include "hs/hybrid_verify.h"
 #include "hs/wallethybrid.h"
@@ -1167,6 +1168,85 @@ BOOST_AUTO_TEST_CASE(hybrid_key_pool_invariants)
     BOOST_REQUIRE(lockedWallet.Unlock(pass));
     BOOST_CHECK(lockedWallet.EnsureHybridKeyPool(2));
     BOOST_CHECK(lockedWallet.GetUnusedHybridKey(locker));
+}
+
+/*
+ * Hybrid address round trip, IsMine, and Base58 corruption.
+ *
+ * CCoinAddress(CHybridKeyID) encodes the 20-byte hybrid key ID under the
+ * hybrid address version byte. ToString()/SetString() must restore the
+ * exact same CHybridKeyID, and IsMine on the resulting destination must
+ * reflect whether the keystore holds the key. Because the 4-byte Base58Check
+ * checksum covers the version byte and the full payload, flipping any single
+ * character of the encoded string must make the address invalid.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_address_roundtrip)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 1);
+
+    CHybridKey hk;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], hk));
+    CHybridKeyID id = hk.GetHybridID();
+
+    // Encode a CHybridKeyID as a Base58 hybrid address.
+    CCoinAddress addr(id);
+    BOOST_CHECK(addr.IsValid());
+    std::string enc = addr.ToString();
+    BOOST_CHECK(!enc.empty());
+
+    // Round trip back to the same key ID.
+    CCoinAddress back(enc);
+    BOOST_CHECK(back.IsValid());
+    CHybridKeyID round;
+    BOOST_CHECK(back.GetHybridKeyID(round));
+    BOOST_CHECK(round == id);
+    BOOST_CHECK(boost::get<CHybridKeyID>(back.Get()) == id);
+    BOOST_CHECK(back.ToString() == enc);
+
+    // CTxDestination round trip through the same code path.
+    CCoinAddress fromDest(static_cast<CTxDestination>(id));
+    BOOST_CHECK(fromDest.ToString() == enc);
+
+    // The ECDSA-only PubKey address of the same key's legacy ID is NOT a
+    // hybrid address: different version byte, different encoding, and it
+    // must not decode as a hybrid key ID.
+    CCoinAddress legacyAddr(hk.GetKeyID());
+    BOOST_CHECK(legacyAddr.IsValid());
+    BOOST_CHECK(legacyAddr.ToString() != enc);
+    CHybridKeyID junk;
+    BOOST_CHECK(!legacyAddr.GetHybridKeyID(junk));
+
+    // IsMine on the hybrid address destination.
+    CTxDestination dest = id;
+    BOOST_CHECK(IsMine(keystore, dest) == MINE_SPENDABLE);
+
+    CHybridTestKeyStore empty;
+    BOOST_CHECK(IsMine(empty, dest) == MINE_NO);
+
+    // Base58 corruption: the checksum covers version + payload, so a
+    // single-character flip at ANY position must fail to parse.
+    const std::string alphabet(
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz");
+    for (size_t pos = 0; pos < enc.size(); ++pos)
+    {
+        std::string bad = enc;
+        bad[pos] = alphabet[(alphabet.find(bad[pos]) + 1)
+                            % alphabet.size()];
+        BOOST_CHECK(bad != enc);
+
+        CCoinAddress tampered(bad);
+        BOOST_CHECK(!tampered.IsValid());
+        CHybridKeyID out;
+        BOOST_CHECK(!tampered.GetHybridKeyID(out));
+    }
+
+    // A completely bogus string is rejected outright.
+    CCoinAddress bogus("1BogusHybridAddress11");
+    BOOST_CHECK(!bogus.IsValid());
+    BOOST_CHECK(!bogus.SetString("zzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
+    CHybridKeyID out;
+    BOOST_CHECK(!bogus.GetHybridKeyID(out));
 }
 
 /*
