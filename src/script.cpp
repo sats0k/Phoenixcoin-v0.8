@@ -2401,6 +2401,10 @@ static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransac
     for (const valtype& v : sigs2)
         if (!v.empty()) both.push_back(v);
 
+    unsigned int nM = vSolutions[0][0];
+    if (nM < 1 || nM > nN)
+        return CScript();
+
     std::vector<bool> have(nN, false);
     std::vector<valtype> ecSigFor(nN), mlSigFor(nN);
 
@@ -2421,10 +2425,17 @@ static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransac
         }
     }
 
+    // OP_CHECKMULTIHYBRIDSIG verifies exactly nM pairs: any additional
+    // signatures leave the two-pointer matcher with unmatched sigs and make
+    // the script unspendable. Emit only the first nM matched keys in order.
     CScript result;
+    unsigned int count = 0;
     for (unsigned int i = 0; i < nN; i++) {
-        if (have[i])
+        if (have[i]) {
             result << ecSigFor[i] << mlSigFor[i];
+            if (++count >= nM)
+                break;
+        }
     }
     return result;
 }
