@@ -559,9 +559,15 @@ public:
 
             pthis->nTimeSmart = mapValue.count("timesmart") ? (unsigned int)atoi64(pthis->mapValue["timesmart"]) : 0;
 
-            pthis->vfChange.assign(pthis->vout.size(), 0);
+            pthis->vfChange.clear();
+
+            // Records written before change tracking carried no "change"
+            // marker; vfChange stays empty so CWalletTx::IsChange() falls
+            // back to the address-book heuristic for those legacy entries.
             if (mapValue.count("change"))
             {
+                pthis->vfChange.assign(pthis->vout.size(), 0);
+
                 std::string strChange = pthis->mapValue["change"];
                 std::string::size_type pos = 0;
                 while (pos < strChange.size())

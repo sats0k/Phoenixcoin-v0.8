@@ -181,7 +181,12 @@ Walkthrough of the legacy test sources that were restored:
   codebase always serializes public keys compressed).
 - `rpc_tests.cpp` includes `rpcmain.h` (the old `rpc.h` header is gone).
 - `wallet_tests.cpp` passes the new `fSpendable` argument to the
-  `COutput` constructor.
+  `COutput` constructor. The wallet test suite also carries a
+  backward-compatibility regression for the change-tracking wallet
+  (`wallet_change_marker_regression`): records written before change
+  tracking carried no `"change"` marker, so `CWalletTx::Unserialize`
+  must load them with an empty `vfChange`, letting `CWalletTx::IsChange`
+  fall back to the address-book heuristic for legacy change outputs.
 - `DoS_tests.cpp` re-implements the removed `ComputeMinWork` helper
   locally (with its original Bitcoin-era parameters, since the
   checkpoint data in the test is Bitcoin blockchain data) and adapts the
@@ -285,7 +290,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 95 test cases...
+Running 96 test cases...
 
 *** No errors detected
 ```

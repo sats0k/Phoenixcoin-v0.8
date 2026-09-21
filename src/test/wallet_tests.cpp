@@ -292,4 +292,70 @@ BOOST_AUTO_TEST_CASE(coin_selection_tests)
     }
 }
 
+/*
+ * Regression for the change-tracking wallet (232cb91b): wallet records
+ * written before change tracking existed carry no "change" marker.
+ * Unserialize must leave vfChange EMPTY for those so that
+ * CWalletTx::IsChange() falls back to the address-book heuristic; an
+ * all-false non-empty vfChange made the fallback unreachable and
+ * misreported every legacy transaction's change outputs as payments.
+ */
+BOOST_AUTO_TEST_CASE(wallet_change_marker_regression)
+{
+    CKey key;
+    key.MakeNewKey(true);
+    CWallet w;
+    BOOST_REQUIRE(w.AddKey(key));
+
+    CTxDestination selfDest(key.GetPubKey().GetID());
+    CScript selfScript;
+    selfScript.SetDestination(selfDest);
+
+    CTransaction base;
+    base.vout.resize(2);
+    base.vout[0] = CTxOut(10 * COIN, selfScript);
+    base.vout[1] = CTxOut(1  * COIN, selfScript);
+
+    // New-style record: the change marker is written for output 1 and is
+    // authoritative on reload, independent of the address book.
+    {
+        CWalletTx marked(&w, base);
+        marked.vfChange.assign(2, 0);
+        marked.vfChange[1] = 1;
+
+        CDataStream ss(SER_DISK, CLIENT_VERSION);
+        ss << marked;
+
+        CWalletTx loaded;
+        ss >> loaded;
+        loaded.BindWallet(&w);
+
+        BOOST_CHECK(!loaded.IsChange(0));
+        BOOST_CHECK(loaded.IsChange(1));
+    }
+
+    // Legacy record (no "change" marker): after loading, vfChange must stay
+    // empty so the address-book heuristic in CWalletTx::IsChange() works.
+    CWalletTx legacy(&w, base);
+    BOOST_CHECK(legacy.vfChange.empty());
+
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << legacy;
+
+    CWalletTx loaded;
+    ss >> loaded;
+    loaded.BindWallet(&w);
+
+    BOOST_CHECK(loaded.vfChange.empty());
+
+    // Self output not named in the address book -> heuristic says change.
+    BOOST_CHECK(loaded.IsChange(0));
+    BOOST_CHECK(loaded.IsChange(1));
+
+    // Once the address is named it is a payment destination, not change.
+    w.SetAddressBookName(selfDest, "someone");
+    BOOST_CHECK(!loaded.IsChange(0));
+    BOOST_CHECK(!loaded.IsChange(1));
+}
+
 BOOST_AUTO_TEST_SUITE_END()
