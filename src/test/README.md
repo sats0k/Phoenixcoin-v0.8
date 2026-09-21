@@ -72,7 +72,17 @@ of crashing, including the positive 16-key boundary. A combine test
 combining layer requires BOTH the ECDSA and the ML-DSA half of each
 candidate pair to verify (`VerifyHybridSignature`) before accepting it, so
 a pair with a valid ECDSA but invalid ML-DSA signature is never propagated
-into the combined scriptSig. A tamper-rejection test
+into the combined scriptSig. A combining-cap regression test
+(`hybrid_multisig_combine_caps_sigs_at_m`) pins the combiner output to
+exactly `nMa` signature pairs: a 2-of-3 spent by two partials carrying 1 + 2
+= 3 valid pairs between them must emit only the first `nMa` matched pairs,
+in key order, the 2-pair result must verify through both the bare and the
+P2SH paths and be a standard input, and a surplus pair makes the input
+non-standard (`ScriptSigArgsExpected` returns `nMa * 2`). It also documents
+that this fork has no clean-stack rule, so extra pairs still verify at
+consensus: the guard therefore belongs in the combiner, and the effective
+gate on a live chain is mempool standardness (`AreInputsStandard`). A
+tamper-rejection test
 (`hybrid_single_tamper_rejected`) flips a single byte in each of the ECDSA
 signature, the ML-DSA signature, and the ML-DSA public key of a valid P2PH
 spend and asserts that the corrupted variant fails to verify while the
@@ -249,7 +259,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 90 test cases...
+Running 91 test cases...
 
 *** No errors detected
 ```

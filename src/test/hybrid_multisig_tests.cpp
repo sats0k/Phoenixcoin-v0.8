@@ -564,6 +564,128 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)
 }
 
 /*
+ * Regression test: CombineHybridMultisig must cap the combined scriptSig at
+ * exactly nMa signature pairs.
+ *
+ * Scenario: a 2-of-3 is spent by two partial signatures carrying 1 + 2 = 3
+ * valid pairs between them. OP_CHECKMULTIHYBRIDSIG's two-pointer matcher
+ * (script.cpp) always walks all nKeysCount keys and requires sigIndex ==
+ * nSigsCount, so the third, surplus pair is never matched and remains on the
+ * stack. This fork has no clean-stack rule, so consensus still accepts the
+ * spend; the surplus pair instead trips AreInputsStandard, which expects
+ * exactly nMa * 2 signature items (ScriptSigArgsExpected). The combiner
+ * therefore must forward only the first nMa matched pairs, in key order.
+ *
+ *   - partial signatures combine to 3 valid pairs
+ *   - the combined scriptSig contains exactly 2 pairs
+ *   - the resulting script verifies successfully (bare and P2SH paths)
+ *   - 2 pairs are a standard input; 3 pairs are not
+ */
+BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_caps_sigs_at_m)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    CTransaction txFrom, txTo;
+    MakeHybridSpend(inner, txFrom, txTo);
+
+    CHybridKey key0, key1, key2;
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[0], key0));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[1], key1));
+    BOOST_REQUIRE(GetHybridKey(keystore, pubs[2], key2));
+
+    // Three valid pairs for keys 0, 1 and 2 (bare 2-of-3 context).
+    std::vector<unsigned char> e0, m0, e1, m1, e2, m2;
+    BOOST_REQUIRE(!SignHybridPair(key0, inner, txTo, 0, SIGHASH_ALL, e0, m0).empty());
+    BOOST_REQUIRE(!SignHybridPair(key1, inner, txTo, 0, SIGHASH_ALL, e1, m1).empty());
+    BOOST_REQUIRE(!SignHybridPair(key2, inner, txTo, 0, SIGHASH_ALL, e2, m2).empty());
+
+    // Two partials: one pair (key 0) and two pairs (keys 1 and 2).
+    CScript partialA;
+    partialA << e0 << m0;
+    CScript partialB;
+    partialB << e1 << m1 << e2 << m2;
+
+    CScript combined = CombineSignatures(inner, txTo, 0, partialA, partialB);
+    BOOST_CHECK(combined != partialA);
+
+    // Exactly nMa = 2 pairs (4 signature items) regardless of the 3 valid
+    // pairs that were combined.
+    std::vector<std::vector<unsigned char> > items = ScriptSigItems(combined);
+    BOOST_REQUIRE_EQUAL(items.size(), 4U);
+
+    // The surviving pairs are the first nMa matched keys, in key order.
+    BOOST_CHECK(items[0] == e0);
+    BOOST_CHECK(items[1] == m0);
+    BOOST_CHECK(items[2] == e1);
+    BOOST_CHECK(items[3] == m1);
+
+    // The 2-pair result satisfies the consensus script.
+    BOOST_CHECK(VerifyScript(combined, inner, txTo, 0, false, 0));
+
+    // Standardness gate: AreInputsStandard expects exactly 2*m signature
+    // items. 2 pairs pass, the pre-fix 3-pair output does not.
+    std::map<uint256, std::pair<CTxIndex, CTransaction> > mapInputs;
+    mapInputs[txFrom.GetHash()] = std::make_pair(CTxIndex(), txFrom);
+    CTransaction txToStd;
+    txToStd.vin.resize(1);
+    txToStd.vout.resize(1);
+    txToStd.vin[0].prevout.hash = txFrom.GetHash();
+    txToStd.vin[0].prevout.n = 0;
+
+    txToStd.vin[0].scriptSig = combined;
+    BOOST_CHECK(txToStd.AreInputsStandard(mapInputs));
+
+    CScript threePairs;
+    threePairs << e0 << m0 << e1 << m1 << e2 << m2;
+    txToStd.vin[0].scriptSig = threePairs;
+    BOOST_CHECK(!txToStd.AreInputsStandard(mapInputs));
+
+    // P2SH path (how hybrid multisigs are actually committed on-chain).
+    keystore.AddCScript(inner);
+    CScript p2sh;
+    p2sh << OP_HASH160 << inner.GetID() << OP_EQUAL;
+
+    CTransaction txFromP2, txToP2;
+    MakeHybridSpend(p2sh, txFromP2, txToP2);
+
+    std::vector<unsigned char> sub(inner.begin(), inner.end());
+
+    std::vector<unsigned char> p0e, p0m, p1e, p1m, p2e, p2m;
+    BOOST_REQUIRE(!SignHybridPair(key0, inner, txToP2, 0, SIGHASH_ALL, p0e, p0m).empty());
+    BOOST_REQUIRE(!SignHybridPair(key1, inner, txToP2, 0, SIGHASH_ALL, p1e, p1m).empty());
+    BOOST_REQUIRE(!SignHybridPair(key2, inner, txToP2, 0, SIGHASH_ALL, p2e, p2m).empty());
+
+    CScript aP2;
+    aP2 << p0e << p0m << sub;
+    CScript bP2;
+    bP2 << p1e << p1m << p2e << p2m << sub;
+
+    CScript cP2 = CombineSignatures(p2sh, txToP2, 0, aP2, bP2);
+    std::vector<std::vector<unsigned char> > itemsP2 = ScriptSigItems(cP2);
+    BOOST_REQUIRE_EQUAL(itemsP2.size(), 5U); // 2 pairs + redeem script
+
+    BOOST_CHECK(itemsP2[0] == p0e);
+    BOOST_CHECK(itemsP2[1] == p0m);
+    BOOST_CHECK(itemsP2[2] == p1e);
+    BOOST_CHECK(itemsP2[3] == p1m);
+    BOOST_CHECK(itemsP2[4] == sub);
+
+    // 2 pairs + redeem verify under P2SH.
+    BOOST_CHECK(VerifyScript(cP2, p2sh, txToP2, 0, true, 0));
+
+    // Sanity: this fork has no clean-stack rule, so a 3-pair scriptSig does
+    // still verify at consensus. That is exactly why the cap must live in
+    // the combiner/standardness layer rather than in consensus.
+    CScript threeP2;
+    threeP2 << p0e << p0m << p1e << p1m << p2e << p2m << sub;
+    BOOST_CHECK(VerifyScript(threeP2, p2sh, txToP2, 0, true, 0));
+}
+
+/*
  * Regression test: the hybrid multisig combining layer must require BOTH
  * the ECDSA and the ML-DSA half of a signature pair to verify before the
  * pair is accepted and propagated into the combined scriptSig.

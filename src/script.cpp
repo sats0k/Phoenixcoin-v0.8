@@ -2425,9 +2425,12 @@ static CScript CombineHybridMultisig(const CScript& scriptPubKey, const CTransac
         }
     }
 
-    // OP_CHECKMULTIHYBRIDSIG verifies exactly nM pairs: any additional
-    // signatures leave the two-pointer matcher with unmatched sigs and make
-    // the script unspendable. Emit only the first nM matched keys in order.
+    // OP_CHECKMULTIHYBRIDSIG matches at most nM pairs: the two-pointer
+    // matcher stops once sigIndex reaches nM and leaves any surplus pairs
+    // unmatched on the stack. Consensus tolerates that (no clean-stack rule
+    // in this fork), but AreInputsStandard expects exactly nM*2 signature
+    // items, so an over-emitted scriptSig is non-standard and cannot be
+    // relayed or mined. Emit only the first nM matched keys in order.
     CScript result;
     unsigned int count = 0;
     for (unsigned int i = 0; i < nN; i++) {
