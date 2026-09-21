@@ -184,6 +184,19 @@ OP_DUPHYBRID
 
 These operations are part of the Quantum consensus rules.
 
+Hybrid mining coinbases (`-minehybrid`) spend to a
+Pay-to-Hybrid-Public-Key-Hash (P2HPKH) template:
+
+```text
+OP_DUPHYBRID OP_HASHHYBRID160 <Hash160(pubEC || pubML)>
+OP_EQUALVERIFY OP_CHECKHYBRIDSIG
+```
+
+Because the script only commits to the hybrid key hash, the spender must
+reveal both public keys on the stack: the script-sig is
+`<sigEC> <sigML> <pubEC> <pubML>`, with `OP_DUPHYBRID` duplicating the two
+public keys before they are hashed.
+
 Legacy Phoenixcoin nodes do not understand these opcodes or hybrid output types.
 
 ---
@@ -201,8 +214,10 @@ The implementation supports:
 * Hybrid signature verification
 * Consensus enforcement of both signature algorithms
 * Combined signing (every script element is an `[ECDSA][ML-DSA]` signature pair)
-* Partial-signature combining (disjoint partial script-sigs are merged by `CombineSignatures` into a complete redeemable script, with each ECDSA half verified against the script keys before merging)
-* Pay-to-script-hash wrapping (hybrid multisig scripts are spent as P2SH outputs)
+* Partial-signature combining (disjoint partial script-sigs are merged by `CombineSignatures` into a complete redeemable script, each `[ECDSA][ML-DSA]` pair verified against the script's hybrid keys before merging)
+* Multi-wallet partial signing (P2SH hybrid multisig inputs keep partial script-sigs, so signatures produced by different wallets can be combined)
+* Combined script-sigs capped at exactly the `m` required pairs (surplus matched pairs are dropped, keeping the merged script spendable and standard)
+* Pay-to-script-hash wrapping (hybrid multisig scripts — and single-key hybrid P2PH/P2HPKH scripts — are spent as P2SH outputs)
 
 Each signature element in a hybrid multisig script-sig is a pair of an ECDSA signature followed by an ML-DSA signature over the same hybrid message. Both halves must verify for the script to pass consensus.
 
@@ -226,6 +241,7 @@ Implemented functionality includes:
 * Hybrid key import compatibility
 * Hybrid private-key serialization
 * Encrypted hybrid private-key serialization
+* Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
 
 Hybrid keys are persisted in `wallet.dat`.
 
@@ -454,8 +470,18 @@ Testing has covered:
 * Hybrid-key plaintext-to-encrypted migration
 * Hybrid multisig script size limits (n-required and key-count bounds)
 * Hybrid multisig combination rejecting invalid ML-DSA halves
+* Combined signatures capped at the required `m`
+* Hybrid-key pool invariants (top-ups, uniqueness, locked-wallet refusal)
+* Hybrid address round trip and Base58 corruption
+* `ValidateHybridKey` negatives
+* `VerifyHybridSignature` in isolation (size guards, sighash-type mismatch, `nHashType` enforcement)
+* Hybrid-key disk-format tampering and legacy-record parsing guards
+* P2HPKH (hybrid mining coinbase) spend path
+* `OP_CHECKHYBRIDSIGVERIFY`
+* Single-signer tamper rejection
+* ML-DSA signer serialization edges
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (12 test cases):
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (22 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **95 test cases** and passes with no errors:
 
 ```bash
 cd src
@@ -492,6 +518,9 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Encrypted hybrid private-key serialization
 * [x] Hybrid transaction mining
 * [x] P2Pool compatibility testing
+* [x] Persisted hybrid key usage (used hybrid addresses never re-issued)
+* [x] P2SH spends of single-key hybrid scripts
+* [x] Multi-wallet partial signing of hybrid multisig
 
 ### Remaining deployment work
 
@@ -499,7 +528,6 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [ ] Complete network upgrade specification
 * [ ] Expand automated consensus/regression testing
 * [ ] Complete wallet UI integration
-* [ ] Improve hybrid key usage tracking
 * [ ] Finalize key import/export tooling
 * [ ] Complete release testing
 * [ ] Publish production binaries

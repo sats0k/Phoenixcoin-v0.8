@@ -76,6 +76,11 @@ Hybrid multisig script-sigs are merged in the combining layer
   is accepted for combination; unverified, cross-key-mismatched, or
   invalid-ML-DSA material is never propagated.
 - Combined pairs are ordered by the key index they correspond to.
+- The merged script-sig is capped at exactly the `m` required pairs, so a
+  combiner fed more valid pairs than the threshold still emits a
+  spendable, standard input. This fork has no clean-stack rule at
+  consensus time, so surplus pairs are gated by mempool standardness
+  (`ScriptSigArgsExpected` = `m * 2`).
 - Combined scripts must still pass the full consensus
   `VerifyScript`; combining disjoint partials never relaxes the m-of-n
   requirement, and a returned partial script-sig remains unspendable

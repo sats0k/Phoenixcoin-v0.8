@@ -27,7 +27,10 @@ Implemented components include:
 - Hybrid key persistence in `wallet.dat`
 - Hybrid transaction creation and coin selection support
 - Hybrid multisig P2SH wallet spends
-- Partial-signature combining for hybrid multisig (`CombineSignatures`)
+- P2SH spends of single-key hybrid scripts (P2PH/P2HPKH redeem scripts)
+- Multi-wallet partial signing (P2SH hybrid multisig inputs keep partial script-sigs so signatures from different wallets can be combined)
+- Partial-signature combining for hybrid multisig (`CombineSignatures`), capped at the required `m` pairs
+- Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
 - Encrypted-wallet hybrid key persistence and plaintext-to-encrypted migration
 - `addhybridmultisigaddress` RPC for creating N-of-M hybrid multisig P2SH addresses
 
@@ -47,10 +50,12 @@ Testing on a fresh Quantum blockchain confirms that:
 - Multiple hybrid transactions can be included in the same block.
 - Hybrid transactions propagate and validate normally across the network.
 - Hybrid transactions are mined successfully by both internal and external miners.
+- Single hybrid keys are spendable inside P2SH (1-of-1 hybrid multisig) on-chain.
+- Encrypted wallets sign hybrid transactions end-to-end (encrypt → lock → unlock → sign → broadcast), with keys persisting across daemon restarts.
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (17 test cases) inside the full Boost suite, which reports **90 test cases** and passes with no errors. Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (22 test cases) inside the full Boost suite, which reports **95 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -60,6 +65,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - Hybrid signature-hash types
 - Encrypted-locked-wallet hybrid output recognition (`IsMine`)
 - Disjoint partial-signature combining into a redeemable script
+- Combined signatures capped at the required `m`
 - m-of-n signature combination matrix (1/2/3-of-3, plus under-signed negative cases)
 - Signature pair ordering enforcement and cross-key mismatch rejection
 - Missing, malformed, and extra signature argument rejection
@@ -67,6 +73,13 @@ Testing on a fresh Quantum blockchain confirms that:
 - Hybrid-key plaintext-to-encrypted serialization migration
 - Hybrid multisig script size limits (n-required and key-count bounds)
 - Combination rejecting signature pairs with valid ECDSA but invalid ML-DSA halves
+- Single-signer tamper rejection (ECDSA, ML-DSA, and ML-DSA public-key corruption)
+- P2HPKH (hybrid mining coinbase) spend path
+- `OP_CHECKHYBRIDSIGVERIFY`
+- Hybrid-key pool invariants (`EnsureHybridKeyPool`/`GetUnusedHybridKey`, uniqueness, locked-wallet refusal)
+- Hybrid address round trip and Base58 corruption
+- `ValidateHybridKey` negatives
+- `VerifyHybridSignature` in isolation
 
 Build and run with:
 
@@ -116,7 +129,6 @@ Historical PhoenixCoin nodes will reject Quantum blocks because they do not unde
 
 Future improvements may still include:
 
-- Hybrid key usage tracking (`fUsed`)
 - Hybrid key export/import improvements
 - Additional wallet recovery tools
 - Additional RPC functionality
@@ -126,7 +138,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 90 test cases with no errors, and the three libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan.
+Automated testing is complete: the Boost unit suite passes all 95 test cases with no errors, and the three libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan.
 
 Remaining work focuses on:
 

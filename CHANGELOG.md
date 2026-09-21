@@ -6,7 +6,104 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 
 ---
 
-## [0.8.0] - in development
+## [0.8.1] - in development
+
+Changes since v0.8.0.
+
+### Added
+
+- Hybrid single-key scripts (P2PH / P2HPKH) are now signed when nested
+  inside P2SH redeem scripts, not only in bare form.
+- Hybrid multisig P2SH inputs keep partial script-sigs during signing, so
+  different wallets can each contribute `[ECDSA][ML-DSA]` pairs and
+  `CombineSignatures` merges them into a complete redeemable script
+  (multi-wallet partial signing).
+- `wallet` `keypoolrefill [<newsize>]` parameter restored.
+- Qt GUI: runtime light/dark theme switch (sun/moon icons), Fusion style,
+  Cantarell font, and a Phoenixcoin Quantum wordmark.
+- Legacy upstream unit tests re-enabled against the current codebase
+  (script, multisig, transaction, sigopcount, P2SH, miner, DoS),
+  including a fix for a `CScript` self-assignment bug.
+- New hybrid unit/regression tests (see Testing below), first on-chain
+  validation of P2SH hybrid single-key spends and encrypted-wallet hybrid
+  spends on a testnet blockchain.
+
+### Changed
+
+- Hybrid code consolidated under `src/hs`.
+- Redundant `src/ecies` dropped; ECIES now lives in `key.cpp`.
+- `CKey::RecoverPubKey` declared in `key.h`.
+- Per-thread secp256k1 signing context freed on thread exit.
+
+### Fixed
+
+- `DecodeOP_N` assertion crash in the hybrid-multisig `Solver` on the
+  genesis block.
+- ECDH shared secret produced with the private key in the wrong byte
+  order.
+- `CKey::SignCompact` performed an out-of-bounds read when the key was
+  unset or its secret was empty.
+- `CHybridKeyDisk::FromSerializedV2` rejected every valid provider-created
+  ML-DSA-65 key (`EVP_PKEY_id()` returns -1 for those keys); the redundant
+  check was removed.
+- `CombineHybridMultisig` now caps the merged script-sig at exactly `m`
+  signature pairs; surplus matched pairs previously left the
+  two-pointer matcher with unmatched signatures and made the script
+  unspendable under `OP_CHECKMULTIHYBRIDSIG`.
+- Used hybrid keys are persisted, so already-issued hybrid addresses are
+  never re-issued.
+- Hybrid key usage rolls back if the wallet DB write fails.
+- Coin Control no longer guesses which output is change from the address
+  book; outputs are remembered as change.
+- Wallet reaccept rescans only blocks that can contain the missing
+  transactions.
+- `addrman` re-adds nodes missing from new buckets on `Good()` instead of
+  dropping them.
+- RPC socket accept failures are logged instead of silently dropped.
+- `getwork()` miner state serialized across RPC handler threads.
+
+### Removed (dead code)
+
+- Hybrid `ParseHybridSignature` and `Secp256k1Signer`.
+- Wallet helpers `ScanForWalletTransaction`, `AddReserveKey`,
+  `UnlockAllCoins`, `GetWalletFile`, and the dead hybrid address-book /
+  metadata helpers.
+- RPC `decodescript` and `getnewpubkey` commands and the
+  `ParseHashV/O` / `ParseHexV/O` helpers.
+- Script `MakeSameSize`, util `LogException`, netbase
+  `LookupHostNumeric` / `IsMulticast` and the `print` helpers, four dead
+  checkpoint helpers, and `CKey` `VerifyCompact` /
+  `SetCompressedPubKey`.
+
+### Testing
+
+`src/test/hybrid_multisig_tests.cpp` expanded from 12 to 22 test cases and
+the full Boost suite from 90 to 95, all passing. New hybrid coverage:
+
+- Combined signatures capped at the required `m` (regression for the
+  `CombineHybridMultisig` fix).
+- Hybrid-key pool invariants (`EnsureHybridKeyPool` / `GetUnusedHybridKey`
+  top-ups, 1:1 legacy-to-hybrid ID lookup, locked-wallet refusal).
+- Hybrid address round trip and Base58 corruption.
+- `ValidateHybridKey` negatives.
+- `VerifyHybridSignature` in isolation (size guards, EC/ML sighash-type
+  mismatch, `nHashType` enforcement).
+- Hybrid-key disk-format tampering and legacy-record parsing guard.
+- P2HPKH (hybrid mining coinbase) spend path.
+- `OP_CHECKHYBRIDSIGVERIFY` opcode.
+- Single-signer tamper rejection.
+- ML-DSA signer serialization edges (`FromSerializedV2` regression).
+
+### Notes
+
+- The `FromSerializedV2` type-check removal and the combiner cap do not
+  change consensus: surplus signature pairs are still rejected by mempool
+  standardness, since `ScriptSigArgsExpected` returns `m * 2` for hybrid
+  multisig and this fork has no clean-stack rule.
+
+---
+
+## [0.8.0]
 
 ### Added
 
