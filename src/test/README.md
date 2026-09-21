@@ -89,6 +89,11 @@ through both `GetHybridKeyID` and the `CTxDestination` variant, checks
 verifies that the ECDSA-only PubKey address of the same legacy key is not a
 hybrid address, and confirms that flipping any single Base58 character
 breaks the checksum so the tampered string no longer parses. A
+ValidateHybridKey test (`validate_hybrid_key_negatives`) mutates a valid
+key in isolation and checks each gate rejects it: a wrong/blank/near-miss
+MLDSA algorithm tag, a null MLDSA signer, an uncompressed (65-byte)
+secp256k1 public key synthesized with libsecp256k1, and zero or negative
+creation time. A
 hybrid-key-pool test (`hybrid_key_pool_invariants`) covers the wallet's
 pre-generated hybrid key pool: `EnsureHybridKeyPool` tops up to its target
 without duplicate `CHybridKeyID`s and is a no-op past it,
@@ -274,7 +279,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 93 test cases...
+Running 94 test cases...
 
 *** No errors detected
 ```

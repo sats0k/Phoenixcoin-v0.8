@@ -16,6 +16,7 @@
 
 #include <openssl/rand.h>
 #include <openssl/evp.h>
+#include <secp256k1.h>
 
 extern uint256 SignatureHash(CScript scriptCode,
                             const CTransaction& txTo,
@@ -1247,6 +1248,83 @@ BOOST_AUTO_TEST_CASE(hybrid_address_roundtrip)
     BOOST_CHECK(!bogus.SetString("zzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
     CHybridKeyID out;
     BOOST_CHECK(!bogus.GetHybridKeyID(out));
+}
+
+/*
+ * ValidateHybridKey negatives.
+ *
+ * ValidateHybridKey (wallethybrid.cpp) is the gatekeeper for the wallet's
+ * hybrid key records. It requires, in order: a non-empty ECDSA secret, a
+ * valid compression-prefixed (33-byte) ECDSA public key, the exact MLDSA
+ * algorithm tag ("p384_mldsa65"), a live MLDSA signer, a self-consistent
+ * ECDSA key pair, and a strictly positive creation time. This test starts
+ * from a GenerateHybridKey key (which validates clean) and breaks each
+ * requirement in isolation.
+ */
+BOOST_AUTO_TEST_CASE(validate_hybrid_key_negatives)
+{
+    CHybridKey good;
+    GenerateHybridKey(good);
+    BOOST_CHECK(ValidateHybridKey(good));
+
+    // Wrong MLDSA algorithm tag.
+    CHybridKey badAlg;
+    GenerateHybridKey(badAlg);
+    badAlg.mldsaAlg = "dilithium3";
+    BOOST_CHECK(!ValidateHybridKey(badAlg));
+
+    badAlg.mldsaAlg = "";
+    BOOST_CHECK(!ValidateHybridKey(badAlg));
+
+    badAlg.mldsaAlg = "p384_ml-dsa-65";   // near-miss spelling
+    BOOST_CHECK(!ValidateHybridKey(badAlg));
+
+    // Missing MLDSA signer.
+    CHybridKey noSigner;
+    GenerateHybridKey(noSigner);
+    noSigner.mldsaSigner.reset();
+    BOOST_CHECK(!ValidateHybridKey(noSigner));
+
+    // Uncompressed (65-byte) secp256k1 public key. CKey::MakeNewKey(false)
+    // still stores a compressed 33-byte pubkey (SerializePubKey always uses
+    // SECP256K1_EC_COMPRESSED; the flag only affects recovery IDs), so
+    // synthesize a genuine on-curve uncompressed point with libsecp256k1
+    // from the same secret that produced the compressed key.
+    secp256k1_context* ctx = secp256k1_context_create(SECP256K1_CONTEXT_SIGN);
+    BOOST_REQUIRE(ctx);
+
+    CHybridKey uncompressed;
+    GenerateHybridKey(uncompressed);
+
+    std::vector<unsigned char> pub65(65);
+    {
+        secp256k1_pubkey pub;
+        BOOST_REQUIRE(secp256k1_ec_pubkey_create(
+            ctx, &pub, &uncompressed.secpPriv[0]));
+        size_t len = 65;
+        BOOST_REQUIRE(secp256k1_ec_pubkey_serialize(
+            ctx, &pub65[0], &len, &pub, SECP256K1_EC_UNCOMPRESSED));
+        BOOST_REQUIRE_EQUAL(len, 65U);
+    }
+    secp256k1_context_destroy(ctx);
+
+    uncompressed.secpPub = CPubKey(pub65);
+    BOOST_CHECK_EQUAL(uncompressed.secpPub.Raw().size(), 65U);
+    BOOST_CHECK(uncompressed.secpPub.IsValid());
+    BOOST_CHECK(!ValidateHybridKey(uncompressed));
+
+    // Creation time == 0 (and negative).
+    CHybridKey noTime;
+    GenerateHybridKey(noTime);
+    noTime.nCreateTime = 0;
+    BOOST_CHECK(!ValidateHybridKey(noTime));
+
+    noTime.nCreateTime = -1;
+    BOOST_CHECK(!ValidateHybridKey(noTime));
+
+    // Positive control: restoring valid fields validates again.
+    good.nCreateTime = GetTime();
+    BOOST_CHECK(ValidateHybridKey(good));
 }
 
 /*
