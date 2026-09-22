@@ -1535,6 +1535,171 @@ BOOST_AUTO_TEST_CASE(verify_hybrid_signature_isolation)
 }
 
 /*
+ * Exact ML-DSA-65 signature-length validation.
+ *
+ * ML_DSA_65_SIG_SIZE (3310) is the wire-form signature: the raw FIPS 204
+ * ML-DSA-65 signature (3309 bytes) plus the trailing sighash byte. Every
+ * consumer must enforce the exact size, not a bounding range:
+ *   - VerifyMLDSA            (hybrid_verify.h:72)    raw 3309,
+ *   - VerifyHybridSignature  (hybrid_verify.h)       wire 3310,
+ *   - OP_CHECKHYBRIDSIG via EvalScript               wire 3310,
+ *   - ParseHybridMessage     (hybrid_message.cpp:52) raw 3309.
+ * Each signature is exercised at the exact boundary - one byte short, the
+ * raw signature, one byte long, empty, and oversized - with the trailing
+ * sighash byte kept valid where the format expects it, so only the length
+ * gate can fire.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_ml_dsa_sig_length_exact)
+{
+    static_assert(ML_DSA_65_SIG_SIZE == 3310, "wire ML-DSA-65 signature size");
+    static_assert(ML_DSA_65_SIG_SIZE - 1 == 3309,
+                  "raw ML-DSA-65 signature size");
+
+    CHybridKey key;
+    GenerateHybridKey(key);
+    BOOST_REQUIRE(key.mldsaSigner);
+
+    const std::vector<unsigned char> ecPub = key.secpPub.Raw();
+    const std::vector<unsigned char> mlPub = key.mldsaSigner->GetPublicKey();
+    BOOST_REQUIRE_EQUAL(mlPub.size(), ML_DSA_65_PUBKEY_SIZE);
+
+    CScript scriptPubKey = GetScriptForHybridPubKey(CHybridPubKey(ecPub, mlPub));
+    BOOST_REQUIRE(!scriptPubKey.empty());
+
+    CTransaction txFrom, txTo;
+    MakeHybridSpend(scriptPubKey, txFrom, txTo);
+
+    std::vector<unsigned char> ecSig, mlSig;
+    BOOST_REQUIRE(!SignHybridPair(key, scriptPubKey, txTo, 0, SIGHASH_ALL,
+                                  ecSig, mlSig).empty());
+    BOOST_REQUIRE_EQUAL(mlSig.size(), ML_DSA_65_SIG_SIZE);      // 3310 wire
+
+    const std::vector<unsigned char> rawSig(mlSig.begin(), mlSig.end() - 1);
+    BOOST_REQUIRE_EQUAL(rawSig.size(), ML_DSA_65_SIG_SIZE - 1); // 3309 raw
+
+    std::vector<unsigned char> hybridMsg;
+    {
+        std::vector<unsigned char> preimage;
+        BOOST_REQUIRE(ConstructSignatureHashPreimage(scriptPubKey, txTo, 0,
+                                                     SIGHASH_ALL, preimage));
+        hybridMsg = BuildHybridMessage(preimage);
+    }
+
+    // 1) VerifyMLDSA: exactly the raw 3309 bytes are accepted.
+    BOOST_CHECK(VerifyMLDSA(rawSig, mlPub, hybridMsg));
+    for (size_t n : { (size_t)0, (size_t)1, (size_t)2,
+                      ML_DSA_65_SIG_SIZE - 2,       // short
+                      ML_DSA_65_SIG_SIZE,           // raw + 1
+                      ML_DSA_65_SIG_SIZE + 1,       // oversized
+                      (size_t)4096 }) {
+        std::vector<unsigned char> m(rawSig.begin(),
+                                     rawSig.begin() + std::min(n, rawSig.size()));
+        m.resize(n, 0x5a);
+        BOOST_CHECK(!VerifyMLDSA(m, mlPub, hybridMsg));
+    }
+
+    // 2) VerifyHybridSignature: the wire signature must be exactly 3310.
+    auto wireSig = [&](size_t n) {
+        std::vector<unsigned char> s;
+        const size_t content = n > 0 ? n - 1 : 0;
+        s.reserve(content);
+        const size_t take = std::min(content, rawSig.size());
+        s.insert(s.end(), rawSig.begin(), rawSig.begin() + take);
+        s.resize(content, 0x5a);
+        if (n > 0)
+            s.push_back((unsigned char)SIGHASH_ALL);
+        return s;
+    };
+
+    BOOST_CHECK(VerifyHybridSignature(ecSig, mlSig, ecPub, mlPub,
+                                      scriptPubKey, txTo, 0, 0));
+    // The cryptographically valid raw 3309 bytes WITHOUT the sighash byte
+    // fail here: the wire format demands exactly 3310.
+    BOOST_CHECK(!VerifyHybridSignature(ecSig, rawSig, ecPub, mlPub,
+                                       scriptPubKey, txTo, 0, 0));
+    for (size_t n : { 0u, 1u, 2u, 3308u, 3309u, 3311u, 4096u }) {
+        BOOST_CHECK(!VerifyHybridSignature(ecSig, wireSig(n), ecPub, mlPub,
+                                           scriptPubKey, txTo, 0, 0));
+    }
+
+    // Layout: the LAST byte of the wire signature is the shared sighash
+    // type. Flipping it, flipping raw signature bytes, or submitting any
+    // correctly-sized 3310-byte blob all fail - the length gate alone does
+    // not accept arbitrary data.
+    {
+        std::vector<unsigned char> badTail = mlSig;
+        badTail.back() ^= 0x01;
+        BOOST_CHECK(!VerifyHybridSignature(ecSig, badTail, ecPub, mlPub,
+                                           scriptPubKey, txTo, 0, 0));
+
+        std::vector<unsigned char> badRaw = mlSig;
+        badRaw[badRaw.size() / 2] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridSignature(ecSig, badRaw, ecPub, mlPub,
+                                           scriptPubKey, txTo, 0, 0));
+
+        std::vector<unsigned char> filler(ML_DSA_65_SIG_SIZE - 1, 0x5a);
+        filler.push_back((unsigned char)SIGHASH_ALL);
+        BOOST_CHECK(!VerifyHybridSignature(ecSig, filler, ecPub, mlPub,
+                                           scriptPubKey, txTo, 0, 0));
+    }
+
+    // 3) Script execution (TX_HYBRID_PUBKEY / OP_CHECKHYBRIDSIG):
+    //    only a 3310-byte ML-DSA push verifies.
+    {
+        CScript sigGood;
+        sigGood << ecSig << mlSig;
+        BOOST_CHECK(VerifyScript(sigGood, scriptPubKey, txTo, 0, false, 0));
+
+        for (size_t n : { 1u, 3309u, 3311u }) {
+            CScript sigBad;
+            sigBad << ecSig << wireSig(n);
+            BOOST_CHECK(!VerifyScript(sigBad, scriptPubKey, txTo, 0, false, 0));
+        }
+
+        CScript sigRaw;
+        sigRaw << ecSig << rawSig;   // 3309-byte push, no sighash byte
+        BOOST_CHECK(!VerifyScript(sigRaw, scriptPubKey, txTo, 0, false, 0));
+    }
+
+    // 4) HYBS container: the ML-DSA signature length field must hold
+    //    exactly the raw 3309 bytes (ParseHybridMessage/hybrid_message.cpp:52).
+    //    The systematic malformed matrix already sweeps the negative field
+    //    values; here the exact-3309 positive is paired with the +-1 field
+    //    values so the boundary is pinned in one place.
+    {
+        const std::string hmsg = "hybs exact ML-DSA sig length";
+        std::vector<unsigned char> hsig;
+        BOOST_REQUIRE(SignHybridMessage(key, hmsg, hsig));
+
+        const size_t sigLenOff =
+            4u + 1u + 65u + ECDSA_PUBKEY_SIZE + 2u + ML_DSA_65_PUBKEY_SIZE;
+        const size_t sigOff = sigLenOff + 2;
+        const size_t realLen = hsig.size() - sigOff;
+        BOOST_REQUIRE_EQUAL(realLen, ML_DSA_65_SIG_SIZE - 1);
+
+        std::vector<unsigned char> c, p, mp, ms;
+        BOOST_CHECK(ParseHybridMessage(hsig, c, p, mp, ms));
+        BOOST_CHECK_EQUAL(ms.size(), ML_DSA_65_SIG_SIZE - 1);
+        BOOST_REQUIRE(VerifyHybridMessage(hsig, key.GetHybridID(), hmsg));
+
+        auto buildContainer = [&](size_t fieldLen) {
+            std::vector<unsigned char> b = hsig;
+            b[sigLenOff]     = (unsigned char)(fieldLen >> 8);
+            b[sigLenOff + 1] = (unsigned char)(fieldLen & 0xFF);
+            b.resize(sigOff + fieldLen, 0x00);
+            return b;
+        };
+        for (size_t n : { 0u, 3308u, 3310u }) {
+            std::vector<unsigned char> b = buildContainer(n);
+            std::vector<unsigned char> c2, p2, mp2, ms2;
+            BOOST_CHECK(!ParseHybridMessage(b, c2, p2, mp2, ms2));
+            BOOST_CHECK(c2.empty() && p2.empty() && mp2.empty() && ms2.empty());
+            BOOST_CHECK(!VerifyHybridMessage(b, key.GetHybridID(), hmsg));
+        }
+    }
+}
+
+/*
  * CHybridKeyDisk format tampering.
  *
  * Every field of both the plaintext (v2) and encrypted (v3) at-rest records

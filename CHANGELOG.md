@@ -122,8 +122,8 @@ Changes since v0.8.0.
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` is at 26 test cases and the full Boost
-suite passes all 104 cases. New coverage in this change:
+`src/test/hybrid_multisig_tests.cpp` is at 27 test cases and the full Boost
+suite passes all 105 cases. New coverage in this change:
 
 - `key_copy_move_hybrid_signing` (`src/test/hybrid_multisig_tests.cpp`):
   CKey copy/move through the hybrid transaction signing path. A keystore
@@ -195,6 +195,13 @@ suite passes all 104 cases. New coverage in this change:
 - `ValidateHybridKey` negatives.
 - `VerifyHybridSignature` in isolation (size guards, EC/ML sighash-type
   mismatch, `nHashType` enforcement).
+- Exact ML-DSA-65 signature-length validation (`hybrid_ml_dsa_sig_length_exact`):
+  the wire signature (3309 raw bytes + trailing sighash byte) is pinned at
+  every consumer — `VerifyMLDSA` (3309), `VerifyHybridSignature` (3310),
+  `OP_CHECKHYBRIDSIG` via `VerifyScript` (3310) and the HYBS length field
+  (3309) — with one-byte-short, one-byte-long, empty, oversized and
+  correctly-sized-but-bogus blobs, plus the last-byte-is-sighash layout,
+  all rejected while the exact sizes pass.
 - Hybrid-key disk-format tampering and legacy-record parsing guard.
 - P2HPKH (hybrid mining coinbase) spend path.
 - `OP_CHECKHYBRIDSIGVERIFY` opcode.

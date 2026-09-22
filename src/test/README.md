@@ -99,7 +99,12 @@ interpreter: the size guards on the EC (33) and ML-DSA (1952) public keys
 (empty, undersized, oversized), the shared-sighash-type requirement between
 the EC and ML halves, the `nHashType` enforcement gate, and tampered
 signature/public-key bodies — with positive controls proving genuine pairs
-still verify. A
+still verify. A companion length test (`hybrid_ml_dsa_sig_length_exact`)
+pins the ML-DSA-65 signature exactly: `ML_DSA_65_SIG_SIZE` (3310) is the
+wire signature (raw 3309 bytes + trailing sighash byte) and `VerifyMLDSA` /
+`VerifyHybridSignature` / `OP_CHECKHYBRIDSIG` / the HYBS length field all
+reject one-byte-short, one-byte-long, empty, oversized, and
+correctly-sized-but-bogus signatures while the exact sizes pass. A
 hybrid-key-pool test (`hybrid_key_pool_invariants`) covers the wallet's
 pre-generated hybrid key pool: `EnsureHybridKeyPool` tops up to its target
 without duplicate `CHybridKeyID`s and is a no-op past it,
@@ -316,7 +321,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 104 test cases...
+Running 105 test cases...
 
 *** No errors detected
 ```

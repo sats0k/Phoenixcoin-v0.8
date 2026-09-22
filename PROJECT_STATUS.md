@@ -59,7 +59,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (26 test cases) inside the full Boost suite, which reports **104 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (27 test cases) inside the full Boost suite, which reports **105 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -84,6 +84,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - Hybrid address round trip and Base58 corruption
 - `ValidateHybridKey` negatives
 - `VerifyHybridSignature` in isolation
+- Exact ML-DSA-65 signature-length validation (`hybrid_ml_dsa_sig_length_exact`): `ML_DSA_65_SIG_SIZE` (3310) is the wire signature (3309 raw bytes + sighash byte); every consumer is swept at the exact boundary — `VerifyMLDSA` 3309, `VerifyHybridSignature` 3310, `OP_CHECKHYBRIDSIG`/`VerifyScript` 3310, HYBS length field 3309 — rejecting one-byte-short/long, empty, oversized, and correctly-sized-but-bogus blobs while the exact sizes pass
 - Hybrid message signature round trip and address re-derivation
 - Hybrid message verification negatives (wrong address, tampered magic/version/ECDSA/ML-DSA regions, wrong pubkey length, truncation, trailing garbage)
 - Hybrid ECIES encrypt/decrypt round trip (wrong-key and tampered-ciphertext rejection, validating the `CHybridKey::GetCKey()` ECDH fix on `decryptmessage`)
@@ -152,7 +153,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 104 test cases with no errors, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 105 test cases with no errors, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 
