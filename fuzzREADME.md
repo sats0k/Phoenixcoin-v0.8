@@ -1,10 +1,18 @@
 # Fuzz Tests
 
-Phoenixcoin includes three libFuzzer targets:
+Phoenixcoin includes four libFuzzer targets:
 
 - `fuzz_MLDSASigner_deserialize`
 - `fuzz_encrypted_keys`
 - `fuzz_hybrid_verify`
+- `fuzz_hybrid_message_parse`
+
+`fuzz_hybrid_message_parse` fuzzes the pure v1 `HYBS` message-container
+parser (`ParseHybridMessage` in `src/hs/hybrid_message.cpp`) with arbitrary
+bytes. Sanitizers detect crashes, out-of-bounds reads, and excessive/duplicate
+allocations; an in-target assertion pins the parser's contract: a successful
+parse yields exactly the fixed ML-DSA-65 pubkey/signature sizes, and a
+rejected input leaves every output empty (no partially accepted data).
 
 Run the commands below from the Phoenixcoin repository root.
 
@@ -60,6 +68,7 @@ The fuzz executables are:
 build-fuzz/fuzz_MLDSASigner_deserialize
 build-fuzz/fuzz_encrypted_keys
 build-fuzz/fuzz_hybrid_verify
+build-fuzz/fuzz_hybrid_message_parse
 ```
 
 ## 3. Quick smoke tests
@@ -70,6 +79,7 @@ Run 1,000 iterations of each target first:
 ./build-fuzz/fuzz_MLDSASigner_deserialize -runs=1000
 ./build-fuzz/fuzz_encrypted_keys -runs=1000
 ./build-fuzz/fuzz_hybrid_verify -runs=1000
+./build-fuzz/fuzz_hybrid_message_parse -runs=1000
 ```
 
 A successful run should finish with `DONE` and no sanitizer error or crash.
@@ -82,7 +92,12 @@ Create corpus directories:
 mkdir -p fuzz-corpus/mldsa-deserialize
 mkdir -p fuzz-corpus/encrypted-keys
 mkdir -p fuzz-corpus/hybrid-verify
+mkdir -p fuzz-corpus/hybrid-message-parse
 ```
+
+A small structured corpus covering valid containers, per-field truncations,
+bad magic/version, `0xFFFF` length fields, and trailing bytes is a good seed
+for `fuzz_hybrid_message_parse`.
 
 Run each target for one hour:
 
@@ -101,6 +116,12 @@ Run each target for one hour:
 ```bash
 ./build-fuzz/fuzz_hybrid_verify \
     fuzz-corpus/hybrid-verify \
+    -max_total_time=3600
+```
+
+```bash
+./build-fuzz/fuzz_hybrid_message_parse \
+    fuzz-corpus/hybrid-message-parse \
     -max_total_time=3600
 ```
 

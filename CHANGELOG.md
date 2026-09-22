@@ -48,6 +48,15 @@ Changes since v0.8.0.
   persists it to the wallet exactly like a wallet-generated key
   (transparent for plaintext wallets, encrypted at rest for encrypted
   wallets). Returns the derived hybrid address; rescan is on by default.
+- The v1 `HYBS` container parser was extracted into a pure, dependency-light
+  module (`src/hs/hybrid_message.{h,cpp}`, `ParseHybridMessage`) shared by
+  the message-signature path and fuzzing. The parser is transactional —
+  rejected input never partially populates its outputs — and performs
+  bounded reads, so a hostile `0xFFFF` length field is rejected by the
+  exact-size guard before any allocation for the claimed size.
+- New libFuzzer target `fuzz_hybrid_message_parse` fuzzes the pure `HYBS`
+  parser with arbitrary bytes under Clang + ASan/UBSan, asserting the
+  fixed-size contract and the no-partial-acceptance invariant.
 
 ### Changed
 
@@ -113,9 +122,18 @@ Changes since v0.8.0.
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` is at 25 test cases and the full Boost
-suite passes all 99 cases. New hybrid coverage in this change:
+`src/test/hybrid_multisig_tests.cpp` is at 26 test cases and the full Boost
+suite passes all 101 cases. New hybrid coverage in this change:
 
+- Systematic malformed-`HYBS` matrix (`hybrid_message_malformed_matrix`)
+  over a signed round-trip container, additionally pinned to its exact
+  total size: every truncation prefix, bad magic (each magic byte), bad
+  version, wrong-length ECDSA pubkey, ML-DSA pubkey-length field set to 0 /
+  1 / short-by-one / long-by-one / `0xFFFF`, ML-DSA signature-length field
+  set to 0 / 3308 / 3310 / `0xFFFF`, trailing bytes (including a second
+  magic trailer), zero buffers up to 64 KiB, and a positive parse control.
+  Each mutation must fail cleanly and, per the parser's transactional
+  contract, leave `ParseHybridMessage` outputs empty.
 - Hybrid message signature round trip and negative/tamper coverage
   (`hybrid_message_sign_verify`, `hybrid_message_verify_negatives`):
   valid round trip and address re-derivation via `CCoinAddress`, plus

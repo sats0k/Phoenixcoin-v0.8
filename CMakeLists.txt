@@ -89,6 +89,24 @@ target_link_libraries(hybrid_signer
 )
 
 # ---------------------------------------------------------------------------
+# Hybrid message container parser (pure, dependency-light)
+# ---------------------------------------------------------------------------
+add_library(hybrid_message STATIC
+    src/hs/hybrid_message.cpp
+    src/hs/hybrid_message.h
+)
+
+target_include_directories(hybrid_message
+    PUBLIC
+        src
+)
+
+target_link_libraries(hybrid_message
+    PUBLIC
+        OpenSSL::Crypto
+)
+
+# ---------------------------------------------------------------------------
 # Fuzzers
 # ---------------------------------------------------------------------------
 option(ENABLE_FUZZ "Build libFuzzer targets" OFF)
@@ -108,6 +126,7 @@ function(add_fuzzer name source)
     target_link_libraries(${name}
         PRIVATE
             hybrid_signer
+            hybrid_message
             phoenixcoin_fuzz_support
             OpenSSL::Crypto
     )
@@ -138,6 +157,9 @@ add_fuzzer(fuzz_encrypted_keys
 
 add_fuzzer(fuzz_hybrid_verify
     src/test/fuzz/fuzz_hybrid_verify.cpp)
+
+add_fuzzer(fuzz_hybrid_message_parse
+    src/test/fuzz/fuzz_hybrid_message_parse.cpp)
 
 # ---------------------------------------------------------------------------
 # Encrypted ML-DSA serialization round-trip test

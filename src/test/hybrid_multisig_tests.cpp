@@ -11,6 +11,7 @@
 #include "hs/hybrid_signer.h"
 #include "hs/hybrid_verify.h"
 #include "hs/hybrid_script.h"
+#include "hs/hybrid_message.h"
 #include "hs/wallethybrid.h"
 #include "hs/rpchybrid.h"
 #include "wallet.h"
@@ -2469,6 +2470,130 @@ BOOST_AUTO_TEST_CASE(hybrid_message_verify_negatives)
     }
     // Degenerate / empty input.
     BOOST_CHECK(!VerifyHybridMessage(std::vector<unsigned char>(), hybridID, msg));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_message_malformed_matrix)
+{
+    // Systematic malformed-HYBS matrix over a known-good signature. Every
+    // mutation must fail cleanly (no crash, no allocation blow-up) and be
+    // rejected atomically: ParseHybridMessage never partially accepts or
+    // partially populates its outputs, and VerifyHybridMessage returns false.
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+    const std::string msg = "hybs malformed matrix";
+
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(SignHybridMessage(hk, msg, sig));
+    // Exact container size pin: 4 magic + 1 version + 65 ECDSA sig +
+    // 33 ECDSA pub + 2 pub-len + 1952 ML-DSA pub + 2 sig-len + 3309 ML-DSA sig.
+    BOOST_REQUIRE_EQUAL(sig.size(),
+                        4u + 1u + 65u + ECDSA_PUBKEY_SIZE + 2u +
+                            ML_DSA_65_PUBKEY_SIZE + 2u + (ML_DSA_65_SIG_SIZE - 1));
+
+    CHybridKeyID hybridID = hk.GetHybridID();
+
+    const auto expectReject = [&](const std::vector<unsigned char>& b) {
+        std::vector<unsigned char> c, p, mp, ms;
+        BOOST_CHECK(!ParseHybridMessage(b, c, p, mp, ms));
+        // No partially accepted data: outputs are only filled on full success.
+        BOOST_CHECK(c.empty() && p.empty() && mp.empty() && ms.empty());
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    };
+
+    // ---- Positive control ----
+    {
+        std::vector<unsigned char> c, p, mp, ms;
+        BOOST_REQUIRE(ParseHybridMessage(sig, c, p, mp, ms));
+        BOOST_CHECK_EQUAL(c.size(), 65u);
+        BOOST_CHECK_EQUAL(p.size(), ECDSA_PUBKEY_SIZE);
+        BOOST_CHECK_EQUAL(mp.size(), ML_DSA_65_PUBKEY_SIZE);
+        BOOST_CHECK_EQUAL(ms.size(), ML_DSA_65_SIG_SIZE - 1);
+    }
+
+    // ---- Empty / degenerate inputs ----
+    expectReject(std::vector<unsigned char>());
+    expectReject(std::vector<unsigned char>(1, 0x00));
+    expectReject(std::vector<unsigned char>(5, 0x00));    // right size, zeroed
+    expectReject(std::vector<unsigned char>(100, 0x00));
+    expectReject(std::vector<unsigned char>(65536, 0x00)); // large zero buffer
+
+    // ---- Bad magic (every magic byte) ----
+    for (size_t i = 0; i < 4; ++i) {
+        std::vector<unsigned char> b = sig;
+        b[i] = 0x00;
+        expectReject(b);
+    }
+
+    // ---- Bad version (0, 2, 0xFF) ----
+    for (unsigned char v : { (unsigned char)0x00, (unsigned char)0x02,
+                             (unsigned char)0xFF }) {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_VER_OFF] = v;
+        expectReject(b);
+    }
+
+    // ---- Truncation at every byte boundary (includes every major field
+    //      boundary: magic, version, ECDSA sig, ECDSA pub, ML-DSA pub len,
+    //      ML-DSA pub, ML-DSA sig len, and every point inside the sig) ----
+    for (size_t len = 0; len < sig.size() - 1; ++len)
+        expectReject(std::vector<unsigned char>(sig.begin(), sig.begin() + len));
+
+    // ---- ECDSA public key wrong length: there is no ECDSA length field, so
+    //      a wrong size surfaces as cuts at/before the fixed 33-byte block ----
+    for (size_t len : { 4u + 1u + 65u,           // ECDSA sig only
+                        4u + 1u + 65u + 32u,     // ECDSA pub cut short
+                        4u + 1u + 65u + 33u,     // pub ok, no lengths
+                        4u + 1u + 65u + 33u + 2u })
+        expectReject(std::vector<unsigned char>(sig.begin(), sig.begin() + len));
+
+    // ---- ML-DSA public key length field: 0, 1, short-by-one (0x07A1),
+    //      long-by-one (0x07A3), and maximum u16 (0xFFFF) ----
+    for (uint16_t bad : { (uint16_t)0x0000, (uint16_t)0x0001, (uint16_t)0x07A1,
+                          (uint16_t)0x07A3, (uint16_t)0xFFFF }) {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MLDSA_PUB_OFF]     = (unsigned char)(bad >> 8);
+        b[HYBMSG_MLDSA_PUB_OFF + 1] = (unsigned char)(bad & 0xFF);
+        expectReject(b);
+    }
+
+    // ---- ML-DSA signature length field: 0, 3308 (short), 3310 (long), and
+    //      maximum u16 (0xFFFF). 0xFFFF must be rejected by the exact-length
+    //      guard before any read or allocation for the claimed size. ----
+    {
+        const size_t sigLenOff =
+            HYBMSG_MLDSA_PUB_OFF + 2 + ML_DSA_65_PUBKEY_SIZE;
+        for (uint16_t bad : { (uint16_t)0x0000, (uint16_t)0x0CEC, // 3308
+                              (uint16_t)0x0CEE, // 3310
+                              (uint16_t)0xFFFF }) {
+            std::vector<unsigned char> b = sig;
+            b[sigLenOff]     = (unsigned char)(bad >> 8);
+            b[sigLenOff + 1] = (unsigned char)(bad & 0xFF);
+            expectReject(b);
+        }
+    }
+
+    // ---- Trailing bytes after a complete, valid container ----
+    {
+        std::vector<unsigned char> b = sig;
+        b.push_back(0x00);
+        expectReject(b);
+    }
+    {
+        std::vector<unsigned char> b = sig;
+        b.push_back(0xFF);
+        expectReject(b);
+    }
+    {
+        std::vector<unsigned char> b = sig;
+        b.insert(b.end(), { 0x00, 0x01, 0x02, 0x03 });
+        expectReject(b);
+    }
+    {
+        // A second magic trailer must also be rejected.
+        std::vector<unsigned char> b = sig;
+        b.insert(b.end(), { 'H', 'Y', 'B', 'S' });
+        expectReject(b);
+    }
 }
 
 // Forced (non-elided) CKey copy through a by-value helper parameter.

@@ -316,7 +316,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 100 test cases...
+Running 101 test cases...
 
 *** No errors detected
 ```
@@ -326,6 +326,15 @@ The hybrid message-key suite now also covers the `dumphybridkey` /
 re-parsed, validated, and loaded into a wallet through the same
 `CHybridKeyDisk` / `LoadHybridKey` path used by wallet-generated keys,
 reproducing the original hybrid identity.
+
+A systematic malformed-`HYBS` matrix (`hybrid_message_malformed_matrix`)
+sweeps the parser with every truncation prefix plus bad magic/version,
+wrong ECDSA-pubkey and ML-DSA length fields (including the `0xFFFF`
+maximum), trailing bytes, and 64 KiB zero buffers, asserting clean failure
+with no partially accepted or partially populated parser output. The same
+parser (`ParseHybridMessage` in `src/hs/hybrid_message.cpp`) is fuzzed
+independently by the `fuzz_hybrid_message_parse` libFuzzer target; see
+`fuzzREADME.md`.
 
 ## Adding tests
 

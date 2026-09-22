@@ -17,6 +17,7 @@
 #include "main.h"
 #include "util.h"
 #include "hs/rpchybrid.h"
+#include "hs/hybrid_message.h"
 #include "hs/hybrid_signer.h"
 #include "hs/hybrid_script.h"
 #include "hs/wallethybrid.h"
@@ -496,32 +497,6 @@ void WalletTxToJSONHybrid(const CWalletTx& wtx, const string& /*strAccount*/, Ob
 // HYBRID MESSAGE SIGNATURES (signmessage / verifymessage)
 // ============================================================================
 
-static void PutU16BE(std::vector<unsigned char>& out, size_t v)
-{
-    out.push_back((unsigned char)(v >> 8));
-    out.push_back((unsigned char)(v & 0xff));
-}
-
-static bool GetU16BE(const std::vector<unsigned char>& buf, size_t& off,
-                     size_t& v)
-{
-    if (off + 2 > buf.size())
-        return false;
-    v = ((size_t)buf[off] << 8) | (size_t)buf[off + 1];
-    off += 2;
-    return true;
-}
-
-static bool ReadBytes(const std::vector<unsigned char>& buf, size_t& off,
-                      size_t len, std::vector<unsigned char>& out)
-{
-    if (len > buf.size() || off + len > buf.size())
-        return false;
-    out.assign(buf.begin() + off, buf.begin() + off + len);
-    off += len;
-    return true;
-}
-
 static bool VerifyMlDsaRaw(const std::vector<unsigned char>& msg,
                            const std::vector<unsigned char>& mldsaPub,
                            const std::vector<unsigned char>& mldsaSig)
@@ -600,41 +575,16 @@ bool VerifyHybridMessage(const std::vector<unsigned char>& vchSig,
                          const CHybridKeyID& hybridID,
                          const std::string& strMessage)
 {
-    size_t off = 0;
-
-    if (off + 4 + 1 > vchSig.size())
-        return false;
-    if (CRYPTO_memcmp(&vchSig[0], HYBRID_SIG_MAGIC, 4) != 0)
-        return false;
-    off += 4;
-    if (vchSig[off] != HYBRID_SIG_VERSION)
-        return false;
-    off += 1;
-
     std::vector<unsigned char> vchEcdsaCompact;
     std::vector<unsigned char> vchEcdsaPub;
     std::vector<unsigned char> vchMldsaPub;
     std::vector<unsigned char> vchMldsaSig;
 
-    if (!ReadBytes(vchSig, off, 65, vchEcdsaCompact))
+    // Pure structural parse: magic/version, fixed ECDSA blocks, exact
+    // ML-DSA length fields, no trailing bytes, bounded reads.
+    if (!ParseHybridMessage(vchSig, vchEcdsaCompact, vchEcdsaPub, vchMldsaPub,
+                            vchMldsaSig))
         return false;
-    if (!ReadBytes(vchSig, off, CHybridPubKey::ECDSA_SIZE, vchEcdsaPub))
-        return false;
-
-    size_t mldsaPubLen = 0;
-    if (!GetU16BE(vchSig, off, mldsaPubLen) ||
-        mldsaPubLen != CHybridPubKey::MLDSA_SIZE ||
-        !ReadBytes(vchSig, off, mldsaPubLen, vchMldsaPub))
-        return false;
-
-    size_t mldsaSigLen = 0;
-    if (!GetU16BE(vchSig, off, mldsaSigLen) ||
-        mldsaSigLen != ML_DSA_65_SIG_SIZE - 1 ||
-        !ReadBytes(vchSig, off, mldsaSigLen, vchMldsaSig))
-        return false;
-
-    if (off != vchSig.size())
-        return false; // trailing garbage
 
     // The embedded public keys must reproduce exactly the hybrid address
     // the caller asked us to verify against.

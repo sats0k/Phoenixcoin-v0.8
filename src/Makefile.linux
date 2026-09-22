@@ -132,6 +132,7 @@ OBJS = \
     obj/walletdb.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
+    obj/hybrid_message.o \
     obj/wallethybrid.o \
     obj/wallet_hybrid_address.o \
     obj/hybrid_consensus.o \
@@ -170,6 +171,9 @@ obj/hybrid_signer.o: hs/hybrid_signer.cpp
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 obj/hybrid_verify.o: hs/hybrid_verify.cpp
+	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
+
+obj/hybrid_message.o: hs/hybrid_message.cpp
 	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 obj/wallethybrid.o: hs/wallethybrid.cpp
