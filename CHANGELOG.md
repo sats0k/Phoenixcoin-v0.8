@@ -123,7 +123,24 @@ Changes since v0.8.0.
 ### Testing
 
 `src/test/hybrid_multisig_tests.cpp` is at 26 test cases and the full Boost
-suite passes all 103 cases. New coverage in this change:
+suite passes all 104 cases. New coverage in this change:
+
+- `key_copy_move_hybrid_signing` (`src/test/hybrid_multisig_tests.cpp`):
+  CKey copy/move through the hybrid transaction signing path. A keystore
+  churns the stored hybrid key's ECDSA component through copy-chain /
+  move-chain / move-assign modes on every hand-out, then `SignSignature`
+  drives `SignHybridTx` on P2PH, P2HPKH and hybrid-multisig outputs (and a
+  P2SH wrapper); each scriptSig must verify, the ECDSA half must be
+  stable across re-signs while the ML-DSA half is randomized (hedged
+  signing), and the signed spend must survive serialization.
+  Same as its legacy sibling it crashes (SIGSEGV) under the pre-fix
+  shallow-copy CKey.
+
+- `SignHybridTx` (fixed): now clears its `scriptSigRet` before signing.
+  It filled the output by appending, so re-signing an input accumulated
+  stale signature pairs (masked in tests because the deterministic ECDSA
+  half re-satisfied `OP_CHECKHYBRIDSIG` from the top of the stack); the
+  re-sign loop in `key_copy_move_hybrid_signing` pins it.
 
 - `key_copy_move_legacy_signing` (`src/test/key_tests.cpp`): legacy
   transaction signing through CKey copy/move ownership. A keystore whose

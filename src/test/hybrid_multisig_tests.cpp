@@ -268,6 +268,106 @@ public:
     virtual bool IsLocked() const override { return true; }
 };
 
+// CHybridChurnKeyStore hands a CHybridKey out after churning its stored
+// ECDSA component (CKey) through the copy/move pathways CKey supports.
+// SignHybridTx then derives its own signing key with CHybridKey::GetCKey()
+// and signs the ECDSA half of the hybrid signature. Under the old implicit
+// shallow CKey copies every chain shared one EVP_PKEY with no refcount and
+// destroyed the same pointer twice; the refcounted CKey must keep every
+// hand-out independently valid.
+class CHybridChurnKeyStore : public CHybridTestKeyStore
+{
+public:
+    enum ChurnMode {
+        COPY_CHAIN,     // explicit copy-constructor chain + copy-assign
+        MOVE_CHAIN,     // move chain; every moved-from copy is left null
+        MOVE_ASSIGN_OUT // copy, then move-assign into a null key
+    };
+
+    ChurnMode mode = MOVE_CHAIN;
+
+private:
+    void ChurnCKey(const CHybridKey& hk) const
+    {
+        const CPubKey pub = hk.secpPub;
+        for (int i = 0; i < 8; ++i) {
+            switch (mode) {
+            case COPY_CHAIN: {
+                CKey k0 = hk.GetCKey();
+                CKey k1(k0);
+                CKey k2(k1);
+                CKey k3;
+                k3 = k2;
+                BOOST_CHECK(k0.GetPubKey() == pub);
+                BOOST_CHECK(k1.GetPubKey() == pub);
+                BOOST_CHECK(k2.GetPubKey() == pub);
+                BOOST_CHECK(k3.GetPubKey() == pub);
+                break;
+            }
+            case MOVE_CHAIN: {
+                CKey k0 = hk.GetCKey();
+                CKey k1(std::move(k0));
+                CKey k2(std::move(k1));
+                CKey k3(std::move(k2));
+                BOOST_CHECK(k0.IsNull());
+                BOOST_CHECK(k1.IsNull());
+                BOOST_CHECK(k2.IsNull());
+                BOOST_CHECK(k3.GetPubKey() == pub);
+                break;
+            }
+            case MOVE_ASSIGN_OUT: {
+                CKey k0 = hk.GetCKey();
+                CKey k1;
+                k1 = std::move(k0);
+                BOOST_CHECK(k0.IsNull());
+                BOOST_CHECK(k1.GetPubKey() == pub);
+                break;
+            }
+            }
+        }
+    }
+
+    // CHybridKey owns its ML-DSA signer in a unique_ptr, so the hand-out is
+    // filled memberwise and the signer is moved rather than copied.
+    static void StealInto(CHybridKey& keyOut, CHybridKey& tmp)
+    {
+        keyOut.secpPriv = tmp.secpPriv;
+        keyOut.secpPub = tmp.secpPub;
+        keyOut.mldsaAlg = tmp.mldsaAlg;
+        keyOut.nCreateTime = tmp.nCreateTime;
+        keyOut.mldsaSigner = std::move(tmp.mldsaSigner);
+    }
+
+public:
+    virtual bool GetHybridKeyByLegacyID(const CKeyID& keyID,
+                                        CHybridKey& keyOut) const override
+    {
+        CHybridKey tmp;
+        if (!CHybridTestKeyStore::GetHybridKeyByLegacyID(keyID, tmp))
+            return false;
+        ChurnCKey(tmp);
+        StealInto(keyOut, tmp);
+        return keyOut.mldsaSigner != NULL;
+    }
+
+    virtual bool GetHybridKey(const CHybridKeyID& address,
+                              CHybridKey& keyOut) const override
+    {
+        CHybridKey tmp;
+        if (!CHybridTestKeyStore::GetHybridKey(address, tmp))
+            return false;
+        ChurnCKey(tmp);
+        StealInto(keyOut, tmp);
+        return keyOut.mldsaSigner != NULL;
+    }
+
+    virtual bool GetHybridKeyByHash(const uint160& keyHash,
+                                    CHybridKey& keyOut) const override
+    {
+        return GetHybridKey(CHybridKeyID(keyHash), keyOut);
+    }
+};
+
 static std::vector<CHybridPubKey> BuildTestHybridPubs(CHybridTestKeyStore& store,
                                                       int nKeys)
 {
@@ -1908,6 +2008,111 @@ BOOST_AUTO_TEST_CASE(hybrid_p2hphk_spend)
         CScript missingKeys;
         missingKeys << items[0] << items[1];
         BOOST_CHECK(!VerifyScript(missingKeys, p2hphk, txTo, 0, false, 0));
+    }
+}
+
+/*
+ * CKey copy/move through the hybrid transaction signing path.
+ *
+ * SignSignature -> SignHybridTx obtains the signer's ECDSA key as a fresh
+ * CKey (CHybridKey::GetCKey) and signs the ECDSA half of the hybrid
+ * signature over the same sighash whose preimage feeds the ML-DSA half
+ * (BuildHybridMessage). CHybridChurnKeyStore churns the stored CKey through
+ * the copy/move pathways on every hand-out, so the signing key must still
+ * be intact when SignHybridTx uses its own copy of it. Every churn chain
+ * under the old implicit shallow copies destroyed the same shared EVP_PKEY
+ * twice and aborted; the refcounted CKey must survive each mode and produce
+ * hybrid signatures that VerifyScript accepts for every hybrid output type.
+ */
+BOOST_AUTO_TEST_CASE(key_copy_move_hybrid_signing)
+{
+    const CHybridChurnKeyStore::ChurnMode modes[] = {
+        CHybridChurnKeyStore::COPY_CHAIN,
+        CHybridChurnKeyStore::MOVE_CHAIN,
+        CHybridChurnKeyStore::MOVE_ASSIGN_OUT,
+    };
+
+    for (size_t mi = 0; mi < 3; ++mi) {
+        CHybridChurnKeyStore keystore;
+        keystore.mode = modes[mi];
+
+        std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 2);
+        BOOST_REQUIRE_EQUAL(pubs.size(), 2U);
+
+        CScript p2ph = GetScriptForHybridPubKey(pubs[0]);
+        CScript p2hphk = GetScriptForHybridPubKeyHash(uint160(pubs[1].GetID()));
+        CScript mscript = GetScriptForHybridMultisig(2, pubs);
+        BOOST_REQUIRE(!p2ph.empty());
+        BOOST_REQUIRE(!p2hphk.empty());
+        BOOST_REQUIRE(!mscript.empty());
+
+        // Direct spend of each hybrid output type: SignHybridTx signs the
+        // ECDSA half with a CKey derived from the churned hand-out.
+        const CScript* scripts[] = { &p2ph, &p2hphk, &mscript };
+        for (size_t s = 0; s < 3; ++s) {
+            const CScript& script = *scripts[s];
+            CTransaction txFrom, txTo;
+            MakeHybridSpend(script, txFrom, txTo);
+            BOOST_REQUIRE(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+            BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig,
+                                     txFrom.vout[0].scriptPubKey, txTo, 0,
+                                     false, 0));
+        }
+
+        // P2SH spend of a hybrid output recurses through the redeem script
+        // into SignHybridTx with the same keystore churn.
+        {
+            keystore.AddCScript(mscript);
+            CScript p2sh;
+            p2sh << OP_HASH160 << mscript.GetID() << OP_EQUAL;
+
+            CTransaction txFrom, txTo;
+            MakeHybridSpend(p2sh, txFrom, txTo);
+            BOOST_REQUIRE(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+            BOOST_CHECK(VerifyScript(txTo.vin[0].scriptSig,
+                                     txFrom.vout[0].scriptPubKey, txTo, 0,
+                                     true, 0));
+        }
+
+        // Re-signing after the same churn: the scriptSig must keep
+        // verifying, and the ECDSA half (RFC6979) must be stable across
+        // runs even though the ML-DSA half is randomized (hedged signing).
+        {
+            CTransaction txFrom, txTo;
+            MakeHybridSpend(p2ph, txFrom, txTo);
+            std::vector<unsigned char> firstEcSig;
+            for (int i = 0; i < 10; ++i) {
+                BOOST_REQUIRE(SignSignature(keystore, txFrom, txTo, 0,
+                                            SIGHASH_ALL));
+                BOOST_REQUIRE(VerifyScript(txTo.vin[0].scriptSig,
+                                           txFrom.vout[0].scriptPubKey, txTo,
+                                           0, false, 0));
+
+                std::vector<std::vector<unsigned char> > items =
+                    ScriptSigItems(txTo.vin[0].scriptSig);
+                BOOST_REQUIRE_EQUAL(items.size(), 2U); // <sigEC> <sigML>
+                if (i == 0)
+                    firstEcSig = items[0];
+                else
+                    BOOST_CHECK(items[0] == firstEcSig);
+            }
+        }
+
+        // The signed hybrid spend survives a serialization round-trip.
+        {
+            CTransaction txFrom, txTo;
+            MakeHybridSpend(mscript, txFrom, txTo);
+            BOOST_REQUIRE(SignSignature(keystore, txFrom, txTo, 0, SIGHASH_ALL));
+
+            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+            ss << txTo;
+            CTransaction txCopy;
+            ss >> txCopy;
+            BOOST_CHECK(txCopy.vin[0].scriptSig == txTo.vin[0].scriptSig);
+            BOOST_CHECK(VerifyScript(txCopy.vin[0].scriptSig,
+                                     txFrom.vout[0].scriptPubKey, txCopy, 0,
+                                     false, 0));
+        }
     }
 }
 

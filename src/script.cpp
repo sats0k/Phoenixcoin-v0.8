@@ -2086,6 +2086,11 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
     vector<vector<unsigned char> > solutions;
     txnouttype scriptType;
 
+    // SignHybridTx fills scriptSigRet by appending; replace any previous
+    // scriptSig so that re-signing a transaction input (fee bump etc.)
+    // does not accumulate stale signatures.
+    scriptSigRet.clear();
+
     if (!Solver(scriptPubKey, scriptType, solutions))
         return false;
 

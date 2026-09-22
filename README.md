@@ -526,7 +526,7 @@ Testing has covered:
   round-trip)
 * Hybrid ECIES encrypt/decrypt round trip for hybrid keys
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (26 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **103 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (26 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **104 test cases** and passes with no errors:
 
 ```bash
 cd src

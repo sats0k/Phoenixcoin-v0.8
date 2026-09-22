@@ -316,7 +316,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 103 test cases...
+Running 104 test cases...
 
 *** No errors detected
 ```
@@ -350,6 +350,17 @@ key out via every copy/move pathway, and `SignSignature` must produce a
 transactions round-trip through serialization. The store keeps only the
 secret, so a shallow-copy/refcount bug double-frees the shared PKEY — this
 test crashes (SIGSEGV) under the pre-fix implicit-shallow-copy `CKey`.
+
+`key_copy_move_hybrid_signing` (`hybrid_multisig_tests.cpp`) does the same
+for the hybrid transaction signing path: a keystore churns the stored
+hybrid key's ECDSA component through copy-chain / move-chain / move-assign
+modes on every hand-out, and `SignSignature` → `SignHybridTx` must produce
+verifying scriptSigs for P2PH, P2HPKH, hybrid-multisig and P2SH-wrapped
+outputs. The ECDSA half of the scriptSig is asserted re-sign-stable while
+the ML-DSA half is intentionally randomized (OpenSSL hedged signing). It
+crashes (SIGSEGV) under the pre-fix shallow-copy `CKey`, and its re-sign
+loop also pins the `SignHybridTx` append fix (the output scriptSig is now
+cleared at the start of the call instead of accumulating on re-sign).
 
 ## Adding tests
 
