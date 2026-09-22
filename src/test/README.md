@@ -316,10 +316,16 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 99 test cases...
+Running 100 test cases...
 
 *** No errors detected
 ```
+
+The hybrid message-key suite now also covers the `dumphybridkey` /
+`importhybridkey` round trip: a key exported as WIF + Base64-DER is
+re-parsed, validated, and loaded into a wallet through the same
+`CHybridKeyDisk` / `LoadHybridKey` path used by wallet-generated keys,
+reproducing the original hybrid identity.
 
 ## Adding tests
 

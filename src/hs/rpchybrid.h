@@ -15,6 +15,8 @@
 
 extern json_spirit::Value dumphybridkey(const json_spirit::Array &params, bool fHelp);
 
+extern json_spirit::Value importhybridkey(const json_spirit::Array &params, bool fHelp);
+
 extern json_spirit::Value gethybridaddress(const json_spirit::Array &params, bool fHelp);
 
 extern json_spirit::Value listhybridaddresses(const json_spirit::Array &params, bool fHelp);

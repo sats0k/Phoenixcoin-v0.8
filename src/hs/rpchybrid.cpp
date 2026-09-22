@@ -108,6 +108,136 @@ Value dumphybridkey(const Array& params, bool fHelp) {
     return result;
 }
 
+Value importhybridkey(const Array& params, bool fHelp) {
+    if (fHelp || params.size() < 2 || params.size() > 4) {
+        string msg =
+            "importhybridkey \"secp_wif\" \"mldsa_priv_der_b64\" [\"label\"] [rescan]\n"
+            "Adds a hybrid private key to the wallet.\n"
+            "The two components are the output of 'dumphybridkey': the ECDSA\n"
+            "half as WIF ('secp_wif') and the ML-DSA-65 half as Base64-encoded\n"
+            "DER ('mldsa_priv_der_b64').\n"
+            "\"label\" (string, optional) gives the imported address a label in\n"
+            "the address book (default \"\").\n"
+            "rescan (boolean, optional) rescans the block chain for\n"
+            "transactions paying to the imported address, true by default.";
+        throw runtime_error(msg);
+    }
+
+    // ---- ECDSA half (WIF) ----
+    string strWif = params[0].get_str();
+    CCoinSecret vchSecret;
+    if (!vchSecret.SetString(strWif))
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "Invalid secp256k1 private key (WIF)");
+
+    CKey key;
+    bool fCompressed = false;
+    CSecret secret = vchSecret.GetSecret(fCompressed);
+    if (!key.SetSecret(secret, fCompressed) || !key.IsValid())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "Invalid secp256k1 private key (WIF)");
+
+    // ---- ML-DSA half (Base64 DER) ----
+    string strDerB64 = params[1].get_str();
+    bool fInvalidBase64 = false;
+    vector<unsigned char> mldsaPriv =
+        DecodeBase64(strDerB64.c_str(), &fInvalidBase64);
+    // The ML-DSA-65 private key is the expanded 4,032-byte form, wrapped in
+    // a ~66-byte PKCS#8 header => ~4,098 bytes of DER. Allow a generous
+    // upper bound only as a sanity guard; d2i_AutoPrivateKey + validation
+    // reject anything malformed.
+    if (fInvalidBase64 || mldsaPriv.empty() || mldsaPriv.size() > 8192)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "Invalid ML-DSA private key (Base64 DER expected)");
+
+    const unsigned char* p = mldsaPriv.data();
+    EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaPriv.size());
+    if (!pkey)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "ML-DSA private key decode failed");
+    // MLDSASigner up-refs its own handle; the guard releases the d2i ref.
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
+        pkey, &EVP_PKEY_free);
+
+    string strLabel;
+    if (params.size() > 2) strLabel = params[2].get_str();
+
+    bool fRescan = true;
+    if (params.size() > 3) fRescan = params[3].get_bool();
+
+    // Encrypted wallets must be unlocked so the private material can be
+    // re-encrypted with the wallet master key and persisted at rest.
+    if (pwalletMain->IsCrypted() && pwalletMain->IsLocked())
+        throw JSONRPCError(RPC_WALLET_UNLOCK_NEEDED,
+                           "Error: Please enter the wallet passphrase with "
+                           "walletpassphrase first.");
+
+    // ---- Build and validate the hybrid key ----
+    CHybridKey hk;
+    std::unique_ptr<MLDSASigner> signerCopy;
+    try {
+        hk.secpPriv    = key.GetPrivKey();
+        hk.secpPub     = key.GetPubKey();
+        hk.nCreateTime = GetTime();
+        hk.mldsaAlg    = "p384_mldsa65";
+        hk.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
+        signerCopy     = std::make_unique<MLDSASigner>(pkey_guard.get());
+
+        if (!ValidateHybridKey(hk))
+            throw std::runtime_error("Hybrid key validation failed");
+    } catch (const std::exception& e) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           string("Invalid hybrid key: ") + e.what());
+    }
+
+    CHybridKeyID hybridID = hk.GetHybridID();
+
+    {
+        LOCK2(cs_main, pwalletMain->cs_wallet);
+
+        if (pwalletMain->HaveHybridKey(hybridID))
+            throw JSONRPCError(RPC_WALLET_ERROR, "Already have this hybrid key");
+
+        // ---- Persist at rest (same path as wallet-generated keys) ----
+        if (pwalletMain->fFileBacked) {
+            try {
+                CHybridKeyDisk disk = pwalletMain->MakeHybridKeyDisk(hk);
+                CWalletDB walletdb(pwalletMain->strWalletFile);
+                if (!walletdb.WriteHybridKey(hybridID, disk))
+                    throw JSONRPCError(RPC_WALLET_ERROR,
+                                       "Error writing hybrid key to wallet");
+                // Encrypted wallets rebuild plaintext keys from these records
+                // on unlock, so keep the disk form cached now.
+                if (pwalletMain->IsCrypted())
+                    pwalletMain->mapHybridKeyDisk[hybridID] = disk;
+            } catch (Object&) {
+                throw;
+            } catch (const std::exception& e) {
+                throw JSONRPCError(RPC_WALLET_ERROR,
+                                   string("Error persisting hybrid key: ") +
+                                       e.what());
+            }
+        }
+
+        pwalletMain->mapHybridKeys.emplace(hybridID, std::move(hk));
+        pwalletMain->mapHybridSigners.emplace(hybridID, std::move(signerCopy));
+
+        if (!strLabel.empty()) {
+            pwalletMain->SetHybridAddressBookName(hybridID, strLabel);
+            CWalletDB walletdb(pwalletMain->strWalletFile);
+            walletdb.WriteHybridAddressEntry(hybridID, strLabel);
+        }
+
+        if (fRescan) {
+            pwalletMain->UpdateTimeFirstKey();
+            pwalletMain->ScanForWalletTransactions(pindexGenesisBlock, true);
+            pwalletMain->ReacceptWalletTransactions();
+        }
+    }
+
+    return CCoinAddress(hybridID).ToString();
+}
+
 Value gethybridaddress(const Array& params, bool fHelp) {
     if (fHelp || params.size() > 1)
         throw runtime_error(

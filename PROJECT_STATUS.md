@@ -36,6 +36,7 @@ Implemented components include:
 - Hybrid message signatures for `signmessage`/`verifymessage` (self-describing ECDSA + ML-DSA-65 container with both public keys embedded)
 - Hybrid address support in `encryptmessage`/`decryptmessage` (ECIES over the key's secp256k1 component)
 - Qt GUI Sign / Verify Message dialog accepts hybrid addresses
+- Hybrid key export/import: `dumphybridkey` exports the ECDSA half as WIF and the ML-DSA-65 half as Base64 DER; `importhybridkey` re-imports both halves, validates them, and persists the key to the wallet like a wallet-generated key
 
 ## Verification
 
@@ -58,7 +59,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (25 test cases) inside the full Boost suite, which reports **99 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (26 test cases) inside the full Boost suite, which reports **100 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -86,6 +87,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - Hybrid message signature round trip and address re-derivation
 - Hybrid message verification negatives (wrong address, tampered magic/version/ECDSA/ML-DSA regions, wrong pubkey length, truncation, trailing garbage)
 - Hybrid ECIES encrypt/decrypt round trip (wrong-key and tampered-ciphertext rejection, validating the `CHybridKey::GetCKey()` ECDH fix on `decryptmessage`)
+- Hybrid key export/import round trip (WIF + Base64-DER → re-parse, validate, wallet `LoadHybridKey` path, identity and signing reproduced)
 
 Build and run with:
 
@@ -135,7 +137,7 @@ Historical PhoenixCoin nodes will reject Quantum blocks because they do not unde
 
 Future improvements may still include:
 
-- Hybrid key export/import improvements
+- Hybrid wallet recovery/backup tooling beyond key import/export
 - Additional wallet recovery tools
 - Additional RPC functionality
 - User interface integration
@@ -146,7 +148,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 99 test cases with no errors, and the three libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan.
+Automated testing is complete: the Boost unit suite passes all 100 test cases with no errors, and the three libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan.
 
 Remaining work focuses on:
 

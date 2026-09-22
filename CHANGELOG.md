@@ -42,6 +42,12 @@ Changes since v0.8.0.
   now required to hold exactly the raw ML-DSA-65 size (3,309 bytes),
   matching the consensus verifier (`VerifyMLDSA`). Verification is
   rejected earlier, before any OpenSSL work.
+- `importhybridkey "secp_wif" "mldsa_priv_der_b64" ["label"] [rescan]`
+  imports a hybrid private key previously exported by `dumphybridkey`
+  (ECDSA half as WIF, ML-DSA-65 half as Base64 DER), validates it, and
+  persists it to the wallet exactly like a wallet-generated key
+  (transparent for plaintext wallets, encrypted at rest for encrypted
+  wallets). Returns the derived hybrid address; rescan is on by default.
 
 ### Changed
 

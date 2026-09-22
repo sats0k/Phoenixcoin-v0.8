@@ -457,7 +457,7 @@ Current hybrid-related RPC functionality includes:
 gethybridaddress
 listhybridaddresses
 gethybridkey
-dumphybridkey
+dumphybridkey / importhybridkey
 addhybridmultisigaddress
 signmessage / verifymessage (hybrid addresses)
 encryptmessage / decryptmessage (hybrid addresses)
@@ -470,6 +470,8 @@ Each `hybridpubkey` is the hex-encoded serialized hybrid public key (`pubkey_ser
 `dumphybridkey` is particularly sensitive because it exposes the hybrid private key material.
 
 It should only be used in a controlled environment where the RPC interface and returned private-key data are appropriately protected.
+
+`importhybridkey "secp_wif" "mldsa_priv_der_b64" ["label"] [rescan]` is the counterpart of `dumphybridkey`: it re-imports an exported hybrid key (the ECDSA half as WIF and the ML-DSA-65 half as Base64-encoded DER), validates it, persists it to the wallet like a wallet-generated key, and performs a wallet rescan by default. It returns the derived hybrid address. An encrypted wallet must be unlocked so the private material can be re-encrypted at rest.
 
 `signmessage` and `encryptmessage` behave as usual for legacy addresses; for hybrid addresses they produce a hybrid message signature / ECIES ciphertext as described in the [Hybrid Message Signatures](#hybrid-message-signatures) section. `verifymessage` and `decryptmessage` verify/decrypt them, `verifymessage` without any wallet access. Both `signmessage` and `decryptmessage` require the wallet to hold the hybrid private key (and an unlocked wallet if encrypted).
 
@@ -517,7 +519,7 @@ Testing has covered:
 * Hybrid message signature round trip and negative/tamper cases
 * Hybrid ECIES encrypt/decrypt round trip for hybrid keys
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (25 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **99 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (26 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **100 test cases** and passes with no errors:
 
 ```bash
 cd src
@@ -560,6 +562,7 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Hybrid message signing (`signmessage` / `verifymessage`)
 * [x] Hybrid encrypt / decrypt message RPCs (`encryptmessage` / `decryptmessage`)
 * [x] Hybrid message signing in the Qt GUI (Sign / Verify Message dialog)
+* [x] Hybrid key export (`dumphybridkey`) and import (`importhybridkey`) RPCs
 
 ### Remaining deployment work
 

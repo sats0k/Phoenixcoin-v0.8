@@ -2538,3 +2538,90 @@ BOOST_AUTO_TEST_CASE(hybrid_message_encrypt_decrypt)
     BOOST_CHECK_EQUAL(std::string(plainDispatch.begin(), plainDispatch.end()),
                       secret);
 }
+
+BOOST_AUTO_TEST_CASE(hybrid_key_export_import_roundtrip)
+{
+    // importhybridkey accepts exactly what dumphybridkey exports: the ECDSA
+    // half as WIF and the ML-DSA-65 half as Base64-encoded DER. Exercise the
+    // same two conversion pipelines plus the wallet load path (plaintext
+    // at-rest record), and require the re-imported key to reproduce the
+    // original hybrid identity and signing ability.
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+    BOOST_REQUIRE(hk.mldsaSigner);
+
+    // ---- Export shape (mimics dumphybridkey) ----
+    CKey key = hk.GetCKey();
+    bool fCompressed = false;
+    CSecret secret = key.GetSecret(fCompressed);
+    std::string wif = CCoinSecret(secret, fCompressed).ToString();
+
+    EVP_PKEY* pkey = hk.mldsaSigner->GetKey();
+    BOOST_REQUIRE(pkey);
+    unsigned char* buf = NULL;
+    int len = i2d_PrivateKey(pkey, &buf);
+    BOOST_REQUIRE(len > 0 && buf);
+    std::vector<unsigned char> der(buf, buf + len);
+    OPENSSL_free(buf);
+    std::string derB64 = EncodeBase64(der.data(), der.size());
+
+    // The PKCS#8 DER of an ML-DSA-65 private key (~4,098 bytes; expanded
+    // 4,032-byte key plus header) is larger than the raw private-key size.
+    // Pin this so importhybridkey's upper-bound guard can never shrink below
+    // a valid export.
+    BOOST_CHECK(der.size() > 4096);
+    BOOST_CHECK(der.size() < 8192);
+
+    // ---- Import shape (mimics importhybridkey) ----
+    CCoinSecret vchSecret;
+    BOOST_REQUIRE(vchSecret.SetString(wif));
+    CSecret impSecret = vchSecret.GetSecret(fCompressed);
+    CKey impKey;
+    BOOST_REQUIRE(impKey.SetSecret(impSecret, fCompressed) && impKey.IsValid());
+
+    bool fInvalid = false;
+    std::vector<unsigned char> impDer =
+        DecodeBase64(derB64.c_str(), &fInvalid);
+    BOOST_REQUIRE(!fInvalid && !impDer.empty());
+    const unsigned char* p = impDer.data();
+    EVP_PKEY* impPkey = d2i_AutoPrivateKey(NULL, &p, impDer.size());
+    BOOST_REQUIRE(impPkey);
+    std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
+        impPkey, &EVP_PKEY_free);
+
+    CHybridKey imported;
+    imported.secpPriv    = impKey.GetPrivKey();
+    imported.secpPub     = impKey.GetPubKey();
+    imported.nCreateTime = GetTime();
+    imported.mldsaAlg    = "p384_mldsa65";
+    imported.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
+
+    // The round-tripped key must validate and reproduce the original ID.
+    BOOST_CHECK(ValidateHybridKey(imported));
+    BOOST_CHECK(imported.GetHybridID() == hk.GetHybridID());
+
+    // Signing with the re-imported key must still work.
+    const std::string msg = "hybrid export/import round trip";
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(SignHybridMessage(imported, msg, sig));
+    BOOST_CHECK(VerifyHybridMessage(sig, imported.GetHybridID(), msg));
+
+    // It must load into a wallet exactly like a wallet-generated key.
+    CWallet wallet;
+    CHybridKeyDisk disk = CHybridKeyDisk::FromMemory(imported);
+    BOOST_CHECK(disk.CheckChecksum());
+
+    CKeyingMaterial vMasterKey; // plaintext records ignore the master key
+    BOOST_REQUIRE(LoadHybridKey(&wallet, disk, vMasterKey));
+    BOOST_CHECK(wallet.HaveHybridKey(imported.GetHybridID()));
+
+    CHybridKey loaded;
+    BOOST_REQUIRE(wallet.GetHybridKey(imported.GetHybridID(), loaded));
+    BOOST_CHECK(loaded.GetHybridID() == hk.GetHybridID());
+    BOOST_CHECK(loaded.secpPub == hk.secpPub);
+    BOOST_REQUIRE(loaded.mldsaSigner);
+
+    std::vector<unsigned char> sig2;
+    BOOST_REQUIRE(SignHybridMessage(loaded, msg, sig2));
+    BOOST_CHECK(VerifyHybridMessage(sig2, imported.GetHybridID(), msg));
+}
