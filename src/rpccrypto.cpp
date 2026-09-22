@@ -32,6 +32,7 @@
 #include "wallet.h"
 #include "rpcmain.h"
 #include "util.h"
+#include "hs/wallethybrid.h"
 
 using namespace json_spirit;
 using namespace std;
@@ -43,7 +44,8 @@ Value encryptmessage(const Array &params, bool fHelp) {
     if(fHelp || (params.size() != 2)) {
       string msg = "encryptmessage <key> <message>\n"
         "Encodes a text <message> with the public <key> provided.\n"
-        "If an address is provided instead, the respective key is picked from the wallet.";
+        "If an address is provided instead, the respective key is picked from the wallet,\n"
+        "including hybrid (quantum-resistant) addresses.";
       throw(runtime_error(msg));
     }
 
@@ -54,10 +56,18 @@ Value encryptmessage(const Array &params, bool fHelp) {
     } else {
         CCoinAddress addr(params[0].get_str());
         if(addr.IsValid()) {
-            CKeyID keyID;
-            addr.GetKeyID(keyID);
-            if(!pwalletMain->GetPubKey(keyID, pubKey))
-              throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Public key not found for this address"));
+            CHybridKeyID hybridID;
+            if (addr.GetHybridKeyID(hybridID)) {
+                CHybridKey hk;
+                if (!pwalletMain->GetHybridKey(hybridID, hk))
+                    throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Public key not found for this address"));
+                pubKey = hk.secpPub;
+            } else {
+                CKeyID keyID;
+                addr.GetKeyID(keyID);
+                if(!pwalletMain->GetPubKey(keyID, pubKey))
+                    throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Public key not found for this address"));
+            }
         }
     }
 
@@ -74,7 +84,8 @@ Value decryptmessage(const Array &params, bool fHelp) {
     if(fHelp || (params.size() != 2)) {
       string msg = "decryptmessage <key> <message>\n"
         "Decodes a text <message> with the private <key> provided.\n"
-        "If an address is provided instead, the respective key is picked from the wallet.";
+        "If an address is provided instead, the respective key is picked from the wallet,\n"
+        "including hybrid (quantum-resistant) addresses.";
       throw(runtime_error(msg));
     }
 
@@ -84,10 +95,18 @@ Value decryptmessage(const Array &params, bool fHelp) {
     CCoinAddress addr(params[0].get_str());
 
     if(addr.IsValid()) {
-        CKeyID keyID;
-        addr.GetKeyID(keyID);
-        if(!pwalletMain->GetKey(keyID, key))
-          throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Private key not found for this address"));
+        CHybridKeyID hybridID;
+        if (addr.GetHybridKeyID(hybridID)) {
+            CHybridKey hk;
+            if (!pwalletMain->GetHybridKey(hybridID, hk))
+                throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Private key not found for this address"));
+            key = hk.GetCKey();
+        } else {
+            CKeyID keyID;
+            addr.GetKeyID(keyID);
+            if(!pwalletMain->GetKey(keyID, key))
+                throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Private key not found for this address"));
+        }
     } else {
         CCoinSecret vchSecret;
         if(!vchSecret.SetString(params[0].get_str()))

@@ -78,7 +78,12 @@ struct CHybridKey
         CKey key;
         if (!key.SetPrivKey(secpPriv))
             throw std::runtime_error("Invalid secp key");
-        key.SetPubKey(secpPub);
+        // SetPrivKey() derives the compressed public key from the scalar, so
+        // it must already match secpPub. Do NOT call SetPubKey() here: it
+        // resets the private key handle (EVP_PKEY), which breaks operations
+        // that need the private key engine (e.g. CKey::DecryptData / ECIES).
+        if (!(key.GetPubKey() == secpPub))
+            throw std::runtime_error("secp key/pub mismatch");
         return key;
     }
 };

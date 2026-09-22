@@ -118,6 +118,11 @@ class CKey {
    public:
     EVP_PKEY *GetEVPPrivKey() const;
     CKey() : pkey(nullptr), fSet(false), fCompressedPubKey(false) {}
+    CKey(const CKey& other);
+    CKey(CKey&& other) noexcept;
+    CKey& operator=(const CKey& other);
+    CKey& operator=(CKey&& other) noexcept;
+    void swap(CKey& other) noexcept;
     ~CKey() {
         if (!vchSecret.empty()) {
             OPENSSL_cleanse(vchSecret.data(), vchSecret.size());

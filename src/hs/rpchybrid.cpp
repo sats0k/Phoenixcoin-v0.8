@@ -14,9 +14,11 @@
 #include "walletdb.h"
 #include "rpcmain.h"
 #include "script.h"
+#include "main.h"
 #include "util.h"
 #include "hs/rpchybrid.h"
 #include "hs/hybrid_signer.h"
+#include "hs/hybrid_script.h"
 #include "hs/wallethybrid.h"
 
 using namespace json_spirit;
@@ -358,4 +360,173 @@ void WalletTxToJSONHybrid(const CWalletTx& wtx, const string& /*strAccount*/, Ob
         }
     }
     entry.push_back(Pair("sig_type", sigType));
+}
+
+// ============================================================================
+// HYBRID MESSAGE SIGNATURES (signmessage / verifymessage)
+// ============================================================================
+
+static void PutU16BE(std::vector<unsigned char>& out, size_t v)
+{
+    out.push_back((unsigned char)(v >> 8));
+    out.push_back((unsigned char)(v & 0xff));
+}
+
+static bool GetU16BE(const std::vector<unsigned char>& buf, size_t& off,
+                     size_t& v)
+{
+    if (off + 2 > buf.size())
+        return false;
+    v = ((size_t)buf[off] << 8) | (size_t)buf[off + 1];
+    off += 2;
+    return true;
+}
+
+static bool ReadBytes(const std::vector<unsigned char>& buf, size_t& off,
+                      size_t len, std::vector<unsigned char>& out)
+{
+    if (len > buf.size() || off + len > buf.size())
+        return false;
+    out.assign(buf.begin() + off, buf.begin() + off + len);
+    off += len;
+    return true;
+}
+
+static bool VerifyMlDsaRaw(const std::vector<unsigned char>& msg,
+                           const std::vector<unsigned char>& mldsaPub,
+                           const std::vector<unsigned char>& mldsaSig)
+{
+    // Same exact-length constraints the consensus verifier applies.
+    if (mldsaPub.size() != ML_DSA_65_PUBKEY_SIZE ||
+        mldsaSig.size() != ML_DSA_65_SIG_SIZE - 1)
+        return false;
+
+    EVP_PKEY* pkey =
+        EVP_PKEY_new_raw_public_key(EVP_PKEY_ML_DSA_65, nullptr,
+                                    mldsaPub.data(), mldsaPub.size());
+    if (!pkey)
+        return false;
+
+    std::unique_ptr<MLDSASigner> signer;
+    try {
+        signer = std::make_unique<MLDSASigner>(pkey);
+    } catch (const std::exception&) {
+        EVP_PKEY_free(pkey);
+        return false;
+    }
+    EVP_PKEY_free(pkey); // MLDSASigner up-ref'd its own handle
+
+    return signer->Verify(msg, mldsaSig);
+}
+
+bool SignHybridMessage(const CHybridKey& hk, const std::string& strMessage,
+                       std::vector<unsigned char>& vchSigOut)
+{
+    if (hk.secpPriv.empty() || !hk.mldsaSigner)
+        return false;
+
+    std::vector<unsigned char> vchMsg;
+    {
+        CDataStream ss(SER_GETHASH, 0);
+        ss << strMessageMagic;
+        ss << strMessage;
+        vchMsg.assign(ss.begin(), ss.end());
+    }
+
+    uint256 hash = Hash(vchMsg.begin(), vchMsg.end());
+
+    std::vector<unsigned char> vchEcdsaCompact;
+    CKey secpKey = hk.GetCKey();
+    if (!secpKey.SignCompact(hash, vchEcdsaCompact))
+        return false;
+
+    std::vector<unsigned char> vchMldsaSig;
+    if (!hk.mldsaSigner->Sign(BuildHybridMessage(vchMsg), vchMldsaSig))
+        return false;
+
+    std::vector<unsigned char> vchEcdsaPub = hk.secpPub.Raw();
+    std::vector<unsigned char> vchMldsaPub = hk.mldsaSigner->GetPublicKey();
+
+    if (vchEcdsaPub.size() != CHybridPubKey::ECDSA_SIZE ||
+        vchMldsaPub.size() != CHybridPubKey::MLDSA_SIZE)
+        return false;
+
+    vchSigOut.clear();
+    vchSigOut.insert(vchSigOut.end(), HYBRID_SIG_MAGIC,
+                     HYBRID_SIG_MAGIC + 4);
+    vchSigOut.push_back(HYBRID_SIG_VERSION);
+    vchSigOut.insert(vchSigOut.end(), vchEcdsaCompact.begin(),
+                     vchEcdsaCompact.end());
+    vchSigOut.insert(vchSigOut.end(), vchEcdsaPub.begin(), vchEcdsaPub.end());
+    PutU16BE(vchSigOut, vchMldsaPub.size());
+    vchSigOut.insert(vchSigOut.end(), vchMldsaPub.begin(), vchMldsaPub.end());
+    PutU16BE(vchSigOut, vchMldsaSig.size());
+    vchSigOut.insert(vchSigOut.end(), vchMldsaSig.begin(), vchMldsaSig.end());
+
+    return true;
+}
+
+bool VerifyHybridMessage(const std::vector<unsigned char>& vchSig,
+                         const CHybridKeyID& hybridID,
+                         const std::string& strMessage)
+{
+    size_t off = 0;
+
+    if (off + 4 + 1 > vchSig.size())
+        return false;
+    if (CRYPTO_memcmp(&vchSig[0], HYBRID_SIG_MAGIC, 4) != 0)
+        return false;
+    off += 4;
+    if (vchSig[off] != HYBRID_SIG_VERSION)
+        return false;
+    off += 1;
+
+    std::vector<unsigned char> vchEcdsaCompact;
+    std::vector<unsigned char> vchEcdsaPub;
+    std::vector<unsigned char> vchMldsaPub;
+    std::vector<unsigned char> vchMldsaSig;
+
+    if (!ReadBytes(vchSig, off, 65, vchEcdsaCompact))
+        return false;
+    if (!ReadBytes(vchSig, off, CHybridPubKey::ECDSA_SIZE, vchEcdsaPub))
+        return false;
+
+    size_t mldsaPubLen = 0;
+    if (!GetU16BE(vchSig, off, mldsaPubLen) ||
+        mldsaPubLen != CHybridPubKey::MLDSA_SIZE ||
+        !ReadBytes(vchSig, off, mldsaPubLen, vchMldsaPub))
+        return false;
+
+    size_t mldsaSigLen = 0;
+    if (!GetU16BE(vchSig, off, mldsaSigLen) ||
+        mldsaSigLen != ML_DSA_65_SIG_SIZE - 1 ||
+        !ReadBytes(vchSig, off, mldsaSigLen, vchMldsaSig))
+        return false;
+
+    if (off != vchSig.size())
+        return false; // trailing garbage
+
+    // The embedded public keys must reproduce exactly the hybrid address
+    // the caller asked us to verify against.
+    CHybridPubKey hybridPub(vchEcdsaPub, vchMldsaPub);
+    if (hybridPub.GetID() != hybridID)
+        return false;
+
+    std::vector<unsigned char> vchMsg;
+    {
+        CDataStream ss(SER_GETHASH, 0);
+        ss << strMessageMagic;
+        ss << strMessage;
+        vchMsg.assign(ss.begin(), ss.end());
+    }
+    uint256 hash = Hash(vchMsg.begin(), vchMsg.end());
+
+    // Recover the ECDSA public key and require it to match the embedded one.
+    CKey rec;
+    if (!rec.SetCompactSignature(hash, vchEcdsaCompact))
+        return false;
+    if (rec.GetPubKey().Raw() != vchEcdsaPub)
+        return false;
+
+    return VerifyMlDsaRaw(BuildHybridMessage(vchMsg), vchMldsaPub, vchMldsaSig);
 }

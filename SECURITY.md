@@ -40,6 +40,18 @@ All signatures operate over a domain-separated message:
 
 This asymmetry is intentional and consensus-critical.
 
+For message signing (`signmessage` / `verifymessage`) the same asymmetry
+is applied over the classic Bitcoin message prefix:
+
+- ECDSA signs the standard message hash of
+  `"Phoenixcoin Signed Message:\n" || message`
+- ML-DSA signs `"BIT-HYBRID-SIG-v1" || "Phoenixcoin Signed Message:\n" || message`
+
+Message-signature containers are self-describing: both public keys are
+embedded (ECDSA compressed pubkey and ML-DSA-65 pubkey), so
+`verifymessage` recomputes the hybrid address from the signature itself
+and requires no wallet access.
+
 ---
 
 ### Private Key Encryption

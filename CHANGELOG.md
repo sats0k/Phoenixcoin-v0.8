@@ -27,6 +27,21 @@ Changes since v0.8.0.
 - New hybrid unit/regression tests (see Testing below), first on-chain
   validation of P2SH hybrid single-key spends and encrypted-wallet hybrid
   spends on a testnet blockchain.
+- Hybrid message signatures for `signmessage` / `verifymessage`: hybrid
+  addresses now produce and verify a self-describing v1 `HYBS` container
+  (ECDSA compact signature, ECDSA pubkey, ML-DSA-65 pubkey, ML-DSA-65
+  signature). Both public keys are embedded because ML-DSA has no key
+  recovery; verification recomputes the hybrid address from the embedded
+  keys and requires no wallet access.
+- `encryptmessage` / `decryptmessage` accept hybrid addresses, encrypting
+  to / decrypting with the hybrid key's secp256k1 component (ECIES).
+- Qt GUI: the Sign / Verify Message dialog now accepts hybrid addresses
+  for both signing (`SignHybridMessage`) and verification
+  (`VerifyHybridMessage`), matching the RPC behavior.
+- Hardened `VerifyHybridMessage`: the ML-DSA signature length field is
+  now required to hold exactly the raw ML-DSA-65 size (3,309 bytes),
+  matching the consensus verifier (`VerifyMLDSA`). Verification is
+  rejected earlier, before any OpenSSL work.
 
 ### Changed
 
@@ -61,6 +76,21 @@ Changes since v0.8.0.
   dropping them.
 - RPC socket accept failures are logged instead of silently dropped.
 - `getwork()` miner state serialized across RPC handler threads.
+- `CHybridKey::GetCKey()` re-published the public key after `SetPrivKey()`,
+  which reset the private `EVP_PKEY` handle; any private-key-engine
+  operation (e.g. ECIES decryption via `CKey::DecryptData`) then failed
+  with "ECDH failed", breaking `decryptmessage` for hybrid addresses. The
+  redundant `SetPubKey` call was removed and the derived public key is
+  validated against `secpPub`.
+- `CKey` had only implicit shallow copy semantics while owning a raw
+  `EVP_PKEY*` that its destructor frees. `decryptmessage` assigns the
+  result of `CHybridKey::GetCKey()` into an existing key
+  (`key = hk.GetCKey();`), so the temporary's destructor freed the PKEY and
+  `key` was left with a dangling pointer; `CKey::DecryptData` then
+  dereferenced freed memory and segfaulted. `CKey` now has real copy/move
+  semantics: copies share the underlying `EVP_PKEY` through an extra
+  reference (`EVP_PKEY_up_ref`), and functions return their key without
+  relying on copy elision to avoid the double-free.
 
 ### Removed (dead code)
 
@@ -77,9 +107,20 @@ Changes since v0.8.0.
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` expanded from 12 to 22 test cases and
-the full Boost suite from 90 to 95, all passing. New hybrid coverage:
+`src/test/hybrid_multisig_tests.cpp` is at 25 test cases and the full Boost
+suite passes all 99 cases. New hybrid coverage in this change:
 
+- Hybrid message signature round trip and negative/tamper coverage
+  (`hybrid_message_sign_verify`, `hybrid_message_verify_negatives`):
+  valid round trip and address re-derivation via `CCoinAddress`, plus
+  rejection of a wrong address, tampered message, legacy 65-byte
+  signature, and single-byte corruption of the magic, version, ECDSA
+  signature/pubkey, ML-DSA pubkey, an ML-DSA pubkey length, or the ML-DSA
+  signature, as well as truncation, trailing garbage, and empty input.
+- Hybrid ECIES encrypt/decrypt round trip for hybrid keys
+  (`hybrid_message_encrypt_decrypt`): encrypt-to-secp / decrypt-with-key
+  round trip, wrong-key rejection, and tampered ciphertext/tag rejection —
+  regression coverage for the `CHybridKey::GetCKey()` ECDH fix.
 - Combined signatures capped at the required `m` (regression for the
   `CombineHybridMultisig` fix).
 - Hybrid-key pool invariants (`EnsureHybridKeyPool` / `GetUnusedHybridKey`

@@ -165,6 +165,32 @@ provider-created ML-DSA-65 keys; the redundant type check was removed to
 match the v1 parser (the type is already fixed by
 `EVP_PKEY_new_raw_private_key`).
 
+The hybrid message RPC tests cover `signmessage` / `verifymessage` on
+hybrid addresses. `hybrid_message_sign_verify` round-trips a
+self-describing `HYBS` v1 container (magic + version + ECDSA compact
+signature + ECDSA pubkey + ML-DSA-65 pubkey + ML-DSA-65 signature) and
+re-derives the hybrid address through `CCoinAddress`, while
+`hybrid_message_verify_negatives` rejects a wrong address, a tampered
+message, a legacy 65-byte signature, and single-byte corruption of the
+magic, version, ECDSA signature, ECDSA pubkey, ML-DSA pubkey, an ML-DSA
+pubkey length, or the ML-DSA signature, as well as truncation, trailing
+garbage, and empty input (`VerifyHybridMessage` embeds both public keys
+because ML-DSA has no key recovery). `hybrid_message_encrypt_decrypt`
+exercises the ECIES path used by `encryptmessage` / `decryptmessage` on a
+hybrid key's secp256k1 component: encrypt-to-public / decrypt-with-private
+round trip, wrong-key rejection, and tampered ciphertext/tag rejection.
+Building it exposed a real defect: `CHybridKey::GetCKey()` re-published
+the public key after `SetPrivKey()`, resetting the private `EVP_PKEY` so
+`CKey::DecryptData` threw "ECDH failed"; the redundant `SetPubKey` call
+was removed. It also exposed the deeper cause of a `decryptmessage`
+segfault: `CKey` owns a raw `EVP_PKEY*` freed in its destructor but only
+had implicit shallow copy semantics, so the RPC's copy-assignment form
+(`key = hk.GetCKey();`) left `key` with a dangling pointer after the
+temporary was destroyed (the safer copy-init form only works because NRVO
+elides the copy). `CKey` now has real copy/move semantics that share the
+`EVP_PKEY` through `EVP_PKEY_up_ref`, and the test exercises the copy
+assignment, a direct copy constructor, and a forced by-value dispatch.
+
 Walkthrough of the legacy test sources that were restored:
 
 - `accounting_tests.cpp` needed an `extern CWallet* pwalletMain;`
@@ -290,7 +316,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 96 test cases...
+Running 99 test cases...
 
 *** No errors detected
 ```

@@ -223,6 +223,36 @@ Each signature element in a hybrid multisig script-sig is a pair of an ECDSA sig
 
 ---
 
+# Hybrid Message Signatures
+
+`signmessage` / `verifymessage` accept hybrid addresses and sign arbitrary text messages:
+
+* `signmessage <hybrid-address> <message>` returns a Base64-encoded, self-describing container holding both the ECDSA and the ML-DSA-65 signature.
+* `verifymessage <hybrid-address> <signature> <message>` recomputes the hybrid address from the two public keys embedded in the container and verifies both signatures — no wallet access is required.
+
+The v1 message-signature container (`HYBS`) is:
+
+```text
+Magic          "HYBS"                4 bytes
+Version        1                     1 byte
+Signature      ECDSA compact        65 bytes
+EC pubkey      compressed           33 bytes
+ML-DSA pubkey length (u16 BE)
+ML-DSA pubkey                        1,952 bytes
+ML-DSA signature length (u16 BE)
+ML-DSA signature                     3,310 bytes
+```
+
+The ECDSA component signs the standard Bitcoin-style message hash over `"Phoenixcoin Signed Message:\n" || message`; the ML-DSA component signs the same prefixed message through the domain-separated hybrid message construction (`"BIT-HYBRID-SIG-v1" || "Phoenixcoin Signed Message:\n" || message`), matching the transaction-layer asymmetry.
+
+Both public keys are embedded because ML-DSA signatures cannot recover the signer's public key.
+
+`encryptmessage` / `decryptmessage` also accept hybrid addresses: `encryptmessage` encrypts to the hybrid key's secp256k1 public component (ECIES), and `decryptmessage` (which requires an unlocked wallet) decrypts with the matching private key.
+
+The Qt wallet's Sign / Verify Message dialog (Tools > Sign/Verify Message) also accepts hybrid addresses and uses the same container format.
+
+---
+
 # Wallet Support
 
 The Quantum wallet has native support for hybrid keys.
@@ -429,6 +459,8 @@ listhybridaddresses
 gethybridkey
 dumphybridkey
 addhybridmultisigaddress
+signmessage / verifymessage (hybrid addresses)
+encryptmessage / decryptmessage (hybrid addresses)
 ```
 
 `addhybridmultisigaddress <n-required> <'["hybridpubkey",...]'> [account]` creates an N-of-M hybrid multisignature P2SH address from hybrid public keys and adds it to the wallet.
@@ -438,6 +470,8 @@ Each `hybridpubkey` is the hex-encoded serialized hybrid public key (`pubkey_ser
 `dumphybridkey` is particularly sensitive because it exposes the hybrid private key material.
 
 It should only be used in a controlled environment where the RPC interface and returned private-key data are appropriately protected.
+
+`signmessage` and `encryptmessage` behave as usual for legacy addresses; for hybrid addresses they produce a hybrid message signature / ECIES ciphertext as described in the [Hybrid Message Signatures](#hybrid-message-signatures) section. `verifymessage` and `decryptmessage` verify/decrypt them, `verifymessage` without any wallet access. Both `signmessage` and `decryptmessage` require the wallet to hold the hybrid private key (and an unlocked wallet if encrypted).
 
 ---
 
@@ -480,8 +514,10 @@ Testing has covered:
 * `OP_CHECKHYBRIDSIGVERIFY`
 * Single-signer tamper rejection
 * ML-DSA signer serialization edges
+* Hybrid message signature round trip and negative/tamper cases
+* Hybrid ECIES encrypt/decrypt round trip for hybrid keys
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (22 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **95 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (25 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **99 test cases** and passes with no errors:
 
 ```bash
 cd src
@@ -521,6 +557,9 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Persisted hybrid key usage (used hybrid addresses never re-issued)
 * [x] P2SH spends of single-key hybrid scripts
 * [x] Multi-wallet partial signing of hybrid multisig
+* [x] Hybrid message signing (`signmessage` / `verifymessage`)
+* [x] Hybrid encrypt / decrypt message RPCs (`encryptmessage` / `decryptmessage`)
+* [x] Hybrid message signing in the Qt GUI (Sign / Verify Message dialog)
 
 ### Remaining deployment work
 

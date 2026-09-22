@@ -11,6 +11,7 @@
 #include <cstring>
 #include <cstdio>
 #include <stdexcept>
+#include <utility>
 
 // OpenSSL (core + 3.x APIs)
 #include <openssl/evp.h>
@@ -164,6 +165,53 @@ CPubKey RecoverPubKey(const uint256& hash, const unsigned char sig64[64],
 }
 
 /* ----------  CKey methods ---------- */
+
+void CKey::swap(CKey& other) noexcept
+{
+    std::swap(vchSecret, other.vchSecret);
+    std::swap(vchPubKey, other.vchPubKey);
+    std::swap(pkey, other.pkey);
+    std::swap(fSet, other.fSet);
+    std::swap(fCompressedPubKey, other.fCompressedPubKey);
+}
+
+CKey::CKey(const CKey& other)
+    : vchSecret(other.vchSecret),
+      vchPubKey(other.vchPubKey),
+      pkey(nullptr),
+      fSet(other.fSet),
+      fCompressedPubKey(other.fCompressedPubKey)
+{
+    // Share the EVP_PKEY by taking an extra reference so both copies own it
+    // and free their own reference in their destructor.
+    if (other.pkey) {
+        if (EVP_PKEY_up_ref(other.pkey) != 1)
+            throw key_error("EVP_PKEY_up_ref failed");
+        pkey = other.pkey;
+    }
+}
+
+CKey::CKey(CKey&& other) noexcept
+    : CKey()
+{
+    swap(other);
+}
+
+CKey& CKey::operator=(const CKey& other)
+{
+    if (this == &other)
+        return *this;
+    CKey tmp(other);
+    swap(tmp);
+    return *this;
+}
+
+CKey& CKey::operator=(CKey&& other) noexcept
+{
+    if (this != &other)
+        swap(other);
+    return *this;
+}
 
 bool CKey::IsNull() const { return !fSet; }
 bool CKey::IsCompressed() const { return fCompressedPubKey; }

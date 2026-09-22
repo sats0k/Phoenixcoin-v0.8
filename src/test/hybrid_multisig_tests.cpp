@@ -10,7 +10,9 @@
 #include "base58.h"
 #include "hs/hybrid_signer.h"
 #include "hs/hybrid_verify.h"
+#include "hs/hybrid_script.h"
 #include "hs/wallethybrid.h"
+#include "hs/rpchybrid.h"
 #include "wallet.h"
 #include "crypter.h"
 
@@ -2301,4 +2303,238 @@ BOOST_AUTO_TEST_CASE(ml_dsa_signer_serializer_edges)
             BOOST_CHECK(!MLDSASigner::FromEncryptedSerialized(pw, b));
         }
     }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Hybrid message signatures (signmessage / verifymessage helpers)            */
+/* ------------------------------------------------------------------------- */
+
+// Offsets inside the v1 hybrid message signature container:
+//   [0..3]   magic "HYBS"
+//   [4]      version
+//   [5..69]  ECDSA recoverable signature (65 bytes)
+//   [70..102] ECDSA compressed pubkey (33 bytes)
+//   [103..104] ML-DSA pubkey length (u16 BE)
+//   [105..105+1952) ML-DSA pubkey
+//   ...      ML-DSA sig length (u16 BE) + ML-DSA signature
+static const size_t HYBMSG_MAGIC_END    = 4;
+static const size_t HYBMSG_VER_OFF      = 4;
+static const size_t HYBMSG_ECDSA_SIG    = 65;   // [5..69]
+static const size_t HYBMSG_ECDSA_PUB    = 33;   // [70..102]
+static const size_t HYBMSG_MLDSA_PUB_OFF = HYBMSG_MAGIC_END + 1 +
+                                           HYBMSG_ECDSA_SIG + HYBMSG_ECDSA_PUB;
+
+BOOST_AUTO_TEST_CASE(hybrid_message_sign_verify)
+{
+    // Round-trip: a valid hybrid message must sign and verify.
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+
+    const std::string msg = "The quick brown fox jumps over the lazy dog";
+
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(SignHybridMessage(hk, msg, sig));
+
+    CHybridKeyID hybridID = hk.GetHybridID();
+
+    // Minimum header layout sanity: ECDSA compact + pubkey + lengths.
+    BOOST_REQUIRE(sig.size() > HYBMSG_MLDSA_PUB_OFF + 1952 + 2);
+    BOOST_CHECK_EQUAL(std::string(sig.begin(), sig.begin() + 4), "HYBS");
+
+    // Correct address verifies.
+    BOOST_CHECK(VerifyHybridMessage(sig, hybridID, msg));
+
+    // The hybrid address derived from the pubkeys rounds-trips through the
+    // address encoding used by the RPCs.
+    CCoinAddress address(hybridID);
+    BOOST_REQUIRE(address.IsValid());
+    CHybridKeyID parsedID;
+    BOOST_REQUIRE(address.GetHybridKeyID(parsedID));
+    BOOST_CHECK(parsedID == hybridID);
+    BOOST_CHECK(VerifyHybridMessage(sig, parsedID, msg));
+}
+
+BOOST_AUTO_TEST_CASE(hybrid_message_verify_negatives)
+{
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+
+    const std::string msg = "hybrid message negative tests";
+    std::vector<unsigned char> sig;
+    BOOST_REQUIRE(SignHybridMessage(hk, msg, sig));
+
+    CHybridKeyID hybridID = hk.GetHybridID();
+
+    // An unrelated hybrid address must not verify.
+    CHybridKey otherHk;
+    GenerateHybridKey(otherHk);
+    BOOST_CHECK(!VerifyHybridMessage(sig, otherHk.GetHybridID(), msg));
+
+    // Tampered message.
+    BOOST_CHECK(!VerifyHybridMessage(sig, hybridID, msg + "x"));
+    BOOST_CHECK(!VerifyHybridMessage(sig, hybridID, ""));
+
+    // A legacy (non-hybrid) signature fed to a hybrid address fails on the
+    // magic check rather than parsing as a hybrid container.
+    std::vector<unsigned char> legacyCompact(65, 0x00);
+    legacyCompact[0] = 0x1f;
+    BOOST_CHECK(!VerifyHybridMessage(legacyCompact, hybridID, msg));
+
+    // Corrupt magic.
+    {
+        std::vector<unsigned char> b = sig;
+        b[0] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Unsupported version.
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_VER_OFF] = 0x02;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Corrupt a byte of the ECDSA recoverable signature (inside [5..69]).
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MAGIC_END + 1 + 32] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Corrupt a byte of the embedded ECDSA public key.
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MAGIC_END + 1 + HYBMSG_ECDSA_SIG + 5] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Corrupt a byte of the embedded ML-DSA public key.
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MLDSA_PUB_OFF + 2 + 1000] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Corrupt a byte of the ML-DSA signature itself.
+    {
+        std::vector<unsigned char> b = sig;
+        b[sig.size() - 100] ^= 0x01;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Reject a noncanonical ML-DSA pubkey length: the address bind would be
+    // structurally impossible, and the length must match ML-DSA-65.
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MLDSA_PUB_OFF] = 0x08;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    {
+        std::vector<unsigned char> b = sig;
+        b[HYBMSG_MLDSA_PUB_OFF + 1] = 0x00;
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Truncation.
+    {
+        std::vector<unsigned char> b(sig.begin(),
+                                     sig.begin() + (sig.size() - 32));
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    {
+        std::vector<unsigned char> b(sig.begin(), sig.begin() + 100);
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Trailing garbage.
+    {
+        std::vector<unsigned char> b = sig;
+        b.push_back(0x00);
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // The ML-DSA signature length field must hold exactly the raw ML-DSA-65
+    // size (parity with consensus VerifyMLDSA), not merely parse cleanly.
+    const size_t mldsaSigLenOff = HYBMSG_MLDSA_PUB_OFF + 2 +
+                                  ML_DSA_65_PUBKEY_SIZE;
+    const size_t mldsaSigOff = mldsaSigLenOff + 2;
+    {
+        // One byte shorter than the real signature.
+        std::vector<unsigned char> b = sig;
+        const size_t shortLen = (sig.size() - mldsaSigOff) - 1;
+        b[mldsaSigLenOff] = (shortLen >> 8) & 0xFF;
+        b[mldsaSigLenOff + 1] = shortLen & 0xFF;
+        b.erase(b.begin() + (mldsaSigOff + shortLen));
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    {
+        // One byte longer than the real signature.
+        std::vector<unsigned char> b = sig;
+        const size_t longLen = (sig.size() - mldsaSigOff) + 1;
+        b[mldsaSigLenOff] = (longLen >> 8) & 0xFF;
+        b[mldsaSigLenOff + 1] = longLen & 0xFF;
+        b.insert(b.begin() + (mldsaSigOff + longLen - 1), 0x00);
+        BOOST_CHECK(!VerifyHybridMessage(b, hybridID, msg));
+    }
+    // Degenerate / empty input.
+    BOOST_CHECK(!VerifyHybridMessage(std::vector<unsigned char>(), hybridID, msg));
+}
+
+// Forced (non-elided) CKey copy through a by-value helper parameter.
+static CKey dispatchKey(CKey k) { return k; }
+
+BOOST_AUTO_TEST_CASE(hybrid_message_encrypt_decrypt)
+{
+    // encryptmessage/decryptmessage operate with the ECDSA component of a
+    // hybrid key (ECIES over secp256k1); the ML-DSA half is not involved in
+    // confidentiality. Verify the round-trip with a plain in-memory key.
+    CHybridKey hk;
+    GenerateHybridKey(hk);
+
+    const std::string secret = "quantum-safe greetings";
+    std::vector<unsigned char> ciphertext;
+    hk.secpPub.EncryptData(
+        std::vector<unsigned char>(secret.begin(), secret.end()),
+        ciphertext);
+    BOOST_REQUIRE(!ciphertext.empty());
+
+    CKey secp = hk.GetCKey();
+    std::vector<unsigned char> plain;
+    secp.DecryptData(ciphertext, plain);
+    BOOST_CHECK_EQUAL(std::string(plain.begin(), plain.end()), secret);
+
+    // A different hybrid key must not be able to decrypt.
+    CHybridKey otherHk;
+    GenerateHybridKey(otherHk);
+    BOOST_CHECK_THROW(otherHk.GetCKey().DecryptData(ciphertext, plain),
+                      key_error);
+
+    // Tampered ciphertext (counter, tag, or payload) must not decrypt.
+    std::vector<unsigned char> bad = ciphertext;
+    bad[bad.size() / 2] ^= 0x01;
+    BOOST_CHECK_THROW(secp.DecryptData(bad, plain), key_error);
+
+    std::vector<unsigned char> badTag = ciphertext;
+    badTag[badTag.size() - 1] ^= 0x01;
+    BOOST_CHECK_THROW(secp.DecryptData(badTag, plain), key_error);
+
+    // Regression: decryptmessage obtains its key as
+    //     CKey key;  key = hk.GetCKey();
+    // which is a COPY ASSIGNMENT. CKey used to have only implicit shallow
+    // copies (it owns a raw EVP_PKEY* freed in its destructor), so the
+    // temporary's destructor freed the shared PKEY and the destination hung
+    // onto a dangling pointer - `key.DecryptData()` then hit a
+    // use-after-free (segfault) in the daemon. Copy-init happens to be
+    // elided by NRVO, which is why the simple `CKey secp = hk.GetCKey();`
+    // above did not crash. Exercise the assignment and a forced genuine copy
+    // (function argument) so both go through the refcount shared-PKEY
+    // semantics.
+    CKey keyByAssign;
+    keyByAssign = hk.GetCKey();
+    std::vector<unsigned char> plainAssign;
+    keyByAssign.DecryptData(ciphertext, plainAssign);
+    BOOST_CHECK_EQUAL(std::string(plainAssign.begin(), plainAssign.end()),
+                      secret);
+
+    CKey keyByCopy(keyByAssign);
+    std::vector<unsigned char> plainCopy;
+    keyByCopy.DecryptData(ciphertext, plainCopy);
+    BOOST_CHECK_EQUAL(std::string(plainCopy.begin(), plainCopy.end()), secret);
+
+    CKey keyByDispatch = dispatchKey(keyByAssign);
+    std::vector<unsigned char> plainDispatch;
+    keyByDispatch.DecryptData(ciphertext, plainDispatch);
+    BOOST_CHECK_EQUAL(std::string(plainDispatch.begin(), plainDispatch.end()),
+                      secret);
 }

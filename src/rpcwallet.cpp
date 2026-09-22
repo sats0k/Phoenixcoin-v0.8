@@ -335,7 +335,9 @@ Value signmessage(const Array &params, bool fHelp) {
 
     if(fHelp || (params.size() != 2)) {
         string msg = "signmessage <address> <message>\n"
-          "Signs a <message> with the private key of <address> specified.";
+          "Signs a <message> with the private key of <address> specified.\n"
+          "Hybrid (quantum-resistant) addresses produce a self-describing\n"
+          "hybrid ECDSA + ML-DSA-65 signature.";
         throw(runtime_error(msg));
     }
 
@@ -347,6 +349,20 @@ Value signmessage(const Array &params, bool fHelp) {
     CCoinAddress addr(strAddress);
     if(!addr.IsValid())
       throw(JSONRPCError(RPC_TYPE_ERROR, "Invalid address"));
+
+    CHybridKeyID hybridID;
+    if (addr.GetHybridKeyID(hybridID))
+    {
+        CHybridKey hk;
+        if (!pwalletMain->GetHybridKey(hybridID, hk))
+            throw(JSONRPCError(RPC_WALLET_ERROR, "Hybrid key not available for this address"));
+
+        vector<unsigned char> vchHybridSig;
+        if (!SignHybridMessage(hk, strMessage, vchHybridSig))
+            throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Sign failed");
+
+        return EncodeBase64(&vchHybridSig[0], vchHybridSig.size());
+    }
 
     CKeyID keyID;
     if(!addr.GetKeyID(keyID))
@@ -372,7 +388,9 @@ Value verifymessage(const Array &params, bool fHelp) {
 
     if(fHelp || (params.size() != 3)) {
         string msg = "verifymessage <address> <signature> <message>\n"
-          "Verifies a <message> of the <address> with the <signature> provided.";
+          "Verifies a <message> of the <address> with the <signature> provided.\n"
+          "Hybrid (quantum-resistant) addresses verify against hybrid\n"
+          "ECDSA + ML-DSA-65 signatures with no wallet access required.";
         throw(runtime_error(msg));
     }
 
@@ -384,15 +402,19 @@ Value verifymessage(const Array &params, bool fHelp) {
     if(!addr.IsValid())
       throw(JSONRPCError(RPC_TYPE_ERROR, "Invalid address"));
 
-    CKeyID keyID;
-    if(!addr.GetKeyID(keyID))
-      throw(JSONRPCError(RPC_TYPE_ERROR, "Address does not refer to key"));
-
     bool fInvalid = false;
     vector<unsigned char> vchSig = DecodeBase64(strSign.c_str(), &fInvalid);
 
     if (fInvalid)
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Malformed base64 encoding");
+
+    CHybridKeyID hybridID;
+    if (addr.GetHybridKeyID(hybridID))
+        return VerifyHybridMessage(vchSig, hybridID, strMessage);
+
+    CKeyID keyID;
+    if(!addr.GetKeyID(keyID))
+      throw(JSONRPCError(RPC_TYPE_ERROR, "Address does not refer to key"));
 
     CDataStream ss(SER_GETHASH, 0);
     ss << strMessageMagic;

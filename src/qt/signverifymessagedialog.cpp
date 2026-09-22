@@ -6,6 +6,8 @@
 #include "base58.h"
 #include "wallet.h"
 #include "main.h"
+#include "hs/rpchybrid.h"
+#include "hs/wallethybrid.h"
 
 #include "guiutil.h"
 #include "walletmodel.h"
@@ -116,6 +118,40 @@ void SignVerifyMessageDialog::on_signMessageButton_SM_clicked() {
         ui->statusLabel_SM->setText(tr("The entered address is invalid.") + QString(" ") + tr("Please check the address and try again."));
         return;
     }
+    CHybridKeyID hybridID;
+    if (addr.GetHybridKeyID(hybridID))
+    {
+        WalletModel::UnlockContext ctx(model->requestUnlock());
+        if (!ctx.isValid())
+        {
+            ui->statusLabel_SM->setStyleSheet("QLabel { color: red; }");
+            ui->statusLabel_SM->setText(tr("Wallet unlock was cancelled."));
+            return;
+        }
+
+        CHybridKey hk;
+        if (!pwalletMain->GetHybridKey(hybridID, hk))
+        {
+            ui->statusLabel_SM->setStyleSheet("QLabel { color: red; }");
+            ui->statusLabel_SM->setText(tr("Hybrid private key for the entered address is not available."));
+            return;
+        }
+
+        std::vector<unsigned char> vchHybridSig;
+        if (!SignHybridMessage(hk, ui->messageIn_SM->document()->toPlainText().toStdString(), vchHybridSig))
+        {
+            ui->statusLabel_SM->setStyleSheet("QLabel { color: red; }");
+            ui->statusLabel_SM->setText(QString("<nobr>") + tr("Message signing failed.") + QString("</nobr>"));
+            return;
+        }
+
+        ui->statusLabel_SM->setStyleSheet("QLabel { color: green; }");
+        ui->statusLabel_SM->setText(QString("<nobr>") + tr("Message signed.") + QString("</nobr>"));
+
+        ui->signatureOut_SM->setText(QString::fromStdString(EncodeBase64(&vchHybridSig[0], vchHybridSig.size())));
+        return;
+    }
+
     CKeyID keyID;
     if (!addr.GetKeyID(keyID))
     {
@@ -197,6 +233,32 @@ void SignVerifyMessageDialog::on_verifyMessageButton_VM_clicked()
         ui->statusLabel_VM->setText(tr("The entered address is invalid.") + QString(" ") + tr("Please check the address and try again."));
         return;
     }
+    CHybridKeyID hybridID;
+    if (addr.GetHybridKeyID(hybridID))
+    {
+        bool fInvalid = false;
+        std::vector<unsigned char> vchSig = DecodeBase64(ui->signatureIn_VM->text().toStdString().c_str(), &fInvalid);
+
+        if (fInvalid)
+        {
+            ui->signatureIn_VM->setValid(false);
+            ui->statusLabel_VM->setStyleSheet("QLabel { color: red; }");
+            ui->statusLabel_VM->setText(tr("The signature could not be decoded.") + QString(" ") + tr("Please check the signature and try again."));
+            return;
+        }
+
+        if (!VerifyHybridMessage(vchSig, hybridID, ui->messageIn_VM->document()->toPlainText().toStdString()))
+        {
+            ui->statusLabel_VM->setStyleSheet("QLabel { color: red; }");
+            ui->statusLabel_VM->setText(QString("<nobr>") + tr("Message verification failed.") + QString("</nobr>"));
+            return;
+        }
+
+        ui->statusLabel_VM->setStyleSheet("QLabel { color: green; }");
+        ui->statusLabel_VM->setText(QString("<nobr>") + tr("Message verified.") + QString("</nobr>"));
+        return;
+    }
+
     CKeyID keyID;
     if (!addr.GetKeyID(keyID))
     {
