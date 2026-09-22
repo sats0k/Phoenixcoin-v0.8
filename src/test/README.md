@@ -316,7 +316,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 101 test cases...
+Running 102 test cases...
 
 *** No errors detected
 ```
@@ -335,6 +335,13 @@ with no partially accepted or partially populated parser output. The same
 parser (`ParseHybridMessage` in `src/hs/hybrid_message.cpp`) is fuzzed
 independently by the `fuzz_hybrid_message_parse` libFuzzer target; see
 `fuzzREADME.md`.
+
+The `key_copy_move_lifetime` test (`key_tests.cpp`) exercises `CKey`
+copy/move/swap ownership: refcounted-PKEY copies surviving each other's
+destruction, moved-from keys becoming safe null keys, swap-based move
+assignment, self-assignments, and ECIES decrypts performed through copies
+after their source keys have been destroyed (the `decryptmessage`
+`key = GetCKey()` regression family).
 
 ## Adding tests
 

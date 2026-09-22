@@ -519,9 +519,11 @@ Testing has covered:
 * Hybrid message signature round trip and negative/tamper cases
 * Malformed-`HYBS` parser matrix (truncation sweep, bad magic/version,
   wrong-length fields, `0xFFFF` length fields, trailing bytes)
+* `CKey` copy/move lifetime (refcounted-PKEY sharing, moves, swaps,
+  self-assignment, ECIES decrypts after source-key destruction)
 * Hybrid ECIES encrypt/decrypt round trip for hybrid keys
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (26 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **101 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (26 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **102 test cases** and passes with no errors:
 
 ```bash
 cd src

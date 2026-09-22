@@ -1,6 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "key.h"
@@ -142,6 +143,209 @@ BOOST_AUTO_TEST_CASE(key_test1)
         BOOST_CHECK(rkey1C.GetPubKey() == key1C.GetPubKey());
         BOOST_CHECK(rkey2C.GetPubKey() == key2C.GetPubKey());
     }
+}
+
+BOOST_AUTO_TEST_CASE(key_copy_move_lifetime)
+{
+    // CKey owns a raw OpenSSL EVP_PKEY* freed in its destructor. Copy / move
+    // must share that handle through refcounting (EVP_PKEY_up_ref) so no two
+    // keys ever own the same pointer independently. The original regression:
+    //      CKey key;  key = hk.GetCKey();
+    // used an implicit shallow copy, the temporary's destructor freed the
+    // PKEY, and `key` was left dangling - `key.DecryptData()` (ECIES via the
+    // private PKEY) then read freed memory in the daemon.
+    //
+    // SignCompact() signs only from vchSecret, so it cannot alone detect a
+    // freed PKEY; the ECIES decrypt probes are the meaningful lifetime
+    // checks, since they exercise EVP_PKEY_derive on the shared handle.
+
+    const string strMsg = "key copy/move lifetime";
+    const uint256 hashMsg = Hash(strMsg.begin(), strMsg.end());
+
+    // --- Copy constructor: copies share the PKEY and survive each other ------
+    CKey a;
+    a.MakeNewKey(true);
+    const CPubKey pubA = a.GetPubKey();
+
+    {
+        CKey b(a);                    // copy construct
+        BOOST_CHECK(b.GetPubKey() == pubA);
+    }                                 // b dies: its dtor must only drop a ref
+
+    // Several copes chained, then the middle ones destroyed.
+    {
+        CKey c1(a);
+        CKey c2(c1);
+    }                                 // c1, c2 destroyed
+    vector<unsigned char> sigA;
+    BOOST_CHECK(a.Sign(hashMsg, sigA));
+    BOOST_CHECK(a.Verify(hashMsg, sigA));
+
+    // --- Copy survives the source being reset mid-flight ----------------------
+    {
+        CKey copy1(a);
+        CKey copy2(copy1);
+        copy1.Reset();                // free one reference while copy2 holds one
+        vector<unsigned char> sig2;
+        BOOST_CHECK(copy2.Sign(hashMsg, sig2));
+        BOOST_CHECK(a.Verify(hashMsg, sig2)); // refcount not corrupted
+    }
+
+    // --- Move constructor: source is left null, target owns the key ----------
+    CKey m1;
+    m1.MakeNewKey(true);
+    const CPubKey pubM1 = m1.GetPubKey();
+    {
+        CKey m2(std::move(m1));
+        BOOST_CHECK(m1.IsNull());
+        BOOST_CHECK(m2.GetPubKey() == pubM1);
+        vector<unsigned char> sigM;
+        BOOST_CHECK(m2.Sign(hashMsg, sigM));
+        BOOST_CHECK(m2.Verify(hashMsg, sigM));
+
+        // A moved-from key is a valid null key: copying it is safe and null.
+        CKey m3(m1);
+        BOOST_CHECK(m3.IsNull());
+        BOOST_CHECK(!m3.Sign(hashMsg, sigM)); // clean failure, no crash
+    }
+    BOOST_CHECK(m1.IsNull());         // still null after the receiver died
+
+    // --- Move assignment into a null destination leaves the source null ------
+    CKey m4;
+    m4.MakeNewKey(true);
+    const CPubKey pubM4 = m4.GetPubKey();
+    {
+        CKey m5;                      // null destination
+        m5 = std::move(m4);
+        BOOST_CHECK(m4.IsNull());
+        BOOST_CHECK(m5.GetPubKey() == pubM4);
+        vector<unsigned char> sigM5;
+        BOOST_CHECK(m5.Sign(hashMsg, sigM5));
+        BOOST_CHECK(m5.Verify(hashMsg, sigM5));
+    }
+
+    // --- Move assignment into a populated destination (swap semantics) -------
+    // The moved-from object inherits whichever key the destination held, and
+    // that key must remain valid and independent.
+    CKey m6;
+    m6.MakeNewKey(true);
+    const CPubKey pubM6 = m6.GetPubKey();
+    {
+        CKey m7;
+        m7.MakeNewKey(true);
+        const CPubKey oldM7 = m7.GetPubKey();
+        m7 = std::move(m6);           // m7 now holds m6's key
+        BOOST_CHECK(m7.GetPubKey() == pubM6);
+        BOOST_CHECK(m6.GetPubKey() == oldM7); // m6 inherited m7's old key
+        vector<unsigned char> sig6, sig7;
+        BOOST_CHECK(m6.Sign(hashMsg, sig6));
+        BOOST_CHECK(m6.Verify(hashMsg, sig6));
+        BOOST_CHECK(m7.Sign(hashMsg, sig7));
+        BOOST_CHECK(m7.Verify(hashMsg, sig7));
+    }
+
+    // --- Self-assignment must not free the PKEY -------------------------------
+    CKey s;
+    s.MakeNewKey(true);
+    const CPubKey pubS = s.GetPubKey();
+    s = s;                            // copy self-assign
+    BOOST_CHECK(s.GetPubKey() == pubS);
+    s = std::move(s);                 // move self-assign
+    BOOST_CHECK(s.GetPubKey() == pubS);
+    vector<unsigned char> sigS;
+    BOOST_CHECK(s.Sign(hashMsg, sigS));
+    BOOST_CHECK(s.Verify(hashMsg, sigS));
+
+    // --- Copy assignment replaces a populated destination ---------------------
+    CKey d1;
+    d1.MakeNewKey(true);
+    {
+        CKey d2;
+        d2.MakeNewKey(true);
+        BOOST_CHECK(d2.GetPubKey() != d1.GetPubKey());
+        d2 = d1;
+        BOOST_CHECK(d2.GetPubKey() == d1.GetPubKey());
+        vector<unsigned char> sigD;
+        BOOST_CHECK(d1.Sign(hashMsg, sigD));
+        BOOST_CHECK(d2.Verify(hashMsg, sigD));
+    }
+
+    // --- swap() exchanges the full key state ----------------------------------
+    {
+        CKey w1;
+        w1.MakeNewKey(true);
+        CKey w2;
+        w2.MakeNewKey(false);         // uncompressed, to check fCompressedPubKey
+        const CPubKey pw1 = w1.GetPubKey();
+        const CPubKey pw2 = w2.GetPubKey();
+        BOOST_CHECK(w1.IsCompressed());
+        BOOST_CHECK(!w2.IsCompressed());
+        w1.swap(w2);
+        BOOST_CHECK(w1.GetPubKey() == pw2);
+        BOOST_CHECK(w2.GetPubKey() == pw1);
+        BOOST_CHECK(!w1.IsCompressed());
+        BOOST_CHECK(w2.IsCompressed());
+        vector<unsigned char> sigW;
+        BOOST_CHECK(w1.Sign(hashMsg, sigW));
+        BOOST_CHECK(w1.Verify(hashMsg, sigW));
+        // swap back and keep going
+        w1.swap(w2);
+        BOOST_CHECK(w1.GetPubKey() == pw1);
+    }
+
+    // --- Lifetime: ECIES decrypt through copes well after their sources die ---
+    // Owners live in inner scopes so ONLY refcounting keeps the PKEY alive
+    // once they return; decrypting must still succeed.
+    vector<unsigned char> plaintext(64, 0xee);
+    vector<unsigned char> ciphertext;
+    {
+        CKey owner;
+        owner.MakeNewKey(true);
+        owner.GetPubKey().EncryptData(plaintext, ciphertext);
+        BOOST_REQUIRE(!ciphertext.empty());
+
+        {
+            // Share the live key through a const-ref (like hk.GetCKey()).
+            const CKey& borrowed = owner;
+            CKey k1(borrowed);            // copy ctor
+            CKey k2;
+            k2 = borrowed;                // copy assign
+            CKey k3(std::move(k2));       // move ctor
+            CKey k4;
+            k4 = std::move(k3);           // move assign
+
+            vector<unsigned char> out1, out4;
+            BOOST_CHECK_NO_THROW(k1.DecryptData(ciphertext, out1));
+            BOOST_CHECK(out1 == plaintext);
+            BOOST_CHECK_NO_THROW(k4.DecryptData(ciphertext, out4));
+            BOOST_CHECK(out4 == plaintext);
+        }                                 // k1..k4 die, owner still alive
+    }                                     // owner dies last
+
+    // --- Exact decryptmessage pattern: by-value provider + copy assignment ---
+    {
+        struct EciesProvider {
+            EciesProvider() { k.MakeNewKey(true); }
+            CKey GetCKey() const { return k; } // returns by value, like CHybridKey
+            CKey k;
+        };
+
+        vector<unsigned char> cipher;
+        CKey key;
+        {
+            EciesProvider provider;
+            // Encrypt to THIS provider's key, then hand that key out through
+            // the regression statement and let the provider (and the by-value
+            // temporary) die; only refcounting keeps the PKEY alive now.
+            provider.k.GetPubKey().EncryptData(plaintext, cipher);
+            BOOST_REQUIRE(!cipher.empty());
+            key = provider.GetCKey();      // the regression statement
+        }                                  // provider dies; key survives
+
+        vector<unsigned char> out;
+        BOOST_CHECK_NO_THROW(key.DecryptData(cipher, out));
+        BOOST_CHECK(out == plaintext);
+    }                                      // key dies last
 }
 
 BOOST_AUTO_TEST_SUITE_END()

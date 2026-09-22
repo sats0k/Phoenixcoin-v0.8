@@ -123,7 +123,19 @@ Changes since v0.8.0.
 ### Testing
 
 `src/test/hybrid_multisig_tests.cpp` is at 26 test cases and the full Boost
-suite passes all 101 cases. New hybrid coverage in this change:
+suite passes all 102 cases. New coverage in this change:
+
+- `key_copy_move_lifetime` (`src/test/key_tests.cpp`): CKey copy/move/swap
+  ownership and lifetime. Covers refcounted-PKEY copies surviving each
+  other's destruction, move constructor/assignment leaving the source null
+  (and a moved-from key being a safe null key), swap-based move assignment
+  keeping the displaced key alive, self-assignments, `swap()` exchanging
+  compressed/uncompressed state, and the `decryptmessage` regression
+  (`key = GetCKey()` copy/move assignment) with ECIES decrypts performed
+  through copies after their sources — including the by-value provider —
+  have been destroyed. The ECIES decrypt probes are the meaningful checks
+  because they exercise `EVP_PKEY_derive` on the shared PKEY, which
+  `SignCompact()` (secret-only) cannot.
 
 - Systematic malformed-`HYBS` matrix (`hybrid_message_malformed_matrix`)
   over a signed round-trip container, additionally pinned to its exact
