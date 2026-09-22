@@ -316,7 +316,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 102 test cases...
+Running 103 test cases...
 
 *** No errors detected
 ```
@@ -342,6 +342,14 @@ destruction, moved-from keys becoming safe null keys, swap-based move
 assignment, self-assignments, and ECIES decrypts performed through copies
 after their source keys have been destroyed (the `decryptmessage`
 `key = GetCKey()` regression family).
+
+`key_copy_move_legacy_signing` (`key_tests.cpp`) drives real legacy
+transaction signing through those semantics: a keystore hands the signing
+key out via every copy/move pathway, and `SignSignature` must produce a
+`VerifySignature`-passing scriptSig for P2PKH and P2PK outputs whose signed
+transactions round-trip through serialization. The store keeps only the
+secret, so a shallow-copy/refcount bug double-frees the shared PKEY — this
+test crashes (SIGSEGV) under the pre-fix implicit-shallow-copy `CKey`.
 
 ## Adding tests
 

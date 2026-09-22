@@ -1,5 +1,7 @@
 #include <boost/test/unit_test.hpp>
 
+#include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -8,6 +10,9 @@
 #include "base58.h"
 #include "uint256.h"
 #include "util.h"
+#include "keystore.h"
+#include "script.h"
+#include "main.h"
 
 using namespace std;
 
@@ -346,6 +351,157 @@ BOOST_AUTO_TEST_CASE(key_copy_move_lifetime)
         BOOST_CHECK_NO_THROW(key.DecryptData(cipher, out));
         BOOST_CHECK(out == plaintext);
     }                                      // key dies last
+}
+
+namespace {
+
+// Forced (non-elided) CKey copy through a by-value helper parameter, so the
+// key-store hand-out is a genuine copy/move, never an elided construction.
+CKey legacyDispatchKey(CKey k) { return k; }
+
+// CKeyStore whose GetKey() rebuilds the stored secret into a fresh CKey and
+// then churns that key through a chosen copy/move pathway before Sign1()
+// ends up signing with it. This mirrors the real daemon signing path, where
+// the signer's CKey is produced by copying/moving keys around; under the old
+// shallow-copy CKey this churn double-frees the shared EVP_PKEY.
+class ChurnKeyStore : public CBasicKeyStore
+{
+public:
+    enum Mode {
+        COPY_ASSIGN,     // keyOut = stored;              (daemon-path copy)
+        COPY_FORCED,     // two-step copy, no elision
+        MOVE_FROM_TEMP,  // move a copy out into keyOut
+        MOVE_COPY,       // move, then move-assign out
+        BY_VALUE_FORCED  // through the by-value dispatch helper
+    };
+
+    Mode mode;
+
+    ChurnKeyStore() : mode(COPY_ASSIGN) {}
+
+    bool GetKey(const CKeyID& address, CKey& keyOut) const
+    {
+        CKey stored;
+        if (!CBasicKeyStore::GetKey(address, stored))
+            return false;
+
+        switch (mode) {
+        case COPY_ASSIGN:
+            keyOut = stored;
+            break;
+        case COPY_FORCED: {
+            CKey tmp(stored);
+            keyOut = tmp;
+            break;
+        }
+        case MOVE_FROM_TEMP: {
+            CKey tmp(stored);
+            keyOut = std::move(tmp);
+            break;
+        }
+        case MOVE_COPY: {
+            CKey tmp(stored);
+            CKey tmp2(std::move(tmp));
+            keyOut = std::move(tmp2);
+            break;
+        }
+        case BY_VALUE_FORCED:
+            keyOut = legacyDispatchKey(stored);
+            break;
+        }
+        return true;
+    }
+};
+
+} // namespace
+
+BOOST_AUTO_TEST_CASE(key_copy_move_legacy_signing)
+{
+    // Legacy transaction signing fetches the signing key from a CKeyStore
+    // through CKey copy/move operations (Sign1 -> keystore.GetKey). The store
+    // persists only the secret; each GetKey() rebuilds a fresh CKey (and a
+    // fresh EVP_PKEY) and hands it out via a chosen copy/move pathway. A
+    // broken CKey lifetime (shallow copies freeing a shared EVP_PKEY twice)
+    // double-frees here; correct copy/move/refcount semantics must produce a
+    // valid signature that passes VerifySignature, and the signed legacy
+    // transaction must round-trip through serialization.
+
+    // The key itself lives (and dies) in an inner scope; the store keeps only
+    // the secret, so ownership of the original CKey must not matter later.
+    ChurnKeyStore keystore;
+    CPubKey pub;
+    {
+        CKey key;
+        key.MakeNewKey(true);
+        pub = key.GetPubKey();
+        BOOST_CHECK(keystore.AddKey(key));
+    } // key destroyed; only its secret remains in the store
+
+    // Funding transaction paying to a P2PKH and a P2PK output of that key.
+    CScript scriptP2PKH;
+    scriptP2PKH.SetDestination(pub.GetID());
+    CScript scriptP2PK;
+    scriptP2PK << pub << OP_CHECKSIG;
+
+    CTransaction txFrom;
+    txFrom.vout.resize(2);
+    txFrom.vout[0].scriptPubKey = scriptP2PKH;
+    txFrom.vout[1].scriptPubKey = scriptP2PK;
+    BOOST_CHECK(txFrom.IsStandard());
+
+    static const ChurnKeyStore::Mode modes[] = {
+        ChurnKeyStore::COPY_ASSIGN,
+        ChurnKeyStore::COPY_FORCED,
+        ChurnKeyStore::MOVE_FROM_TEMP,
+        ChurnKeyStore::MOVE_COPY,
+        ChurnKeyStore::BY_VALUE_FORCED,
+    };
+
+    for (unsigned int nIn = 0; nIn < 2; ++nIn) {
+        for (unsigned int m = 0; m < sizeof(modes) / sizeof(modes[0]); ++m) {
+            keystore.mode = modes[m];
+
+            CTransaction txTo;
+            txTo.vin.resize(1);
+            txTo.vout.resize(1);
+            txTo.vin[0].prevout.n = nIn;
+            txTo.vin[0].prevout.hash = txFrom.GetHash();
+            txTo.vout[0].nValue = 1;
+            txTo.vout[0].scriptPubKey.SetDestination(pub.GetID());
+
+            BOOST_CHECK_MESSAGE(
+                SignSignature(keystore, txFrom, txTo, 0),
+                strprintf("SignSignature mode=%u nIn=%u", m, nIn));
+            BOOST_CHECK(txTo.IsStandard());
+
+            // The produced scriptSig must verify against the funding output.
+            BOOST_CHECK_MESSAGE(
+                VerifySignature(txFrom, txTo, 0, true, 0),
+                strprintf("VerifySignature mode=%u nIn=%u", m, nIn));
+
+            // The signed legacy transaction must round-trip through
+            // serialization (network format) intact.
+            CDataStream ss(SER_NETWORK, PROTOCOL_VERSION);
+            ss << txTo;
+            CTransaction txBack;
+            ss >> txBack;
+            BOOST_CHECK(txBack == txTo);
+        }
+    }
+
+    // Sign-again stability: re-signing the same spend after the store has
+    // handed the key out many times must keep working (refcounts balanced).
+    keystore.mode = ChurnKeyStore::MOVE_COPY;
+    for (int rep = 0; rep < 50; ++rep) {
+        CTransaction txTo;
+        txTo.vin.resize(1);
+        txTo.vout.resize(1);
+        txTo.vin[0].prevout.n = 0;
+        txTo.vin[0].prevout.hash = txFrom.GetHash();
+        txTo.vout[0].nValue = 1;
+        BOOST_CHECK(SignSignature(keystore, txFrom, txTo, 0));
+        BOOST_CHECK(VerifySignature(txFrom, txTo, 0, true, 0));
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -123,7 +123,20 @@ Changes since v0.8.0.
 ### Testing
 
 `src/test/hybrid_multisig_tests.cpp` is at 26 test cases and the full Boost
-suite passes all 102 cases. New coverage in this change:
+suite passes all 103 cases. New coverage in this change:
+
+- `key_copy_move_legacy_signing` (`src/test/key_tests.cpp`): legacy
+  transaction signing through CKey copy/move ownership. A keystore whose
+  `GetKey()` rebuilds the stored secret into a fresh CKey and hands it out
+  via each copy/move pathway (plain copy-assign, forced two-step copy,
+  move, nested move, by-value dispatch) drives `SignSignature` on P2PKH and
+  P2PK funding outputs; each produced scriptSig must pass
+  `VerifySignature`, the signed transaction must round-trip through
+  serialization, and re-signing after many handouts must stay stable. The
+  signer key is never the object the caller created - the store keeps only
+  the secret - so a shallow-copy/refcount bug double-frees the shared
+  `EVP_PKEY`; this test was verified to crash (SIGSEGV) under the
+  pre-fix implicit-shallow-copy CKey.
 
 - `key_copy_move_lifetime` (`src/test/key_tests.cpp`): CKey copy/move/swap
   ownership and lifetime. Covers refcounted-PKEY copies surviving each
