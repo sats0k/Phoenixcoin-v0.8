@@ -153,12 +153,14 @@ Value importhybridkey(const Array& params, bool fHelp) {
 
     const unsigned char* p = mldsaPriv.data();
     EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaPriv.size());
-    if (!pkey)
-        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
-                           "ML-DSA private key decode failed");
-    // MLDSASigner up-refs its own handle; the guard releases the d2i ref.
+    // Guard the d2i ref before the validity checks so a malformed or
+    // trailing-byte DER blob cannot leak the handle; MLDSASigner up-refs
+    // its own handle, so the guard releases the d2i ref.
     std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
         pkey, &EVP_PKEY_free);
+    if (!pkey || p != mldsaPriv.data() + mldsaPriv.size())
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,
+                           "ML-DSA private key decode failed");
 
     string strLabel;
     if (params.size() > 2) strLabel = params[2].get_str();

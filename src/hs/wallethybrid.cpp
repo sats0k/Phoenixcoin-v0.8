@@ -381,14 +381,16 @@ bool LoadHybridKey(CWallet* wallet, const CHybridKeyDisk& disk,
         // Deserialize MLDSA key
         const unsigned char* p = mldsaPriv.data();
         EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaPriv.size());
-        if (!pkey)
-            throw std::runtime_error("MLDSA private key decode failed");
 
-        // Guard the reference returned by d2i_AutoPrivateKey(); the ctor
-        // up_refs for each signer, the guard releases the d2i ref (also on
-        // exception unwind).
+        // Guard the reference returned by d2i_AutoPrivateKey() before the
+        // validity checks so a malformed or trailing-byte DER blob cannot
+        // leak the handle; the ctor up_refs for each signer, the guard
+        // releases the d2i ref (also on exception unwind).
         std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
             pkey, &EVP_PKEY_free);
+
+        if (!pkey || p != mldsaPriv.data() + mldsaPriv.size())
+            throw std::runtime_error("MLDSA private key decode failed");
 
         // Construct MLDSASigner
         mem.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
@@ -672,13 +674,13 @@ bool CWallet::DecryptHybridKeys(const CKeyingMaterial& vMasterKey)
 
             const unsigned char* p = mldsaPriv.data();
             EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaPriv.size());
-            if (!pkey)
+            std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
+                pkey, &EVP_PKEY_free);
+            if (!pkey || p != mldsaPriv.data() + mldsaPriv.size())
                 throw std::runtime_error("MLDSA private key decode failed");
 
             mem.mldsaSigner = std::make_unique<MLDSASigner>(pkey);
             signer = std::make_unique<MLDSASigner>(pkey);
-            EVP_PKEY_free(pkey);
-            pkey = nullptr;
 
             if (!ValidateHybridKey(mem))
                 throw std::runtime_error("hybrid key validation failed");
