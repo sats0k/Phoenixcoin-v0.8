@@ -106,6 +106,32 @@ bool CWallet::LoadKeyMetadata(const CPubKey &pubkey, const CKeyMetadata &meta) {
     return(true);
 }
 
+bool CWallet::EncryptKeySecret(const CKey& key,
+                               std::vector<unsigned char>& vchCryptedSecretOut)
+{
+    if (!IsCrypted() || IsLocked())
+        return false;
+
+    CPubKey vchPubKey = key.GetPubKey();
+    bool fCompressed;
+    CSecret vchSecret = key.GetSecret(fCompressed);
+    bool fOk = EncryptSecret(const_cast<CKeyingMaterial&>(GetMasterKey()),
+                             vchSecret, vchPubKey.GetHash(),
+                             vchCryptedSecretOut);
+    OPENSSL_cleanse(vchSecret.data(), vchSecret.size());
+    return fOk;
+}
+
+bool CWallet::StageKeyRecord(CWalletDB& db, const CKey& key,
+                             const CKeyMetadata& meta,
+                             const std::vector<unsigned char>& vchCryptedSecret)
+{
+    CPubKey pubkey = key.GetPubKey();
+    if (IsCrypted())
+        return db.WriteCryptedKey(pubkey, vchCryptedSecret, meta);
+    return db.WriteKey(pubkey, key.GetPrivKey(), meta);
+}
+
 bool CWallet::AddCScript(const CScript& redeemScript) {
 
     if(!CCryptoKeyStore::AddCScript(redeemScript))

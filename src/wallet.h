@@ -198,6 +198,19 @@ public:
     /* Load metadata used by LoadWallet() */
     bool LoadKeyMetadata(const CPubKey &pubkey, const CKeyMetadata &metadata);
 
+    // Re-encrypts key's secret with the wallet master key (crypted wallets
+    // only). Fallible; call before opening a persistence transaction so a
+    // crypto failure cannot leave a partial import behind.
+    bool EncryptKeySecret(const CKey& key,
+                          std::vector<unsigned char>& vchCryptedSecretOut);
+
+    // Writes the key record (keymeta + key/ckey) through an already-open
+    // CWalletDB so it joins that database transaction. For crypted wallets
+    // vchCryptedSecret must be the pre-encrypted secret; for plaintext
+    // wallets it is ignored.
+    bool StageKeyRecord(CWalletDB& db, const CKey& key, const CKeyMetadata& meta,
+                        const std::vector<unsigned char>& vchCryptedSecret);
+
     bool LoadMinVersion(int nVersion) { nWalletVersion = nVersion; nWalletMaxVersion = std::max(nWalletMaxVersion, nVersion); return true; }
 
     // Adds an encrypted key to the store, and saves it to disk.

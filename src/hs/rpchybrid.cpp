@@ -201,35 +201,101 @@ Value importhybridkey(const Array& params, bool fHelp) {
         if (pwalletMain->HaveHybridKey(hybridID))
             throw JSONRPCError(RPC_WALLET_ERROR, "Already have this hybrid key");
 
-        // ---- Persist at rest (same path as wallet-generated keys) ----
+        CKey secpKey;
+        CKeyID keyID;
+        try {
+            secpKey = hk.GetCKey();
+            keyID   = secpKey.GetPubKey().GetID();
+        } catch (const std::exception& e) {
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               "Invalid hybrid ECDSA key");
+        }
+
+        // The ECDSA record is owned by the keystore: persist it only if this
+        // key is not already present (recovering from partial imports) and
+        // register it in memory only after the transaction commits.
+        bool fPersistKeyRecord = !pwalletMain->HaveKey(keyID);
+
+        // Fallible key-material preparation happens before any database
+        // transaction is opened, so a crypto failure cannot leave a partial
+        // import behind.
+        CKeyMetadata keyMeta(hk.nCreateTime);
+        vector<unsigned char> vchCryptedSecret;
+        if (fPersistKeyRecord && pwalletMain->IsCrypted() &&
+            !pwalletMain->EncryptKeySecret(secpKey, vchCryptedSecret))
+            throw JSONRPCError(RPC_WALLET_ERROR,
+                               "Error encrypting ECDSA key with wallet master key");
+
+        // ---- Persist at rest in one database transaction ----
         if (pwalletMain->fFileBacked) {
+            CHybridKeyDisk disk;
             try {
-                CHybridKeyDisk disk = pwalletMain->MakeHybridKeyDisk(hk);
-                CWalletDB walletdb(pwalletMain->strWalletFile);
-                if (!walletdb.WriteHybridKey(hybridID, disk))
-                    throw JSONRPCError(RPC_WALLET_ERROR,
-                                       "Error writing hybrid key to wallet");
-                // Encrypted wallets rebuild plaintext keys from these records
-                // on unlock, so keep the disk form cached now.
-                if (pwalletMain->IsCrypted())
-                    pwalletMain->mapHybridKeyDisk[hybridID] = disk;
+                disk = pwalletMain->MakeHybridKeyDisk(hk);
             } catch (Object&) {
                 throw;
             } catch (const std::exception& e) {
                 throw JSONRPCError(RPC_WALLET_ERROR,
+                                   string("Error building hybrid key record: ") +
+                                       e.what());
+            }
+
+            CWalletDB walletdb(pwalletMain->strWalletFile);
+            if (!walletdb.TxnBegin())
+                throw JSONRPCError(RPC_DATABASE_ERROR, "database error");
+
+            try {
+                // ECDSA half, written through the same CWalletDB so it joins
+                // this transaction (mirrors CWallet::AddKey persisting).
+                if (fPersistKeyRecord &&
+                    !pwalletMain->StageKeyRecord(walletdb, secpKey, keyMeta,
+                                                 vchCryptedSecret))
+                    throw std::runtime_error("failed to write ECDSA key record");
+
+                if (!walletdb.WriteHybridKey(hybridID, disk))
+                    throw std::runtime_error("failed to write hybrid key");
+
+                if (!strLabel.empty()) {
+                    CHybridAddressEntry entry(strLabel);
+                    if (!walletdb.WriteHybridAddressEntry(hybridID, entry))
+                        throw std::runtime_error("failed to write address label");
+                }
+
+                if (!walletdb.TxnCommit())
+                    throw JSONRPCError(RPC_DATABASE_ERROR,
+                                       "database error: hybrid key import commit failed");
+            } catch (Object&) {
+                walletdb.TxnAbort();
+                throw;
+            } catch (const std::exception& e) {
+                walletdb.TxnAbort();
+                throw JSONRPCError(RPC_WALLET_ERROR,
                                    string("Error persisting hybrid key: ") +
                                        e.what());
             }
+
+            // Encrypted wallets rebuild plaintext keys from these records on
+            // unlock, so keep the disk form cached now (post-commit).
+            if (pwalletMain->IsCrypted())
+                pwalletMain->mapHybridKeyDisk[hybridID] = disk;
         }
 
+        // ---- Register in memory only after the commit succeeds ----
+        if (fPersistKeyRecord) {
+            if (pwalletMain->IsCrypted())
+                pwalletMain->LoadCryptedKey(secpKey.GetPubKey(),
+                                            vchCryptedSecret);
+            else
+                pwalletMain->LoadKey(secpKey);
+            pwalletMain->mapKeyMetadata[keyID] = keyMeta;
+        }
         pwalletMain->mapHybridKeys.emplace(hybridID, std::move(hk));
         pwalletMain->mapHybridSigners.emplace(hybridID, std::move(signerCopy));
 
-        if (!strLabel.empty()) {
-            pwalletMain->SetHybridAddressBookName(hybridID, strLabel);
-            CWalletDB walletdb(pwalletMain->strWalletFile);
-            walletdb.WriteHybridAddressEntry(hybridID, strLabel);
-        }
+        // Mirrors SetHybridAddressBookName, but skips its own disk write
+        // (already in the transaction above) and its mapHybridKeys check.
+        if (!strLabel.empty())
+            pwalletMain->mapHybridAddressBook[hybridID] =
+                CHybridAddressEntry(strLabel);
 
         if (fRescan) {
             pwalletMain->UpdateTimeFirstKey();
