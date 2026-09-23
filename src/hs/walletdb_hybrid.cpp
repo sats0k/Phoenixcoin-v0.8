@@ -2,7 +2,9 @@
 // Distributed under the MIT/X11 software licence, see the accompanying
 // file LICENCE or http://opensource.org/license/mit
 
+#include <cstdlib>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -63,6 +65,26 @@ bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &v
 
 bool CWalletDB::WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &disk)
 {
+    // Test-only failure injection (see regression_atomic_importhybridkey.sh):
+    // when PHOENIX_TEST_FAIL_HYBRID_WRITE is set to this key's hex id, the
+    // first matching write returns false, driving callers down their
+    // TxnAbort() rollback path (importhybridkey commits the ECDSA record,
+    // hybrid key and label in one transaction). One-shot per id so an
+    // immediate retry in the same daemon succeeds.
+    {
+        const char* psFail = std::getenv("PHOENIX_TEST_FAIL_HYBRID_WRITE");
+        const std::string sFail = (psFail && *psFail) ? std::string(psFail)
+                                                      : std::string();
+        if (!sFail.empty() && keyID.GetHex() == sFail) {
+            // Guarded because WriteHybridKey may run concurrently (e.g. keypool
+            // top-ups while an RPC import is in progress).
+            static CCriticalSection csFailedIds;
+            static std::set<std::string> sFailedIds;
+            LOCK(csFailedIds);
+            if (sFailedIds.insert(sFail).second)
+                return false;
+        }
+    }
     nWalletDBUpdated++;
     return Write(make_pair(std::string("hyb"), keyID), disk);
 }
