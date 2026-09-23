@@ -233,6 +233,7 @@ HEADERS += src/qt/gui.h \
     src/hs/hybrid_script.h \
     src/hs/hybrid_verify.h \
     src/hs/hybrid_types.h \
+    src/hs/hybrid_message.h \
     src/hs/hybrid_consensus.h \
     src/hs/walletdb_hybrid.h \
     src/hs/rpchybrid.h \
@@ -307,6 +308,7 @@ SOURCES += src/qt/phoenixcoin.cpp \
     src/neoscrypt_asm.S \
     src/ntp.cpp \
     src/hs/hybrid_signer.cpp \
+    src/hs/hybrid_message.cpp \
     src/hs/wallethybrid.cpp \
     src/hs/hybrid_verify.cpp \
     src/hs/wallet_hybrid_address.cpp \
