@@ -255,7 +255,10 @@ BOOST_AUTO_TEST_CASE(key_copy_move_lifetime)
     const CPubKey pubS = s.GetPubKey();
     s = s;                            // copy self-assign
     BOOST_CHECK(s.GetPubKey() == pubS);
-    s = std::move(s);                 // move self-assign
+    // Route through an lvalue reference so the compiler cannot fold this to a
+    // no-op warning; the runtime still performs a genuine move self-assign.
+    CKey& rS = s;
+    s = std::move(rS);            // move self-assign
     BOOST_CHECK(s.GetPubKey() == pubS);
     vector<unsigned char> sigS;
     BOOST_CHECK(s.Sign(hashMsg, sigS));
