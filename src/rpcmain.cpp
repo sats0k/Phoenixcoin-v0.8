@@ -289,6 +289,8 @@ static const CRPCCommand vRPCCommands[] =
     { "decryptdata",            &decryptdata,            false,  false },
     { "dumphybridkey",          &dumphybridkey,          false,  false },
     { "importhybridkey",        &importhybridkey,        false,  false },
+    { "dumphybridkeys",         &dumphybridkeys,         false,  false },
+    { "importhybridkeys",       &importhybridkeys,       false,  false },
     { "gethybridaddress",       &gethybridaddress,       false,  false },
     { "listhybridaddresses",    &listhybridaddresses,    false,  false },
     { "gethybridkey",           &gethybridkey,           false,  false },

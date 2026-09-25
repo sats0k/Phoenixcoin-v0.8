@@ -373,6 +373,12 @@ void GUI::createActions() {
     importWalletAction = new QAction(QIcon(":/icons/key_import"), tr("&Import keys"), this);
     connect(importWalletAction, SIGNAL(triggered()), this, SLOT(importWallet()));
 
+    dumpHybridKeysAction = new QAction(QIcon(":/icons/key_export"), tr("Export &hybrid keys"), this);
+    connect(dumpHybridKeysAction, SIGNAL(triggered()), this, SLOT(dumpHybridKeys()));
+
+    importHybridKeysAction = new QAction(QIcon(":/icons/key_import"), tr("Import &hybrid keys"), this);
+    connect(importHybridKeysAction, SIGNAL(triggered()), this, SLOT(importHybridKeys()));
+
     quitAction = new QAction(QIcon(":/icons/quit"), tr("E&xit"), this);
     quitAction->setShortcut(QKeySequence(Qt::CTRL, Qt::Key_Q));
     quitAction->setMenuRole(QAction::QuitRole);
@@ -419,8 +425,13 @@ void GUI::createMenuBar() {
     // Configure the menus
     QMenu *wallet = appMenuBar->addMenu(tr("&Wallet"));
     wallet->addAction(cloneWalletAction);
+    wallet->addSeparator();
     wallet->addAction(exportWalletAction);
     wallet->addAction(importWalletAction);
+    wallet->addSeparator();
+    wallet->addAction(dumpHybridKeysAction);
+    wallet->addAction(importHybridKeysAction);
+    wallet->addSeparator();
     wallet->addAction(optionsAction);
     wallet->addSeparator();
     wallet->addAction(lockWalletToggleAction);
@@ -1056,6 +1067,66 @@ void GUI::importWallet() {
             QMessageBox::critical(this,
               tr("Import Failed"),
               tr("There was an error while importing wallet keys from:<br>%1").arg(filename));
+        }
+    }
+}
+
+void GUI::dumpHybridKeys() {
+
+   if(!walletModel) return;
+   WalletModel::UnlockContext ctx(walletModel->requestUnlock());
+   if(!ctx.isValid()) return;
+
+#if (QT_VERSION < 0x050000)
+    QString saveDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
+#else
+    QString saveDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+#endif
+
+    QString filename = QFileDialog::getSaveFileName(this, tr("Export Hybrid Keys"),
+      saveDir, tr("Hybrid Keys (*.txt)"));
+    if(!filename.isEmpty()) {
+        QString strError;
+        if(walletModel->dumpHybridKeys(filename, strError)) {
+            QMessageBox::information(this,
+              tr("Export Complete"),
+              tr("All hybrid keys of your wallet have been exported into:<br>%1").arg(filename));
+        } else {
+            QMessageBox::critical(this,
+              tr("Export Failed"),
+              strError.isEmpty()
+                ? tr("There was an error while exporting your hybrid keys.")
+                : strError);
+        }
+    }
+}
+
+void GUI::importHybridKeys() {
+
+   if(!walletModel) return;
+   WalletModel::UnlockContext ctx(walletModel->requestUnlock());
+   if(!ctx.isValid()) return;
+
+#if (QT_VERSION < 0x050000)
+    QString openDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
+#else
+    QString openDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
+#endif
+
+    QString filename = QFileDialog::getOpenFileName(this, tr("Import Hybrid Keys"),
+      openDir, tr("Hybrid Keys (*.txt)"));
+    if(!filename.isEmpty()) {
+        QString strError;
+        if(walletModel->importHybridKeys(filename, strError)) {
+            QMessageBox::information(this,
+              tr("Import Complete"),
+              tr("All hybrid keys have been imported into your wallet from:<br>%1").arg(filename));
+        } else {
+            QMessageBox::critical(this,
+              tr("Import Failed"),
+              strError.isEmpty()
+                ? tr("There was an error while importing hybrid keys from:<br>%1").arg(filename)
+                : strError);
         }
     }
 }

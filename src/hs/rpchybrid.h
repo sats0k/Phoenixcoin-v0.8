@@ -13,9 +13,22 @@
 
 /* ---- Hybrid RPC handlers (defined in hs/rpchybrid.cpp) ---- */
 
+// Core, wallet-agnostic hybrid key file export/import. These back both the
+// RPCs below and the Qt GUI (WalletModel::dumpHybridKeys /
+// importHybridKeys). On failure they fill strError and return false.
+extern bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
+                           std::string& strError);
+
+extern bool ImportHybridKeysFile(CWallet* pwallet, const std::string& strSrc,
+                                 std::string& strError);
+
 extern json_spirit::Value dumphybridkey(const json_spirit::Array &params, bool fHelp);
 
 extern json_spirit::Value importhybridkey(const json_spirit::Array &params, bool fHelp);
+
+extern json_spirit::Value dumphybridkeys(const json_spirit::Array &params, bool fHelp);
+
+extern json_spirit::Value importhybridkeys(const json_spirit::Array &params, bool fHelp);
 
 extern json_spirit::Value gethybridaddress(const json_spirit::Array &params, bool fHelp);
 

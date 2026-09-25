@@ -6,6 +6,8 @@
 
 #include "base58.h"
 #include "wallet.h"
+#include "hs/rpchybrid.h"
+#include "util.h"
 
 #include "guiconstants.h"
 #include "optionsmodel.h"
@@ -307,6 +309,27 @@ bool WalletModel::exportWallet(const QString &filename) {
 
 bool WalletModel::importWallet(const QString &filename) {
     return(ImportWallet(wallet, filename.toLocal8Bit().data()));
+}
+
+bool WalletModel::dumpHybridKeys(const QString &filename, QString &strError) {
+    std::string strCore;
+    bool fOk = DumpHybridKeys(wallet, filename.toLocal8Bit().data(), strCore);
+    if (!fOk)
+        OutputDebugStringF("WalletModel::dumpHybridKeys: %s\n",
+                           strCore.c_str());
+    strError = QString::fromStdString(strCore);
+    return fOk;
+}
+
+bool WalletModel::importHybridKeys(const QString &filename, QString &strError) {
+    std::string strCore;
+    bool fOk = ImportHybridKeysFile(wallet, filename.toLocal8Bit().data(),
+                                    strCore);
+    if (!fOk)
+        OutputDebugStringF("WalletModel::importHybridKeys: %s\n",
+                           strCore.c_str());
+    strError = QString::fromStdString(strCore);
+    return fOk;
 }
 
 // Handlers for core signals

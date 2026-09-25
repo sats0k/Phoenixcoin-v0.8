@@ -86,6 +86,8 @@ private:
     QAction *cloneWalletAction;
     QAction *exportWalletAction;
     QAction *importWalletAction;
+    QAction *dumpHybridKeysAction;
+    QAction *importHybridKeysAction;
     QAction *optionsAction;
     QAction *lockWalletToggleAction;
     QAction *quitAction;
@@ -178,6 +180,9 @@ private slots:
     /* Wallet keys export / import */
     void exportWallet();
     void importWallet();
+    /* Hybrid (quantum-resistant) keys export / import */
+    void dumpHybridKeys();
+    void importHybridKeys();
     /** Change encrypted wallet passphrase */
     void changePassphrase();
     /** Ask for passphrase to unlock wallet temporarily */

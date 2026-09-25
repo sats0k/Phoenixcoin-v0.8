@@ -95,6 +95,9 @@ public:
     /* Wallet keys export / import */
     bool exportWallet(const QString &filename);
     bool importWallet(const QString &filename);
+    /* Hybrid (quantum-resistant) key export / import */
+    bool dumpHybridKeys(const QString &filename, QString &strError);
+    bool importHybridKeys(const QString &filename, QString &strError);
 
     // RAI object for unlocking wallet, returned by requestUnlock()
     class UnlockContext
