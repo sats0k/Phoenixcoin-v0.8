@@ -6,9 +6,9 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 
 ---
 
-## [0.8.1] - in development
+## [0.8.2] - in development
 
-Changes since v0.8.0.
+Changes since v0.8.1.
 
 ### Added
 
@@ -18,12 +18,8 @@ Changes since v0.8.0.
   different wallets can each contribute `[ECDSA][ML-DSA]` pairs and
   `CombineSignatures` merges them into a complete redeemable script
   (multi-wallet partial signing).
-- `wallet` `keypoolrefill [<newsize>]` parameter restored.
 - Qt GUI: runtime light/dark theme switch (sun/moon icons), Fusion style,
   Cantarell font, and a Phoenixcoin Quantum wordmark.
-- Legacy upstream unit tests re-enabled against the current codebase
-  (script, multisig, transaction, sigopcount, P2SH, miner, DoS),
-  including a fix for a `CScript` self-assignment bug.
 - New hybrid unit/regression tests (see Testing below), first on-chain
   validation of P2SH hybrid single-key spends and encrypted-wallet hybrid
   spends on a testnet blockchain.
@@ -73,24 +69,8 @@ Changes since v0.8.0.
   parser with arbitrary bytes under Clang + ASan/UBSan, asserting the
   fixed-size contract and the no-partial-acceptance invariant.
 
-### Changed
-
-- Hybrid code consolidated under `src/hs`.
-- Redundant `src/ecies` dropped; ECIES now lives in `key.cpp`.
-- `CKey::RecoverPubKey` declared in `key.h`.
-- Per-thread secp256k1 signing context freed on thread exit.
-
 ### Fixed
 
-- `DecodeOP_N` assertion crash in the hybrid-multisig `Solver` on the
-  genesis block.
-- ECDH shared secret produced with the private key in the wrong byte
-  order.
-- `CKey::SignCompact` performed an out-of-bounds read when the key was
-  unset or its secret was empty.
-- `CHybridKeyDisk::FromSerializedV2` rejected every valid provider-created
-  ML-DSA-65 key (`EVP_PKEY_id()` returns -1 for those keys); the redundant
-  check was removed.
 - `CombineHybridMultisig` now caps the merged script-sig at exactly `m`
   signature pairs; surplus matched pairs previously left the
   two-pointer matcher with unmatched signatures and made the script
@@ -112,6 +92,10 @@ Changes since v0.8.0.
   with "ECDH failed", breaking `decryptmessage` for hybrid addresses. The
   redundant `SetPubKey` call was removed and the derived public key is
   validated against `secpPub`.
+- `SignHybridTx` now clears its `scriptSigRet` before signing. It filled
+  the output by appending, so re-signing an input accumulated stale
+  signature pairs (masked in tests because the deterministic ECDSA half
+  re-satisfied `OP_CHECKHYBRIDSIG` from the top of the stack).
 - `importhybridkey` previously registered the hybrid key's ECDSA half only
   in memory and never persisted it, so re-exporting via `dumphybridkey`
   failed with 'Private key not known' and a restart lost the record. The
@@ -135,19 +119,6 @@ Changes since v0.8.0.
   reference (`EVP_PKEY_up_ref`), and functions return their key without
   relying on copy elision to avoid the double-free.
 
-### Removed (dead code)
-
-- Hybrid `ParseHybridSignature` and `Secp256k1Signer`.
-- Wallet helpers `ScanForWalletTransaction`, `AddReserveKey`,
-  `UnlockAllCoins`, `GetWalletFile`, and the dead hybrid address-book /
-  metadata helpers.
-- RPC `decodescript` and `getnewpubkey` commands and the
-  `ParseHashV/O` / `ParseHexV/O` helpers.
-- Script `MakeSameSize`, util `LogException`, netbase
-  `LookupHostNumeric` / `IsMulticast` and the `print` helpers, four dead
-  checkpoint helpers, and `CKey` `VerifyCompact` /
-  `SetCompressedPubKey`.
-
 ### Testing
 
 `src/test/hybrid_multisig_tests.cpp` is at 29 test cases and the full Boost
@@ -163,12 +134,6 @@ suite passes all 105 cases. New coverage in this change:
   signing), and the signed spend must survive serialization.
   Same as its legacy sibling it crashes (SIGSEGV) under the pre-fix
   shallow-copy CKey.
-
-- `SignHybridTx` (fixed): now clears its `scriptSigRet` before signing.
-  It filled the output by appending, so re-signing an input accumulated
-  stale signature pairs (masked in tests because the deterministic ECDSA
-  half re-satisfied `OP_CHECKHYBRIDSIG` from the top of the stack); the
-  re-sign loop in `key_copy_move_hybrid_signing` pins it.
 
 - `key_copy_move_legacy_signing` (`src/test/key_tests.cpp`): legacy
   transaction signing through CKey copy/move ownership. A keystore whose
@@ -230,11 +195,6 @@ suite passes all 105 cases. New coverage in this change:
   (3309) — with one-byte-short, one-byte-long, empty, oversized and
   correctly-sized-but-bogus blobs, plus the last-byte-is-sighash layout,
   all rejected while the exact sizes pass.
-- Hybrid-key disk-format tampering and legacy-record parsing guard.
-- P2HPKH (hybrid mining coinbase) spend path.
-- `OP_CHECKHYBRIDSIGVERIFY` opcode.
-- Single-signer tamper rejection.
-- ML-DSA signer serialization edges (`FromSerializedV2` regression).
 - `dumphybridkey` / `importhybridkey` single-key export/import round trip
   (WIF + Base64-DER re-parsed, validated, and loaded through the same
   `CHybridKeyDisk` / `LoadHybridKey` path as wallet-generated keys).
@@ -253,10 +213,74 @@ suite passes all 105 cases. New coverage in this change:
 
 ### Notes
 
-- The `FromSerializedV2` type-check removal and the combiner cap do not
-  change consensus: surplus signature pairs are still rejected by mempool
-  standardness, since `ScriptSigArgsExpected` returns `m * 2` for hybrid
-  multisig and this fork has no clean-stack rule.
+- The combiner cap does not change consensus: surplus signature pairs are
+  still rejected by mempool standardness, since `ScriptSigArgsExpected`
+  returns `m * 2` for hybrid multisig and this fork has no clean-stack
+  rule.
+
+---
+
+## [0.8.1]
+
+Changes since v0.8.0.
+
+### Added
+
+- `wallet` `keypoolrefill [<newsize>]` parameter restored.
+- Legacy upstream unit tests re-enabled against the current codebase
+  (script, multisig, transaction, sigopcount, P2SH, miner, DoS),
+  including a fix for a `CScript` self-assignment bug.
+- New hybrid unit/regression tests (see Testing below).
+
+### Changed
+
+- Hybrid code consolidated under `src/hs`.
+- Redundant `src/ecies` dropped; ECIES now lives in `key.cpp`.
+- `CKey::RecoverPubKey` declared in `key.h`.
+- Per-thread secp256k1 signing context freed on thread exit.
+
+### Fixed
+
+- `DecodeOP_N` assertion crash in the hybrid-multisig `Solver` on the
+  genesis block.
+- ECDH shared secret produced with the private key in the wrong byte
+  order.
+- `CKey::SignCompact` performed an out-of-bounds read when the key was
+  unset or its secret was empty.
+- `CHybridKeyDisk::FromSerializedV2` rejected every valid provider-created
+  ML-DSA-65 key (`EVP_PKEY_id()` returns -1 for those keys); the redundant
+  check was removed.
+
+### Removed (dead code)
+
+- Hybrid `ParseHybridSignature` and `Secp256k1Signer`.
+- Wallet helpers `ScanForWalletTransaction`, `AddReserveKey`,
+  `UnlockAllCoins`, `GetWalletFile`, and the dead hybrid address-book /
+  metadata helpers.
+- RPC `decodescript` and `getnewpubkey` commands and the
+  `ParseHashV/O` / `ParseHexV/O` helpers.
+- Script `MakeSameSize`, util `LogException`, netbase
+  `LookupHostNumeric` / `IsMulticast` and the `print` helpers, four dead
+  checkpoint helpers, and `CKey` `VerifyCompact` /
+  `SetCompressedPubKey`.
+
+### Testing
+
+`src/test/hybrid_multisig_tests.cpp` expanded to 17 test cases, the full
+Boost suite passes all 90 cases. New coverage:
+
+- Hybrid-key disk-format tampering and legacy-record parsing guard.
+- P2HPKH (hybrid mining coinbase) spend path.
+- `OP_CHECKHYBRIDSIGVERIFY` opcode.
+- Single-signer tamper rejection.
+- ML-DSA signer serialization edges (`FromSerializedV2` regression).
+
+### Notes
+
+- The redundant `EVP_PKEY_id()` type-check dropped from
+  `FromSerializedV2` was never a consensus rule: provider-created ML-DSA-65
+  keys remain validated by `ValidateHybridKey` on load, and the
+  serialization format is unchanged.
 
 ---
 
