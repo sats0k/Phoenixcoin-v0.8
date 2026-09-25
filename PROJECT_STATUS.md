@@ -36,7 +36,9 @@ Implemented components include:
 - Hybrid message signatures for `signmessage`/`verifymessage` (self-describing ECDSA + ML-DSA-65 container with both public keys embedded)
 - Hybrid address support in `encryptmessage`/`decryptmessage` (ECIES over the key's secp256k1 component)
 - Qt GUI Sign / Verify Message dialog accepts hybrid addresses
-- Hybrid key export/import: `dumphybridkey` exports the ECDSA half as WIF and the ML-DSA-65 half as Base64 DER; `importhybridkey` re-imports both halves, validates them, and persists the key to the wallet like a wallet-generated key
+- Hybrid key export/import: `dumphybridkey` exports the ECDSA half as WIF and the ML-DSA-65 half as Base64 DER; `importhybridkey` re-imports both halves, validates them, and persists the key to the wallet like a wallet-generated key (the ECDSA half is stored as a real wallet key record, atomically with the hybrid record)
+- Bulk hybrid-key backup/restore via dump files (`dumphybridkeys` / `importhybridkeys`): all-or-nothing export (no partial backups, no overwriting an existing file, atomic temp-file + fsync + rename writes) and explicit rejection of malformed import records (too-few-fields, unparseable / zero / trailing-garbage timestamps)
+- Hybrid key export/import in the Qt GUI (Wallet menu: Export hybrid keys / Import hybrid keys)
 
 ## Verification
 
@@ -59,7 +61,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (27 test cases) inside the full Boost suite, which reports **105 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (29 test cases) inside the full Boost suite, which reports **105 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -89,6 +91,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - Hybrid message verification negatives (wrong address, tampered magic/version/ECDSA/ML-DSA regions, wrong pubkey length, truncation, trailing garbage)
 - Hybrid ECIES encrypt/decrypt round trip (wrong-key and tampered-ciphertext rejection, validating the `CHybridKey::GetCKey()` ECDH fix on `decryptmessage`)
 - Hybrid key export/import round trip (WIF + Base64-DER → re-parse, validate, wallet `LoadHybridKey` path, identity and signing reproduced)
+- `importhybridkey` atomicity: the ECDSA half, the hybrid record and the address label persist in one `CWalletDB` transaction; an injected mid-transaction write failure (`PHOENIX_TEST_FAIL_HYBRID_WRITE`) rolls everything back in memory and on disk across a restart, and the identical import can then be retried successfully
 - Malformed-`HYBS` matrix (every truncation prefix, bad magic/version, wrong ECDSA-pubkey length, ML-DSA pubkey/signature length fields at 0/1/short/long/`0xFFFF`, trailing bytes, 64 KiB zero buffers) asserting clean failure with no partially accepted/partially populated parser output
 - `CKey` copy/move lifetime (`key_copy_move_lifetime` in `key_tests.cpp`): refcounted-PKEY sharing across copies, move/swaps, self-assignments, and ECIES decrypts performed after the source keys were destroyed — the whole `decryptmessage` (`key = GetCKey()`) regression family
 - `CKey` copy/move under legacy transaction signing (`key_copy_move_legacy_signing` in `key_tests.cpp`): a keystore churning the signing key through every copy/move pathway drives `SignSignature` on P2PKH/P2PK outputs, asserting `VerifySignature`, serialization round-trip, and repeated-signing stability; it crashes (SIGSEGV) under the pre-fix shallow-copy CKey
@@ -103,6 +106,8 @@ make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
 ```
 
 Four libFuzzer targets (`fuzz_MLDSASigner_deserialize`, `fuzz_encrypted_keys`, `fuzz_hybrid_verify`, `fuzz_hybrid_message_parse`) build and run cleanly under Clang with ASan/UBSan; `fuzz_hybrid_message_parse` fuzzes the pure v1 `HYBS` parser extracted into `src/hs/hybrid_message.{h,cpp}`. See `fuzzREADME.md` at the repository root.
+
+Six shell regression scripts under `src/test/` drive full daemons to exercise the exported-private-key flows end to end (import persistence, cross-node legacy/hybrid round trips, atomic import under injected write failure, bulk file export/import plus its failure modes, and malformed-record rejection). Each runs as `src/test/<script> [path-to-phoenixcoind]` and reports a `PASS`/`FAIL` tally.
 
 ## Consensus
 
@@ -142,7 +147,8 @@ Historical PhoenixCoin nodes will reject Quantum blocks because they do not unde
 
 Future improvements may still include:
 
-- Hybrid wallet recovery/backup tooling beyond key import/export
+- Additional wallet backup/recovery tooling beyond the file-based hybrid
+  key export/import that is now in place
 - Additional wallet recovery tools
 - Additional RPC functionality
 - User interface integration
@@ -153,7 +159,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 105 test cases with no errors, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 105 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 

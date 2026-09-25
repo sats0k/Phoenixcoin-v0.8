@@ -139,8 +139,16 @@ misordered signature data into a transaction that is then relayed.
 
 - All serialized inputs are length-checked
 - Trailing data is rejected
+- Private-key DER imports require full consumption of the ASN.1 object:
+  `d2i_AutoPrivateKey` silently ignores trailing surplus bytes, so every
+  import site (`LoadHybridKey`, `LoadHybridKeysFromDB`,
+  `importhybridkey`) verifies the cursor reaches the end of the buffer and
+  rejects a blob that does not decode exactly
 - Constant-time comparisons are used for key material
 - Verify-only secp256k1 context is enforced
+- Exported key backups are all-or-nothing (never partially written),
+  never overwrite an existing file, and are written to a temporary name,
+  fsynced, and renamed into place only once complete
 
 ---
 

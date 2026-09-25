@@ -253,6 +253,53 @@ The Qt wallet's Sign / Verify Message dialog (Tools > Sign/Verify Message) also 
 
 ---
 
+# Hybrid Key Backup and Restore
+
+Hybrid private keys can be backed up and restored in bulk through a
+dump-style file:
+
+* `dumphybridkeys <file>` exports **every** hybrid private key in the
+  wallet to `<file>` (relative paths resolve under the data directory).
+  Each key becomes one line,
+
+  ```text
+  <secp_wif> <mldsa_priv_der_b64> <created> [label=<label>|change=1|reserve=1] # addr=<hybrid address> # mldsa_alg=<alg>
+  ```
+
+  where `<secp_wif>` is the ECDSA half as WIF, `<mldsa_priv_der_b64>` is
+  the ML-DSA-65 half as Base64-encoded PKCS#8 DER, `<created>` is the key's
+  creation timestamp, and the trailing `#` comments record the hybrid
+  address and ML-DSA algorithm. Records are sorted by creation time under
+  dumpwallet-style `#` header lines.
+
+* `importhybridkeys <file>` restores hybrid keys from such a file,
+  persisting each through the same validation and wallet storage path as
+  wallet-generated keys (encrypted wallets must be unlocked).
+
+The export/import core is shared by the RPC and the Qt wallet, whose
+Wallet menu offers **Export hybrid keys** and **Import hybrid keys**
+(file pickers backed by the same `dumphybridkeys` / `importhybridkeys`
+file format).
+Private-key backup is sensitive: restrict access to the RPC interface and
+to any exported files.
+
+The shared backend deliberately never reports a false success:
+
+* A backup is **all-or-nothing**: if any single key cannot be serialized,
+  the whole export fails and reports how many keys were skipped — no
+  partial backup file is left behind.
+* An existing target file is **never overwritten**; the export refuses
+  instead.
+* The file is written to a temporary name in the same directory, flushed,
+  fsynced, and only then renamed into place, so a failed or interrupted
+  write cannot clobber a previous good backup.
+* The import fails explicitly on malformed records — too few fields, an
+  unparseable timestamp, a timestamp token with trailing garbage, or a
+  zero/negative timestamp (the wallet never persists a key with
+  `nCreateTime <= 0`) — instead of quietly dropping them.
+
+---
+
 # Wallet Support
 
 The Quantum wallet has native support for hybrid keys.
@@ -272,6 +319,7 @@ Implemented functionality includes:
 * Hybrid private-key serialization
 * Encrypted hybrid private-key serialization
 * Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
+* Bulk hybrid-key backup/restore via dump file (`dumphybridkeys` / `importhybridkeys`)
 
 Hybrid keys are persisted in `wallet.dat`.
 
@@ -458,6 +506,7 @@ gethybridaddress
 listhybridaddresses
 gethybridkey
 dumphybridkey / importhybridkey
+dumphybridkeys / importhybridkeys
 addhybridmultisigaddress
 signmessage / verifymessage (hybrid addresses)
 encryptmessage / decryptmessage (hybrid addresses)
@@ -525,8 +574,16 @@ Testing has covered:
   (`SignSignature` / `VerifySignature`, P2PKH + P2PK, serialization
   round-trip)
 * Hybrid ECIES encrypt/decrypt round trip for hybrid keys
+* Hybrid key export / import round trip (`dumphybridkey` /
+  `importhybridkey`, WIF + Base64 DER re-imported through the wallet key
+  storage path)
+* Bulk hybrid-key file export/import, exercised by shell regression
+  scripts against live daemons (see `src/test/README.md`): full backup
+  round trip, atomic import under injected mid-transaction write failure,
+  export-failure / no-overwrite / atomic-write guarantees, and explicit
+  rejection of malformed import records
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (27 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **105 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (29 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **105 test cases** and passes with no errors:
 
 ```bash
 cd src
@@ -570,6 +627,11 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Hybrid encrypt / decrypt message RPCs (`encryptmessage` / `decryptmessage`)
 * [x] Hybrid message signing in the Qt GUI (Sign / Verify Message dialog)
 * [x] Hybrid key export (`dumphybridkey`) and import (`importhybridkey`) RPCs
+* [x] Bulk hybrid-key file export/import (`dumphybridkeys` /
+      `importhybridkeys`) with all-or-nothing export, no-overwrite, and
+      atomic writes
+* [x] Hybrid key export / import in the Qt GUI (Wallet > Export/Import
+      hybrid keys)
 
 ### Remaining deployment work
 
@@ -577,7 +639,6 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [ ] Complete network upgrade specification
 * [ ] Expand automated consensus/regression testing
 * [ ] Complete wallet UI integration
-* [ ] Finalize key import/export tooling
 * [ ] Complete release testing
 * [ ] Publish production binaries
 * [ ] Coordinate network activation
@@ -647,6 +708,12 @@ src/hs/hybrid_signer.cpp
 src/hs/hybrid_verify.h
 src/hs/hybrid_verify.cpp
 src/hs/hybrid_script.h
+src/hs/hybrid_message.h
+src/hs/hybrid_message.cpp
+src/hs/rpchybrid.h
+src/hs/rpchybrid.cpp
+src/hs/walletdb_hybrid.h
+src/hs/walletdb_hybrid.cpp
 
 src/hs/wallethybrid.h
 src/hs/wallethybrid.cpp
@@ -670,6 +737,18 @@ Automated hybrid unit/regression tests are located under:
 
 ```text
 src/test/hybrid_multisig_tests.cpp
+```
+
+Full-daemon shell regression scripts for the hybrid key export/import
+file operations live beside it:
+
+```text
+src/test/regression_atomic_importhybridkey.sh
+src/test/regression_hybridkeys_exportfail.sh
+src/test/regression_hybridkeys_file.sh
+src/test/regression_hybridkeys_malformed.sh
+src/test/regression_importhybridkey.sh
+src/test/regression_privkey_roundtrip.sh
 ```
 
 ---

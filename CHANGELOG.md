@@ -48,6 +48,21 @@ Changes since v0.8.0.
   persists it to the wallet exactly like a wallet-generated key
   (transparent for plaintext wallets, encrypted at rest for encrypted
   wallets). Returns the derived hybrid address; rescan is on by default.
+  The ECDSA half is persisted as a genuine wallet key record in the same
+  atomic `CWalletDB` transaction as the hybrid record and address label,
+  so the imported key survives a restart and can be re-exported.
+- Bulk hybrid-key backup/restore via a dump file: `dumphybridkeys <file>`
+  exports every hybrid private key (one record per line, sorted by
+  creation time, dumpwallet-style header), and `importhybridkeys <file>`
+  restores them. The Qt wallet adds "Export hybrid keys" and
+  "Import hybrid keys" actions (Wallet menu) using the same backend.
+  The shared core never writes a partial or overwritten
+  backup (a failure to serialize any single key fails the whole export,
+  an existing target file is never overwritten, and the file is written
+  to a temporary name, fsynced, then renamed into place) and fails an
+  import on malformed records — too few fields, an unparseable timestamp,
+  a timestamp with trailing garbage, or a zero/negative timestamp — instead
+  of silently dropping them.
 - The v1 `HYBS` container parser was extracted into a pure, dependency-light
   module (`src/hs/hybrid_message.{h,cpp}`, `ParseHybridMessage`) shared by
   the message-signature path and fuzzing. The parser is transactional —
@@ -97,6 +112,19 @@ Changes since v0.8.0.
   with "ECDH failed", breaking `decryptmessage` for hybrid addresses. The
   redundant `SetPubKey` call was removed and the derived public key is
   validated against `secpPub`.
+- `importhybridkey` previously registered the hybrid key's ECDSA half only
+  in memory and never persisted it, so re-exporting via `dumphybridkey`
+  failed with 'Private key not known' and a restart lost the record. The
+  ECDSA half is now stored as a real wallet key record, atomically with the
+  hybrid record and address label in one `CWalletDB` transaction, with
+  memory registration only after commit and rollback on any failure;
+  re-imports after a partial failure recover via the `HaveKey` guard.
+- Private-key imports no longer accept DER blobs with trailing bytes:
+  `d2i_AutoPrivateKey` silently ignored surplus data, so a malformed blob
+  was accepted. All three import sites (`LoadHybridKey`,
+  `LoadHybridKeysFromDB` and `importhybridkey`) now require full
+  consumption of the DER object, and the `d2i` result is RAII-guarded so
+  the stricter rejection cannot leak the reference.
 - `CKey` had only implicit shallow copy semantics while owning a raw
   `EVP_PKEY*` that its destructor frees. `decryptmessage` assigns the
   result of `CHybridKey::GetCKey()` into an existing key
@@ -122,7 +150,7 @@ Changes since v0.8.0.
 
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` is at 27 test cases and the full Boost
+`src/test/hybrid_multisig_tests.cpp` is at 29 test cases and the full Boost
 suite passes all 105 cases. New coverage in this change:
 
 - `key_copy_move_hybrid_signing` (`src/test/hybrid_multisig_tests.cpp`):
@@ -207,6 +235,21 @@ suite passes all 105 cases. New coverage in this change:
 - `OP_CHECKHYBRIDSIGVERIFY` opcode.
 - Single-signer tamper rejection.
 - ML-DSA signer serialization edges (`FromSerializedV2` regression).
+- `dumphybridkey` / `importhybridkey` single-key export/import round trip
+  (WIF + Base64-DER re-parsed, validated, and loaded through the same
+  `CHybridKeyDisk` / `LoadHybridKey` path as wallet-generated keys).
+- Shell regression scripts under `src/test/` exercising full daemons:
+  `regression_importhybridkey.sh` (import persists across a restart),
+  `regression_atomic_importhybridkey.sh` (mid-transaction write-failure
+  injection via `PHOENIX_TEST_FAIL_HYBRID_WRITE` rolls back fully),
+  `regression_privkey_roundtrip.sh` (cross-node hybrid and legacy private
+  key round trips),
+  `regression_hybridkeys_file.sh` (bulk `dumphybridkeys` /
+  `importhybridkeys` round trip),
+  `regression_hybridkeys_exportfail.sh` (an unserializable key fails the
+  whole export, nothing is left behind, no-overwrite, atomic write)
+  and `regression_hybridkeys_malformed.sh` (malformed records fail the
+  import explicitly instead of being silently dropped).
 
 ### Notes
 

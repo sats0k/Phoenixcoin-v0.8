@@ -367,6 +367,48 @@ crashes (SIGSEGV) under the pre-fix shallow-copy `CKey`, and its re-sign
 loop also pins the `SignHybridTx` append fix (the output scriptSig is now
 cleared at the start of the call instead of accumulating on re-sign).
 
+## Shell regression scripts
+
+In addition to the Boost unit suite, this directory contains shell
+regression scripts that drive full `phoenixcoind` daemons end to end.
+They exercise the hybrid private-key export/import flows that need a real
+wallet and database. Each script takes an optional path to a
+`phoenixcoind` binary (defaults to the freshly built `src/phoenixcoind`),
+prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
+
+- `regression_importhybridkey.sh` — an `importhybridkey`-imported hybrid
+  key is readable (`dumphybridkey`) immediately and after a full daemon
+  restart, proving the ECDSA half is persisted as a real wallet key record
+  and not only held in memory.
+- `regression_atomic_importhybridkey.sh` — under an injected database
+  write failure (`PHOENIX_TEST_FAIL_HYBRID_WRITE`), the import fails,
+  leaves nothing behind in memory or in the wallet DB across a restart,
+  and can be retried successfully.
+- `regression_privkey_roundtrip.sh` — cross-node export/import of both
+  legs of a hybrid key (`dumphybridkey`/`importhybridkey`) plus the legacy
+  `importprivkey`/`dumpprivkey` round trip.
+- `regression_hybridkeys_file.sh` — bulk `dumphybridkeys` /
+  `importhybridkeys` backup round trip: every key is exported, the file
+  round-trips into a fresh wallet, and re-exported records match.
+- `regression_hybridkeys_exportfail.sh` — `dumphybridkeys` never writes a
+  partial backup: forcing one key to fail serialization
+  (`PHOENIX_TEST_FAIL_HYBRID_EXPORT`) fails the whole export, removes the
+  claimed file, and a retry succeeds; an existing target file is never
+  overwritten, and no leftover `<file>.tmp` remains after any failed or
+  successful run.
+- `regression_hybridkeys_malformed.sh` — `importhybridkeys` rejects
+  malformed records explicitly instead of silently dropping them:
+  too-few-fields lines, unparseable timestamps, timestamps with trailing
+  garbage, and zero (epoch) timestamps each fail the import with a
+  diagnostic in the debug log.
+
+Run a single script with:
+
+```
+cd src
+./test/regression_hybridkeys_file.sh ./phoenixcoind
+```
+
 ## Adding tests
 
 New tests should normally be placed in a separate source file in this
