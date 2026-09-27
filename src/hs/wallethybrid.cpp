@@ -226,19 +226,62 @@ bool CWallet::HaveHybridKeyByHash(const uint160& keyHash) const
            mapHybridKeyDisk.find(hybridID) != mapHybridKeyDisk.end();
 }
 
-bool CWallet::HaveHybridKeyByLegacyID(const CKeyID& keyID) const
+bool CWallet::FindHybridKeyByLegacyID(const CKeyID& keyID,
+                                      CHybridKeyID& hybridIDOut) const
 {
     LOCK(cs_wallet);
 
-    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
-             mapHybridKeys.begin();
-         it != mapHybridKeys.end(); ++it)
+    // Correctness argument for the rebuild trigger below. The index is keyed by
+    // CHybridKey::GetKeyID(), which returns exactly secpPub.GetID(). For a key
+    // already resident in mapHybridKeys, secpPub is written only while a new
+    // CHybridKey is being constructed prior to insertion (hs/rpchybrid.cpp:299,
+    // hs/wallethybrid.cpp:443/513/575/728/851); no code path rewrites it in
+    // place, and the one operator[] site (hs/wallethybrid.cpp:740) only binds a
+    // CHybridKey to FromMemoryEncrypted(const CHybridKey&, ...), which cannot
+    // mutate it. So an entry's indexed value is immutable once inserted, and the
+    // index can only go stale if the SET of entries changes.
+    //
+    // Every set change in the current code is covered: insertions go through
+    // emplace() or operator[], which grow size(); the single clear()
+    // (src/wallet.cpp:190) sets fHybridLegacyIndexDirty explicitly because
+    // dropping to an empty map is otherwise indistinguishable from a stale
+    // build. Comparing size is therefore sufficient.
+    //
+    // A future change that removes a key, or replaces one key with another in a
+    // single 1:1 swap, would leave size() unchanged and silently desync the
+    // index. There is currently no mapHybridKeys::erase() in the tree. If one is
+    // added, either preserve the same size by setting fHybridLegacyIndexDirty
+    // or stop relying on the size comparison.
+    if (fHybridLegacyIndexDirty ||
+        nHybridLegacyIndexSize != mapHybridKeys.size())
     {
-        if (it->second.GetKeyID() == keyID)
-            return true;
+        mapHybridKeyByLegacyID.clear();
+        for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+                 mapHybridKeys.begin();
+             it != mapHybridKeys.end(); ++it)
+        {
+            // Keep the first match, mirroring the original linear scan, which
+            // returned on the lowest CHybridKeyID that produced this key ID.
+            mapHybridKeyByLegacyID.insert(
+                std::make_pair(it->second.GetKeyID(), it->first));
+        }
+        nHybridLegacyIndexSize = mapHybridKeys.size();
+        fHybridLegacyIndexDirty = false;
     }
 
-    return false;
+    std::map<CKeyID, CHybridKeyID>::const_iterator it =
+        mapHybridKeyByLegacyID.find(keyID);
+    if (it == mapHybridKeyByLegacyID.end())
+        return false;
+
+    hybridIDOut = it->second;
+    return true;
+}
+
+bool CWallet::HaveHybridKeyByLegacyID(const CKeyID& keyID) const
+{
+    CHybridKeyID unusedHybridID;
+    return FindHybridKeyByLegacyID(keyID, unusedHybridID);
 }
 
 bool CWallet::GetHybridKey(const CHybridKeyID& hybridID,
@@ -1005,20 +1048,7 @@ bool CWallet::GetUnusedHybridKey(CHybridKeyID& hybridID)
 bool CWallet::GetHybridKeyIDByLegacyKeyID(const CKeyID& keyID,
                                           CHybridKeyID& hybridID) const
 {
-    LOCK(cs_wallet);
-
-    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
-             mapHybridKeys.begin();
-         it != mapHybridKeys.end(); ++it)
-    {
-        if (it->second.GetKeyID() == keyID)
-        {
-            hybridID = it->first;
-            return true;
-        }
-    }
-
-    return false;
+    return FindHybridKeyByLegacyID(keyID, hybridID);
 }
 
 bool CWallet::GetHybridKeyByLegacyID(const CKeyID& keyID,

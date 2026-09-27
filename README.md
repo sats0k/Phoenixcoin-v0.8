@@ -314,7 +314,7 @@ Implemented functionality includes:
 * Hybrid transaction creation
 * Hybrid coin selection
 * Hybrid change addresses
-* Hybrid key lookup
+* Hybrid key lookup (indexed by legacy ECDSA key ID, so hybrid ownership checks are constant-time)
 * Hybrid key import compatibility
 * Hybrid private-key serialization
 * Encrypted hybrid private-key serialization
@@ -324,6 +324,8 @@ Implemented functionality includes:
 Hybrid keys are persisted in `wallet.dat`.
 
 The wallet maintains the classical secp256k1 component together with the corresponding ML-DSA private key.
+
+Hybrid ownership checks (`IsMine()`, and therefore coin selection) resolve through a reverse index from a legacy ECDSA key ID to its `CHybridKeyID`, instead of re-hashing the public key of every hybrid key in the wallet. On a wallet holding 3,462 hybrid keys this brought `listunspent` from 8.5-31.4s down to 0.14-0.20s (1,374 UTXOs).
 
 ---
 
@@ -557,6 +559,8 @@ Testing has covered:
 * Hybrid multisig combination rejecting invalid ML-DSA halves
 * Combined signatures capped at the required `m`
 * Hybrid-key pool invariants (top-ups, uniqueness, locked-wallet refusal)
+* Legacy-key-ID reverse index invalidation (index cross-checked against the
+  original linear scan across growth, `Lock()`/unlock and negative lookups)
 * Hybrid address round trip and Base58 corruption
 * `ValidateHybridKey` negatives
 * `VerifyHybridSignature` in isolation (size guards, sighash-type mismatch, `nHashType` enforcement)
@@ -583,7 +587,7 @@ Testing has covered:
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (29 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **105 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (30 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **106 test cases** and passes with no errors:
 
 ```bash
 cd src

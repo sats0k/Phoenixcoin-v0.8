@@ -190,6 +190,9 @@ bool CWallet::Lock()
             mapHybridKeys.clear();
             mapHybridSigners.clear();
             setUnusedHybridKeys.clear();
+            // mapHybridKeys changed without changing "size" bookkeeping being
+            // noticed, so force the legacy-ID reverse index to rebuild.
+            fHybridLegacyIndexDirty = true;
         }
     }
 

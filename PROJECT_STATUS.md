@@ -39,6 +39,10 @@ Implemented components include:
 - Hybrid key export/import: `dumphybridkey` exports the ECDSA half as WIF and the ML-DSA-65 half as Base64 DER; `importhybridkey` re-imports both halves, validates them, and persists the key to the wallet like a wallet-generated key (the ECDSA half is stored as a real wallet key record, atomically with the hybrid record)
 - Bulk hybrid-key backup/restore via dump files (`dumphybridkeys` / `importhybridkeys`): all-or-nothing export (no partial backups, no overwriting an existing file, atomic temp-file + fsync + rename writes) and explicit rejection of malformed import records (too-few-fields, unparseable / zero / trailing-garbage timestamps)
 - Hybrid key export/import in the Qt GUI (Wallet menu: Export hybrid keys / Import hybrid keys)
+- Indexed hybrid-key ownership lookups: `CWallet::mapHybridKeyByLegacyID` maps a legacy
+  ECDSA key ID straight to its `CHybridKeyID`, so `IsMine()` resolves hybrid outputs in
+  constant time instead of re-hashing the public key of every hybrid key the wallet holds
+  (coin selection was O(outputs × hybrid keys) `Hash160` operations)
 
 ## Verification
 
@@ -61,7 +65,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (29 test cases) inside the full Boost suite, which reports **105 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (30 test cases) inside the full Boost suite, which reports **106 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -83,6 +87,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - P2HPKH (hybrid mining coinbase) spend path
 - `OP_CHECKHYBRIDSIGVERIFY`
 - Hybrid-key pool invariants (`EnsureHybridKeyPool`/`GetUnusedHybridKey`, uniqueness, locked-wallet refusal)
+- Legacy-key-ID reverse index invalidation (`hybrid_legacy_id_reverse_index_invalidation`): the `mapHybridKeyByLegacyID` index is compared against the original linear scan (reproduced verbatim) on a cold build, across keypool growth, at the `Lock()`/unlock boundary and on negative lookups, so a stale index — which would make `IsMine()` miss a hybrid key the wallet actually holds — cannot pass silently; both halves of the rebuild trigger (the `mapHybridKeys` size comparison and the `fHybridLegacyIndexDirty` flag set by `Lock()`) are mutation-checked, each failing the test if dropped
 - Hybrid address round trip and Base58 corruption
 - `ValidateHybridKey` negatives
 - `VerifyHybridSignature` in isolation
@@ -159,7 +164,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 105 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 106 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 

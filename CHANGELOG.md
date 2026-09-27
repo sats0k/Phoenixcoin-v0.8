@@ -119,11 +119,47 @@ Changes since v0.8.1.
   reference (`EVP_PKEY_up_ref`), and functions return their key without
   relying on copy elision to avoid the double-free.
 
+### Performance
+
+- Hybrid-key ownership lookups are no longer quadratic in the number of
+  hybrid keys. `HaveHybridKeyByLegacyID()` and
+  `GetHybridKeyIDByLegacyKeyID()` each walked the whole of `mapHybridKeys`
+  and recomputed `CHybridKey::GetKeyID()` (a `Hash160`) for every entry.
+  `HaveHybridKeyByLegacyID()` is reached once per hybrid script output via
+  `IsMine()`, so coin selection cost O(outputs x hybrid keys) hashes; on a
+  wallet holding 3,462 hybrid keys `listunspent` took 8.5-31.4s and stalled
+  concurrent wallet RPCs, with `perf` attributing 74.3% of the time to
+  `Hash160` under `HaveHybridKeyByLegacyID`. Both entry points now share a
+  lazily built reverse index, `CWallet::mapHybridKeyByLegacyID`
+  (`CKeyID` -> `CHybridKeyID`), through the new `FindHybridKeyByLegacyID()`
+  helper, so a lookup is a single map probe. The index is rebuilt only when
+  `mapHybridKeys` grows or when `Lock()` marks it dirty, so the eight
+  insertion sites do not each have to be kept in sync. Lookup semantics are
+  unchanged: `map::insert` keeps the first match, matching the original
+  scan's "lowest `CHybridKeyID` that produced this key ID". The rebuild
+  trigger is sound because `GetKeyID()` is exactly `secpPub.GetID()` and
+  `secpPub` is written only while a `CHybridKey` is constructed prior to
+  insertion, so an entry's indexed value is immutable once inserted and every
+  set change is size-detectable; the sole `clear()` in `Lock()` sets the
+  dirty flag explicitly, since dropping to an empty map is otherwise
+  indistinguishable from a stale build. Measured on .21 (1,374 UTXOs):
+  `listunspent` 0.14-0.20s, down from 8.5-31.4s.
+
 ### Testing
 
-`src/test/hybrid_multisig_tests.cpp` is at 29 test cases and the full Boost
-suite passes all 105 cases. New coverage in this change:
+`src/test/hybrid_multisig_tests.cpp` is at 30 test cases and the full Boost
+suite passes all 106 cases. New coverage in this change:
 
+- `hybrid_legacy_id_reverse_index_invalidation`
+  (`src/test/hybrid_multisig_tests.cpp`): the `mapHybridKeyByLegacyID`
+  reverse index is cross-checked against the original linear scan
+  (reproduced verbatim as `ReferenceHaveHybridKeyByLegacyID`) across a cold
+  build, keypool growth, negative lookups, and the `Lock()`/unlock boundary,
+  so a stale index cannot pass silently — a stale mapping would make
+  `IsMine()` report `false` for a hybrid key the wallet actually holds. Both
+  halves of the invalidation trigger are pinned: dropping the size
+  comparison and dropping the `fHybridLegacyIndexDirty` flag each make the
+  test fail.
 - `key_copy_move_hybrid_signing` (`src/test/hybrid_multisig_tests.cpp`):
   CKey copy/move through the hybrid transaction signing path. A keystore
   churns the stored hybrid key's ECDSA component through copy-chain /

@@ -149,6 +149,13 @@ misordered signature data into a transaction that is then relayed.
 - Exported key backups are all-or-nothing (never partially written),
   never overwrite an existing file, and are written to a temporary name,
   fsynced, and renamed into place only once complete
+- Wallet ownership lookups are never served from a stale cache: the
+  `mapHybridKeyByLegacyID` reverse index (legacy ECDSA key ID → hybrid key
+  ID) behind `IsMine()` is rebuilt whenever `mapHybridKeys` grows and is
+  explicitly invalidated by `CWallet::Lock()`, and both halves of that
+  trigger are mutation-tested against the original linear scan, so a stale
+  mapping cannot silently make the wallet under-report its own hybrid
+  outputs
 
 ---
 

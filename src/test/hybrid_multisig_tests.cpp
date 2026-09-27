@@ -1274,6 +1274,168 @@ BOOST_AUTO_TEST_CASE(hybrid_key_pool_invariants)
     BOOST_CHECK(lockedWallet.GetUnusedHybridKey(locker));
 }
 
+// Ground truth for the reverse-index tests below: the original O(n) scan that
+// CWallet::FindHybridKeyByLegacyID replaced, kept verbatim so the indexed path
+// is compared against the semantics it must preserve. Iteration order is
+// ascending CHybridKeyID (std::map), so the first match is the lowest one.
+static bool ReferenceHaveHybridKeyByLegacyID(const CWallet& wallet,
+                                             const CKeyID& keyID,
+                                             CHybridKeyID& hybridIDOut)
+{
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+             wallet.mapHybridKeys.begin();
+         it != wallet.mapHybridKeys.end(); ++it) {
+        if (it->second.GetKeyID() == keyID) {
+            hybridIDOut = it->first;
+            return true;
+        }
+    }
+    return false;
+}
+
+// Cross-checks the lazily rebuilt CKeyID -> CHybridKeyID index against the
+// original linear scan, with emphasis on the invalidation trigger: keys are
+// added continuously by keypool top-ups, and a stale index there would make
+// IsMine() report false for a hybrid key the wallet actually holds.
+BOOST_AUTO_TEST_CASE(hybrid_legacy_id_reverse_index_invalidation)
+{
+    CWallet wallet;
+
+    // A CKeyID that was never added, for negative lookups.
+    CKey stranger;
+    stranger.MakeNewKey(true);
+    const CKeyID strangerID = stranger.GetPubKey().GetID();
+
+    // Every entry must resolve to exactly the same hybrid ID the original scan
+    // returns, and the two public entry points must agree with each other.
+    struct VerifyAll {
+        static void run(CWallet& wallet, size_t expected, const CKeyID& strangerID)
+        {
+            std::set<CKeyID> seenLegacy;
+            for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+                     wallet.mapHybridKeys.begin();
+                 it != wallet.mapHybridKeys.end(); ++it) {
+                const CKeyID legacy = it->second.GetKeyID();
+
+                BOOST_CHECK(seenLegacy.insert(legacy).second);
+
+                CHybridKeyID referenceID;
+                const bool referenceHit =
+                    ReferenceHaveHybridKeyByLegacyID(wallet, legacy, referenceID);
+                BOOST_REQUIRE(referenceHit);
+
+                // HaveHybridKeyByLegacyID is the IsMine() hot path.
+                BOOST_CHECK(wallet.HaveHybridKeyByLegacyID(legacy));
+
+                CHybridKeyID found;
+                BOOST_REQUIRE(wallet.GetHybridKeyIDByLegacyKeyID(legacy, found));
+                // Preserves the original first-match (lowest CHybridKeyID)
+                // semantics, not an arbitrary winner.
+                BOOST_CHECK(found == referenceID);
+            }
+            BOOST_CHECK_EQUAL(seenLegacy.size(), wallet.mapHybridKeys.size());
+            BOOST_CHECK_EQUAL(wallet.mapHybridKeys.size(), expected);
+
+            // An unknown key ID must miss on both entry points.
+            BOOST_CHECK(!wallet.HaveHybridKeyByLegacyID(strangerID));
+            CHybridKeyID unused;
+            BOOST_CHECK(!wallet.GetHybridKeyIDByLegacyKeyID(strangerID, unused));
+        }
+    };
+
+    // Cold: first lookups build the index from empty.
+    BOOST_REQUIRE(wallet.EnsureHybridKeyPool(6));
+    VerifyAll::run(wallet, 6U, strangerID);
+
+    // Growth must invalidate: the six pre-existing keys stay resolvable and the
+    // six newly generated ones must become resolvable without any explicit
+    // invalidation by the caller.
+    BOOST_REQUIRE(wallet.EnsureHybridKeyPool(12));
+    VerifyAll::run(wallet, 12U, strangerID);
+
+    // The clear() taken by CWallet::Lock() empties the map and sets
+    // fHybridLegacyIndexDirty, so a locked wallet must stop reporting ownership
+    // of every hybrid key it held. Exercised through Lock() on a separate
+    // wallet rather than by clearing mapHybridKeys directly, because the dirty
+    // flag is set by Lock() (src/wallet.cpp:195) and is the only thing that makes
+    // a shrink-then-regrow sequence safe.
+    CWallet crypted;
+    CKey encKey;
+    CMasterKey masterKey;
+    BOOST_REQUIRE(SetupEncryptedTestWallet(crypted, encKey, masterKey));
+    BOOST_CHECK(crypted.IsLocked());
+
+    SecureString pass("correct horse battery staple\n");
+    BOOST_REQUIRE(crypted.Unlock(pass));
+    BOOST_REQUIRE(crypted.EnsureHybridKeyPool(4));
+
+    std::vector<CKeyID> held;
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+             crypted.mapHybridKeys.begin();
+         it != crypted.mapHybridKeys.end(); ++it) {
+        held.push_back(it->second.GetKeyID());
+        BOOST_CHECK(crypted.HaveHybridKeyByLegacyID(it->second.GetKeyID()));
+    }
+    BOOST_REQUIRE_EQUAL(held.size(), 4U);
+
+    // Locking clears mapHybridKeys and flags the index, so ownership lookups
+    // must now miss even though the index still holds the pre-lock mapping.
+    BOOST_REQUIRE(crypted.Lock());
+    BOOST_CHECK_EQUAL(crypted.mapHybridKeys.size(), 0U);
+    for (size_t i = 0; i < held.size(); ++i)
+        BOOST_CHECK(!crypted.HaveHybridKeyByLegacyID(held[i]));
+
+    // Unlocking again repopulates the pool. Whichever keys the wallet now
+    // holds, the index must be rebuilt to match: this is the boundary where
+    // mapHybridKeys returns to a non-empty map after having been empty, and it
+    // must not serve a pre-lock mapping. Deliberately asserts index/map
+    // agreement only; whether the pre-lock key IDs themselves survive the
+    // encrypt/decrypt round trip is a separate concern owned by the hybrid key
+    // disk layer.
+    BOOST_REQUIRE(crypted.Unlock(pass));
+    BOOST_CHECK(crypted.EnsureHybridKeyPool(4));
+    VerifyAll::run(crypted, crypted.mapHybridKeys.size(), strangerID);
+
+    // ---- Isolate fHybridLegacyIndexDirty ----
+    // The check above resyncs the index while the wallet is locked (the map is
+    // empty at that point, so the size comparison alone rebuilds it), which
+    // would hide a missing dirty flag. This block removes that intervening
+    // lookup: mapHybridKeys goes 4 -> 0 -> 4 with no query in between, so the
+    // size comparison sees an unchanged 4 and CANNOT detect the change. Only
+    // fHybridLegacyIndexDirty can.
+    CWallet dirty;
+    CKey encKey2;
+    CMasterKey masterKey2;
+    BOOST_REQUIRE(SetupEncryptedTestWallet(dirty, encKey2, masterKey2));
+    BOOST_REQUIRE(dirty.Unlock(pass));
+    BOOST_REQUIRE(dirty.EnsureHybridKeyPool(4));
+
+    // Prime the index at size 4 and remember one pre-lock legacy ID.
+    CKeyID preLockLegacy;
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+             dirty.mapHybridKeys.begin();
+         it != dirty.mapHybridKeys.end(); ++it) {
+        preLockLegacy = it->second.GetKeyID();
+        break;
+    }
+    BOOST_REQUIRE(dirty.HaveHybridKeyByLegacyID(preLockLegacy));
+
+    // Lock, drop the at-rest records, unlock: DecryptHybridKeys() is driven by
+    // mapHybridKeyDisk (hs/wallethybrid.cpp:669-676), so the unlocked wallet
+    // cannot restore the old keys and the pool top-up mints four different
+    // ones. No lookup happens while the map is empty.
+    BOOST_REQUIRE(dirty.Lock());
+    dirty.mapHybridKeyDisk.clear();
+    BOOST_REQUIRE(dirty.Unlock(pass));
+    BOOST_REQUIRE(dirty.EnsureHybridKeyPool(4));
+    BOOST_REQUIRE_EQUAL(dirty.mapHybridKeys.size(), 4U);
+
+    // The pre-lock key is genuinely gone, and the index must have been rebuilt
+    // rather than still serving the pre-lock mapping.
+    BOOST_CHECK(!dirty.HaveHybridKeyByLegacyID(preLockLegacy));
+    VerifyAll::run(dirty, 4U, strangerID);
+}
+
 /*
  * Hybrid address round trip, IsMine, and Base58 corruption.
  *

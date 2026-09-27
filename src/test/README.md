@@ -321,7 +321,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 105 test cases...
+Running 106 test cases...
 
 *** No errors detected
 ```
@@ -366,6 +366,21 @@ the ML-DSA half is intentionally randomized (OpenSSL hedged signing). It
 crashes (SIGSEGV) under the pre-fix shallow-copy `CKey`, and its re-sign
 loop also pins the `SignHybridTx` append fix (the output scriptSig is now
 cleared at the start of the call instead of accumulating on re-sign).
+
+`hybrid_legacy_id_reverse_index_invalidation` (`hybrid_multisig_tests.cpp`)
+covers the wallet's lazily built `mapHybridKeyByLegacyID` index
+(`CKeyID` → `CHybridKeyID`) that backs `HaveHybridKeyByLegacyID()` — the
+`IsMine()` hot path. Every lookup is compared against the original linear
+scan, kept verbatim in the test as `ReferenceHaveHybridKeyByLegacyID`, so a
+stale index cannot pass silently: a stale mapping makes `IsMine()` report
+`false` for a hybrid key the wallet actually holds. The case walks a cold
+build, keypool growth (`EnsureHybridKeyPool` 6 → 12), negative lookups of an
+unknown key ID, and the `Lock()`/unlock boundary of an encrypted wallet.
+Both halves of the rebuild trigger are pinned independently: the last block
+drives `mapHybridKeys` 4 → 0 → 4 with no lookup in between, so the size
+comparison cannot detect the change and only `fHybridLegacyIndexDirty` — the
+flag set by `CWallet::Lock()` — can; dropping either the size comparison or
+the flag makes this test fail.
 
 ## Shell regression scripts
 

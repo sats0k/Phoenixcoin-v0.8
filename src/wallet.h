@@ -118,7 +118,24 @@ public:
     // mapHybridKeys/mapHybridSigners on first unlock.
     std::map<CHybridKeyID, CHybridKeyDisk> mapHybridKeyDisk;
 
+    // Reverse index over mapHybridKeys: legacy ECDSA key ID -> hybrid key ID.
+    // HaveHybridKeyByLegacyID() is called once per hybrid script output by
+    // IsMine(), so scanning mapHybridKeys and recomputing GetKeyID() (a
+    // Hash160) for every key makes coin selection cost
+    // O(outputs * hybrid keys) hashes. This index turns it into a single
+    // map lookup. It is rebuilt lazily whenever mapHybridKeys grows or is
+    // explicitly invalidated, so the many mapHybridKeys.emplace() call
+    // sites do not each have to be kept in sync.
+    mutable std::map<CKeyID, CHybridKeyID> mapHybridKeyByLegacyID;
+    mutable size_t nHybridLegacyIndexSize;
+    mutable bool fHybridLegacyIndexDirty;
+
     // ===== Hybrid key access methods (override from CKeyStore) =====
+    // Shared by HaveHybridKeyByLegacyID() and GetHybridKeyIDByLegacyKeyID();
+    // both used to do a linear scan over mapHybridKeys recomputing a Hash160
+    // per key. Maintains mapHybridKeyByLegacyID and does a single lookup.
+    bool FindHybridKeyByLegacyID(const CKeyID& keyID,
+                                 CHybridKeyID& hybridIDOut) const;
     bool HaveHybridKey(const CHybridKeyID &address) const override;
     bool HaveHybridKeyByHash(const uint160 &keyHash) const override;
     bool HaveHybridKeyByLegacyID(const CKeyID& keyID) const override;
@@ -146,6 +163,8 @@ public:
         nMasterKeyMaxID = 0;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
+        nHybridLegacyIndexSize = 0;
+        fHybridLegacyIndexDirty = true;
     }
     CWallet(std::string strWalletFileIn)
     {
@@ -156,6 +175,8 @@ public:
         nMasterKeyMaxID = 0;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
+        nHybridLegacyIndexSize = 0;
+        fHybridLegacyIndexDirty = true;
     }
 
     std::map<uint256, CWalletTx> mapWallet;
