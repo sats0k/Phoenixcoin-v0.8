@@ -326,6 +326,43 @@ bool CWallet::GetHybridKeyByHash(const uint160& keyHash,
     return keyOut.mldsaSigner != NULL;
 }
 
+// Spendability gate used by IsMine(). Mirrors exactly what GetHybridKeyByHash()
+// and SignHybridTx() require, without paying for the MLDSASigner reconstruction:
+// the key must live in the loaded mapHybridKeys (not only in mapHybridKeyDisk),
+// and its stored signer plus underlying EVP_PKEY must be present. Kept in sync
+// with GetSignerFromKey(), which additionally has to survive constructing an
+// MLDSASigner from the key; that is checked in SignSignature(), which runs once
+// per selected input rather than once per candidate output.
+bool CWallet::CanSignHybridKeyByHash(const uint160& keyHash) const
+{
+    LOCK(cs_wallet);
+
+    std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+        mapHybridKeys.find(CHybridKeyID(keyHash));
+
+    if (it == mapHybridKeys.end())
+        return false;
+
+    return it->second.mldsaSigner && it->second.mldsaSigner->GetKey();
+}
+
+bool CWallet::CanSignHybridKeyByLegacyID(const CKeyID& keyID) const
+{
+    LOCK(cs_wallet);
+
+    CHybridKeyID hybridID;
+    if (!FindHybridKeyByLegacyID(keyID, hybridID))
+        return false;
+
+    std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+        mapHybridKeys.find(hybridID);
+
+    if (it == mapHybridKeys.end())
+        return false;
+
+    return it->second.mldsaSigner && it->second.mldsaSigner->GetKey();
+}
+
 // -----------------------------
 // Hybrid key helpers
 // -----------------------------

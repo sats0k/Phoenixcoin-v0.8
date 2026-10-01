@@ -107,6 +107,37 @@ public:
     {
         return false;
     }
+
+    // ===== Hybrid spendability =====
+    //
+    // HaveHybridKey*() answers "does a record of this key exist", which is NOT
+    // the same question as "can this wallet sign for it". HaveHybridKeyByHash()
+    // also consults mapHybridKeyDisk (records that are still encrypted on disk
+    // and have no materialised CHybridKey/mldsaSigner), while
+    // GetHybridKeyByHash() only consults the loaded mapHybridKeys and then
+    // needs GetSignerFromKey() to succeed.
+    //
+    // IsMine() must answer the second question: it is the gate that marks an
+    // output SPENDABLE so coin selection offers it. Gating on mere existence
+    // lets coin selection hand SignSignature an output whose key is not loaded,
+    // which makes SignSignature() return false, abort the whole transaction and
+    // surface as an unexplained -4 "Transaction creation failed".
+    //
+    // Deliberately cheap: a map lookup plus two pointer tests. It must not
+    // construct an MLDSASigner, because IsMine() runs once per output in
+    // AvailableCoins() and re-importing a p384_mldsa65 key per output would
+    // reintroduce the quadratic wallet-RPC stall these lookups were indexed to
+    // avoid. The reconstruction step stays in SignSignature, where it is
+    // reached once per selected input instead of once per candidate output.
+    virtual bool CanSignHybridKeyByHash(const uint160 &/*keyHash*/) const
+    {
+        return false;
+    }
+
+    virtual bool CanSignHybridKeyByLegacyID(const CKeyID &/*keyID*/) const
+    {
+        return false;
+    }
 };
 
 typedef std::map<CKeyID, std::pair<CSecret, bool> > KeyMap;

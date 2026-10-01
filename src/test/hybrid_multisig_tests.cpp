@@ -193,6 +193,51 @@ private:
     std::map<CHybridKeyID, CHybridKey> mapHybridKeys;
 
 public:
+    // Lifecycle hooks for the disk-only IsMine() regression test. Real locks and
+    // unlocks go through Lock()/Unlock() + DecryptHybridKeys(); these let a test
+    // reach the same map states directly.
+    void MoveKeysToDiskOnly()
+    {
+        LOCK(cs_KeyStore);
+        mapHybridKeyDisk.swap(mapHybridKeys);
+    }
+
+    void MaterializeKeysFromDisk()
+    {
+        LOCK(cs_KeyStore);
+        mapHybridKeys.swap(mapHybridKeyDisk);
+    }
+
+    size_t LoadedKeyCount()
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeys.size();
+    }
+
+    size_t DiskOnlyKeyCount()
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeyDisk.size();
+    }
+
+    CHybridKeyID FirstLoadedKeyID()
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeys.begin()->second.GetHybridID();
+    }
+
+    CKeyID FirstDiskOnlyLegacyID()
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeyDisk.begin()->second.GetKeyID();
+    }
+
+    CHybridKeyID FirstDiskOnlyKeyID()
+    {
+        LOCK(cs_KeyStore);
+        return mapHybridKeyDisk.begin()->second.GetHybridID();
+    }
+
     bool AddHybridKey(CHybridKey& key)
     {
         LOCK(cs_KeyStore);
@@ -206,10 +251,17 @@ public:
         return mapHybridKeys.count(address) > 0;
     }
 
+    // Stands in for CWallet::mapHybridKeyDisk: records that exist at rest but
+    // carry no materialised CHybridKey/mldsaSigner because the wallet is locked.
+    // A test keystore without this cannot express the disk-only state that the
+    // IsMine() regression is about.
+    std::map<CHybridKeyID, CHybridKey> mapHybridKeyDisk;
+
     virtual bool HaveHybridKeyByHash(const uint160& keyHash) const override
     {
         LOCK(cs_KeyStore);
-        return mapHybridKeys.count(CHybridKeyID(keyHash)) > 0;
+        return mapHybridKeys.count(CHybridKeyID(keyHash)) > 0 ||
+               mapHybridKeyDisk.count(CHybridKeyID(keyHash)) > 0;
     }
 
     virtual bool HaveHybridKeyByLegacyID(const CKeyID& keyID) const override
@@ -218,6 +270,32 @@ public:
         for (const auto& entry : mapHybridKeys)
             if (entry.second.GetKeyID() == keyID)
                 return true;
+        for (const auto& entry : mapHybridKeyDisk)
+            if (entry.second.GetKeyID() == keyID)
+                return true;
+        return false;
+    }
+
+    // IsMine() gates hybrid outputs on these rather than on HaveHybridKey*(),
+    // so the test keystore has to answer them the same way CWallet does: the key
+    // must be present and carry a usable ML-DSA signer.
+    virtual bool CanSignHybridKeyByHash(const uint160& keyHash) const override
+    {
+        LOCK(cs_KeyStore);
+        std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+            mapHybridKeys.find(CHybridKeyID(keyHash));
+        if (it == mapHybridKeys.end())
+            return false;
+        return it->second.mldsaSigner && it->second.mldsaSigner->GetKey();
+    }
+
+    virtual bool CanSignHybridKeyByLegacyID(const CKeyID& keyID) const override
+    {
+        LOCK(cs_KeyStore);
+        for (const auto& entry : mapHybridKeys)
+            if (entry.second.GetKeyID() == keyID)
+                return entry.second.mldsaSigner &&
+                       entry.second.mldsaSigner->GetKey();
         return false;
     }
 
@@ -603,6 +681,66 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_locked_ismine)
     BOOST_REQUIRE(!inner.empty());
 
     BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
+}
+
+/*
+ * Regression for the IsMine() hybrid gate: a key that exists at rest
+ * (mapHybridKeyDisk) but is not loaded must not be reported SPENDABLE.
+ *
+ * Gating on HaveHybridKeyByHash() instead of CanSignHybridKeyByHash() lets coin
+ * selection offer an output whose key is still encrypted, SignSignature() then
+ * returns false, and the caller sees an unexplained -4 "Transaction creation
+ * failed". This walks the full lifecycle -- locked/disk-only, then materialised
+ * -- and pins IsMine() at each step.
+ */
+BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
+{
+    CHybridTestKeyStore keystore;
+    std::vector<CHybridPubKey> pubs = BuildTestHybridPubs(keystore, 3);
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    BOOST_REQUIRE(!inner.empty());
+
+    // Sanity: fully loaded, all three keys present, so IsMine() is SPENDABLE.
+    // Covers both hybrid script forms, since each has its own gate in IsMine():
+    // TX_HYBRID_MULTISIG scans every key, TX_HYBRID_PUBKEYHASH looks up one hash.
+    CScript p2hphk = GetScriptForHybridPubKeyHash(uint160(pubs[0].GetID()));
+    BOOST_REQUIRE(!p2hphk.empty());
+    BOOST_REQUIRE(IsMine(keystore, inner) == MINE_SPENDABLE);
+    BOOST_REQUIRE(IsMine(keystore, p2hphk) == MINE_SPENDABLE);
+
+    // Move every key from the loaded map to the disk-only map. This is the state
+    // an encrypted wallet is in between Lock() and DecryptHybridKeys().
+    keystore.MoveKeysToDiskOnly();
+    BOOST_REQUIRE_EQUAL(keystore.LoadedKeyCount(), 0U);
+    BOOST_REQUIRE_EQUAL(keystore.DiskOnlyKeyCount(), 3U);
+
+    // The key still "exists" by the Have*() reckoning...
+    const CHybridKeyID diskOnlyID = keystore.FirstDiskOnlyKeyID();
+    BOOST_REQUIRE(keystore.HaveHybridKeyByHash(diskOnlyID));
+
+    // ...but it cannot be signed for, so IsMine() must not claim the output is
+    // spendable. Coin selection gates on exactly this answer.
+    BOOST_CHECK(!keystore.CanSignHybridKeyByHash(diskOnlyID));
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
+
+    // The hash-gated form must report the same, so both IsMine() branches are
+    // pinned by this one case.
+    BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_NO);
+
+    // The same must hold on the legacy-ECDSA-ID path, which is the IsMine()
+    // hot path for hybrid pubkey outputs.
+    const CKeyID diskOnlyLegacy = keystore.FirstDiskOnlyLegacyID();
+    BOOST_REQUIRE(keystore.HaveHybridKeyByLegacyID(diskOnlyLegacy));
+    BOOST_CHECK(!keystore.CanSignHybridKeyByLegacyID(diskOnlyLegacy));
+
+    // Unlock: DecryptHybridKeys() repopulates mapHybridKeys from the at-rest
+    // records, and IsMine() must flip to SPENDABLE again.
+    keystore.MaterializeKeysFromDisk();
+    BOOST_REQUIRE_EQUAL(keystore.LoadedKeyCount(), 3U);
+    BOOST_REQUIRE_EQUAL(keystore.DiskOnlyKeyCount(), 0U);
+    BOOST_REQUIRE(keystore.CanSignHybridKeyByHash(keystore.FirstLoadedKeyID()));
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_SPENDABLE);
+    BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_SPENDABLE);
 }
 
 BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)

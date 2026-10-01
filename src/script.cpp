@@ -1822,7 +1822,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
             CPubKey ecdsaPub(vSolutions[0]);
 
             if (!keystore.IsLocked() &&
-                keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                keystore.CanSignHybridKeyByLegacyID(ecdsaPub.GetID()))
                 return MINE_SPENDABLE;
 
             break;
@@ -1832,7 +1832,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
             uint160 hash(vSolutions[0]);
 
             if (!keystore.IsLocked() &&
-                keystore.HaveHybridKeyByHash(hash))
+                keystore.CanSignHybridKeyByHash(hash))
                 return MINE_SPENDABLE;
 
             break;
@@ -1849,7 +1849,7 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
             bool fAll = true;
             for (int i = 0; i < nN && fAll; ++i) {
                 CPubKey ecdsaPub(vSolutions[1 + i * 2]);
-                if (!keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                if (!keystore.CanSignHybridKeyByLegacyID(ecdsaPub.GetID()))
                     fAll = false;
             }
 

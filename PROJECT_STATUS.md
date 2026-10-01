@@ -65,13 +65,14 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (30 test cases) inside the full Boost suite, which reports **106 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (31 test cases) inside the full Boost suite, which reports **130 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
 - Encrypted ML-DSA serialization round-trip (standalone `test_encrypted_keys` check)
 - Hybrid multisig IsMine and spend generation
 - Hybrid multisig P2SH spends
+- Hybrid `IsMine()` signability gate: a key that exists at rest but is not loaded is reported `MINE_NO` rather than `MINE_SPENDABLE`, for both `TX_HYBRID_MULTISIG` and `TX_HYBRID_PUBKEYHASH`
 - Hybrid signature-hash types
 - Encrypted-locked-wallet hybrid output recognition (`IsMine`)
 - Disjoint partial-signature combining into a redeemable script
@@ -164,7 +165,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 106 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 130 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 

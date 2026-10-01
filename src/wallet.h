@@ -142,6 +142,12 @@ public:
     bool GetHybridKey(const CHybridKeyID &address, CHybridKey &keyOut) const override;
     bool GetHybridKeyByHash(const uint160 &keyHash, CHybridKey &keyOut) const override;
     bool GetHybridKeyByLegacyID(const CKeyID& keyID, CHybridKey& keyOut) const override;
+    // True only if the key is loaded (mapHybridKeys) and carries a usable
+    // ML-DSA signer. This is the predicate IsMine() must use, because it is
+    // also what SignSignature() requires. See keystore.h for why Have*() is
+    // not sufficient. Does not construct an MLDSASigner; see keystore.h.
+    bool CanSignHybridKeyByHash(const uint160& keyHash) const override;
+    bool CanSignHybridKeyByLegacyID(const CKeyID& keyID) const override;
     bool GetHybridKeyIDByLegacyKeyID(const CKeyID& keyID,
                                      CHybridKeyID& hybridID) const;
 
@@ -282,10 +288,16 @@ public:
     int64 GetBalance() const;
     int64 GetUnconfirmed() const;
     int64 GetImmature() const;
+    // strFailReason, when non-NULL, receives a specific reason whenever
+    // CreateTransaction() returns false. SendMoney() folds it into the RPC
+    // error so a failure is attributable instead of a bare -4, which is what
+    // made an unsignable-input abort indistinguishable from every other cause.
     bool CreateTransaction(const std::vector<std::pair<CScript, int64> > &vecSend, CWalletTx &wtxNew,
-      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL);
+      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL,
+      std::string *strFailReason = NULL);
     bool CreateTransaction(CScript scriptPubKey, int64 nValue, CWalletTx &wtxNew,
-      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL);
+      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL,
+      std::string *strFailReason = NULL);
     bool CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey);
     std::string SendMoney(CScript scriptPubKey, int64 nValue, CWalletTx& wtxNew, bool fAskFee=false);
     std::string SendMoneyToDestination(const CTxDestination &address, int64 nValue, CWalletTx& wtxNew, bool fAskFee=false);

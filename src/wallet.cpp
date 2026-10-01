@@ -1358,18 +1358,45 @@ bool CWallet::SelectCoins(int64 nTargetValue, set<pair<const CWalletTx *, uint> 
       SelectCoinsMinConf(nTargetValue, 0, 1, vCoins, setCoinsRet, nValueRet));
 }
 
+static const char *WalletTxnTypeName(txnouttype t)
+{
+    switch (t) {
+        case TX_NONSTANDARD:      return "nonstandard";
+        case TX_PUBKEY:           return "pubkey";
+        case TX_PUBKEYHASH:       return "pubkeyhash";
+        case TX_SCRIPTHASH:       return "scripthash";
+        case TX_MULTISIG:         return "multisig";
+        case TX_HYBRID_PUBKEY:    return "hybrid_pubkey";
+        case TX_HYBRID_PUBKEYHASH:return "hybrid_pubkeyhash";
+        case TX_HYBRID_MULTISIG:  return "hybrid_multisig";
+        default:                  return "unknown";
+    }
+}
+
 bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CWalletTx &wtxNew,
-  CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl) {
+  CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl,
+  std::string *strFailReason) {
     int64 nValue = 0;
+
+    if (strFailReason)
+        strFailReason->clear();
 
     BOOST_FOREACH (const PAIRTYPE(CScript, int64)& s, vecSend)
     {
         if (nValue < 0)
+        {
+            if (strFailReason)
+                *strFailReason = "invalid output amount";
             return false;
+        }
         nValue += s.second;
     }
     if (vecSend.empty() || nValue < 0)
+    {
+        if (strFailReason)
+            *strFailReason = vecSend.empty() ? "no outputs" : "invalid output amount";
         return false;
+    }
 
     wtxNew.BindWallet(this);
 
@@ -1395,8 +1422,12 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                 set<pair<const CWalletTx *, uint> > setCoins;
                 int64 nValueIn = 0;
 
-                if(!SelectCoins(nTotalValue, setCoins, nValueIn, coinControl))
-                  return(false);
+                if(!SelectCoins(nTotalValue, setCoins, nValueIn, coinControl)) {
+                    if (strFailReason)
+                        *strFailReason = strprintf(_("insufficient spendable funds (need %s)"),
+                                                  FormatMoney(nTotalValue).c_str());
+                    return(false);
+                }
 
                 bool fHybridChange = false;
 
@@ -1458,8 +1489,11 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                         {
                             CHybridKeyID hybridID;
 
-                            if (!GetUnusedHybridKey(hybridID))
+                            if (!GetUnusedHybridKey(hybridID)) {
+                                if (strFailReason)
+                                    *strFailReason = "no unused hybrid key available for change";
                                 return false;
+                            }
 
                             scriptChange.SetDestination(hybridID);
                         }
@@ -1496,11 +1530,36 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                 /* Sign the transaction */
                 int nIn = 0;
                 BOOST_FOREACH(const PAIRTYPE(const CWalletTx *, uint) &coin, setCoins)
-                  if(!SignSignature(*this, *coin.first, wtxNew, nIn++)) return(false);
+                {
+                    if(!SignSignature(*this, *coin.first, wtxNew, nIn++))
+                    {
+                        // Report which input could not be signed and why that is
+                        // possible, rather than letting the whole transaction fail
+                        // anonymously. A coin can reach here unsignable when its
+                        // key is present on disk but not loaded, which is why
+                        // IsMine() gates on CanSignHybridKey*().
+                        if (strFailReason)
+                        {
+                            txnouttype t;
+                            vector<vector<unsigned char> > v;
+                            int64 nCredit = coin.first->vout[coin.second].nValue;
+                            string strType = Solver(coin.first->vout[coin.second].scriptPubKey, t, v)
+                                             ? WalletTxnTypeName(t) : string("unknown");
+                            *strFailReason = strprintf(
+                                _("could not sign input %d (%s output, %s): key not loaded, wrong script type, or threshold not met"),
+                                nIn - 1, strType.c_str(), FormatMoney(nCredit).c_str());
+                        }
+                        return(false);
+                    }
+                }
 
                 /* Limit size */
                 uint nBytes = ::GetSerializeSize(*(CTransaction *) &wtxNew, SER_NETWORK, PROTOCOL_VERSION);
-                if(nBytes >= (MAX_BLOCK_SIZE_GEN / 5)) return(false);
+                if(nBytes >= (MAX_BLOCK_SIZE_GEN / 5)) {
+                    if (strFailReason)
+                        *strFailReason = strprintf(_("transaction too large (%d bytes)"), nBytes);
+                    return(false);
+                }
                 dPriority /= nBytes;
 
                 /* Make sure the fee is sufficient */
@@ -1525,10 +1584,11 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
 }
 
 bool CWallet::CreateTransaction(CScript scriptPubKey, int64 nValue, CWalletTx &wtxNew,
-  CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl) {
+  CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl,
+  std::string *strFailReason) {
     vector< pair<CScript, int64> > vecSend;
     vecSend.push_back(make_pair(scriptPubKey, nValue));
-    return(CreateTransaction(vecSend, wtxNew, reservekey, nFeeRet, coinControl));
+    return(CreateTransaction(vecSend, wtxNew, reservekey, nFeeRet, coinControl, strFailReason));
 }
 
 // Call after CreateTransaction unless you want to abort
@@ -1594,11 +1654,14 @@ string CWallet::SendMoney(CScript scriptPubKey, int64 nValue, CWalletTx& wtxNew,
         printf("SendMoney() : %s", strError.c_str());
         return strError;
     }
-    if (!CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired))
+    string strFailReason;
+    if (!CreateTransaction(scriptPubKey, nValue, wtxNew, reservekey, nFeeRequired, NULL, &strFailReason))
     {
         string strError;
         if (nValue + nFeeRequired > GetBalance())
             strError = strprintf(_("Error: This transaction requires a transaction fee of at least %s because of its amount, complexity, or use of recently received funds  "), FormatMoney(nFeeRequired).c_str());
+        else if (!strFailReason.empty())
+            strError = strprintf(_("Error: Transaction creation failed: %s  "), strFailReason.c_str());
         else
             strError = _("Error: Transaction creation failed  ");
         printf("SendMoney() : %s", strError.c_str());
