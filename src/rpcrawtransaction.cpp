@@ -313,6 +313,23 @@ Value signrawtransaction(const Array &params, bool fHelp) {
 
     if(fHelp || (params.size() < 1) || (params.size() > 4)) {
         string msg = "signrawtransaction <data> [{\"txid\":txid,\"vout\":n,\"scriptPubKey\":hex},...] [<privatekey1>,...] [sighashtype=\"ALL\"]\n"
+          "Sign the given transaction hex, and return a hex-encoded version.\n"
+          "If the transaction needs to be signed more than once (e.g. by\n"
+          "several parties of a multisig), the resulting hex is a valid\n"
+          "transaction that can be passed on to the next signer.\n"
+          "\n"
+          "The optional \"errors\" array is returned when \"complete\" is false,\n"
+          "with one entry per input that could not be fully signed: each gives\n"
+          "txid, vout, scriptSig, sequence and an \"error\" string. \"Input not\n"
+          "found or already spent\" means the prevout could not be resolved on\n"
+          "this node (it may not have been broadcast to it yet -- pass the\n"
+          "prevtxs argument to supply it explicitly). \"Unable to sign input\"\n"
+          "means this node could not produce a signature for the input.\n"
+          "\"...no corresponding output for SIGHASH_SINGLE\" means signing was\n"
+          "deliberately skipped for that input. \"...script does not satisfy\"\n"
+          "means this node produced a signature, but the resulting script is\n"
+          "still not valid, for example because additional multisig signatures\n"
+          "are still missing.\n"
           "Signs inputs of a raw transaction provided as hexadecimal <data>.\n"
           "The second argument is an optional array of previous transaction outputs that\n"
           "this transaction depends on, which may not yet be in the block chain.\n"
@@ -398,6 +415,8 @@ Value signrawtransaction(const Array &params, bool fHelp) {
             if (nOut < 0)
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "vout must be positive");
 
+            // The caller's prevout script goes into mapPrevOut alongside the ones
+            // FetchInputs resolved, so signing proceeds either way.
             string pkHex = find_value(prevOut, "scriptPubKey").get_str();
             if (!IsHex(pkHex))
                 throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "scriptPubKey must be hexadecimal");
@@ -465,6 +484,13 @@ Value signrawtransaction(const Array &params, bool fHelp) {
 
     bool fHashSingle = ((nHashType & ~SIGHASH_ANYONECANPAY) == SIGHASH_SINGLE);
 
+    // Per-input failure reasons, so a "complete": false answer is actionable.
+    // Four distinct conditions used to collapse into that one boolean: an input
+    // whose prevout this node cannot resolve, an input left unsigned on purpose
+    // (SIGHASH_SINGLE with no matching output), an input we could not produce a
+    // signature for, and an input whose script is still unsatisfied.
+    Array errors;
+
     // Sign what we can:
     for (unsigned int i = 0; i < mergedTx.vin.size(); i++)
     {
@@ -472,14 +498,34 @@ Value signrawtransaction(const Array &params, bool fHelp) {
         if (mapPrevOut.count(txin.prevout) == 0)
         {
             fComplete = false;
+            Object err;
+            err.push_back(Pair("txid", txin.prevout.hash.GetHex()));
+            err.push_back(Pair("vout", (int64_t)txin.prevout.n));
+            err.push_back(Pair("scriptSig", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
+            err.push_back(Pair("sequence", (int64_t)txin.nSequence));
+            err.push_back(Pair("error", "Input not found or already spent"));
+            errors.push_back(err);
             continue;
         }
         const CScript& prevPubKey = mapPrevOut[txin.prevout];
 
         txin.scriptSig.clear();
+        // fSigningAttempted separates "we declined to sign" from "we tried and
+        // produced nothing"; the two warrant different diagnostics below.
+        bool fSigningAttempted = false;
+        bool fSigned = false;
         // Only sign SIGHASH_SINGLE if there's a corresponding output:
         if (!fHashSingle || (i < mergedTx.vout.size()))
+        {
+            fSigningAttempted = true;
             SignSignature(keystore, prevPubKey, mergedTx, i, nHashType);
+            // SignSignature() returns VerifyScript()'s verdict, i.e. whether the
+            // input is now fully satisfied. A partial multisig writes a usable
+            // partial scriptSig and still returns false, so its return value
+            // cannot distinguish "no usable key" from "signature produced, more
+            // are needed". Derive that from the scriptSig we actually emitted.
+            fSigned = !txin.scriptSig.empty();
+        }
 
         // ... and merge in other signatures:
         BOOST_FOREACH(const CTransaction& txv, txVariants)
@@ -487,7 +533,34 @@ Value signrawtransaction(const Array &params, bool fHelp) {
             txin.scriptSig = CombineSignatures(prevPubKey, mergedTx, i, txin.scriptSig, txv.vin[i].scriptSig);
         }
         if (!VerifyScript(txin.scriptSig, prevPubKey, mergedTx, i, true, 0))
+        {
             fComplete = false;
+            Object err;
+            err.push_back(Pair("txid", txin.prevout.hash.GetHex()));
+            err.push_back(Pair("vout", (int64_t)txin.prevout.n));
+            err.push_back(Pair("scriptSig", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
+            err.push_back(Pair("sequence", (int64_t)txin.nSequence));
+            // fSigned records whether SignSignature() actually emitted a scriptSig.
+            // This is intentionally independent of SignSignature()'s return value:
+            // SignSignature() returns the final VerifyScript() result, so a partial
+            // multisig can produce a usable scriptSig while still returning false.
+            // fSigned therefore means this signing attempt contributed script data,
+            // not that the input is complete. false means nothing was produced,
+            // without saying why (no matching key, an unsupported script, or a
+            // signing failure inside); true means an unsatisfied script is then a
+            // fact about the script, e.g. a multisig awaiting other signers.
+            // fSigningAttempted false means we deliberately skipped signing: under
+            // SIGHASH_SINGLE an input with no corresponding output is not signed.
+            string reason;
+            if (!fSigningAttempted)
+                reason = "Unable to sign input, no corresponding output for SIGHASH_SINGLE";
+            else if (fSigned)
+                reason = "Unable to sign input, script does not satisfy";
+            else
+                reason = "Unable to sign input";
+            err.push_back(Pair("error", reason));
+            errors.push_back(err);
+        }
     }
 
     Object result;
@@ -495,6 +568,9 @@ Value signrawtransaction(const Array &params, bool fHelp) {
     ssTx << mergedTx;
     result.push_back(Pair("hex", HexStr(ssTx.begin(), ssTx.end())));
     result.push_back(Pair("complete", fComplete));
+    // Omitted when empty, so a complete transaction keeps its original shape.
+    if (!errors.empty())
+        result.push_back(Pair("errors", errors));
 
     return result;
 }
