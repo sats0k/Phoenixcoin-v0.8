@@ -15,6 +15,10 @@ using namespace std;
 
 extern enum Checkpoints::CPMode CheckpointsMode;
 
+// Defined in rpcrawtransaction.cpp. Needed to expand transactions inline for
+// getblock verbosity=2 without a second round trip per transaction.
+extern void TxToJSON(const CTransaction& tx, const uint256 hashBlock, Object& entry);
+
 double GetDifficulty(const CBlockIndex *blockindex) {
 
     /* The reference difficulty is 1.0 which is the lowest Bitcoin difficulty
@@ -45,7 +49,10 @@ double GetDifficulty(const CBlockIndex *blockindex) {
 }
 
 
-Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex)
+// verbosity 0: serialised block hex, no JSON object at all
+// verbosity 1: JSON with "tx" as an array of txids (historical behaviour)
+// verbosity 2: JSON with "tx" as an array of fully expanded transaction objects
+Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, int verbosity)
 {
     Object result;
     result.push_back(Pair("hash", block.GetHash().GetHex()));
@@ -58,7 +65,26 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex)
     result.push_back(Pair("merkleroot", block.hashMerkleRoot.GetHex()));
     Array txs;
     BOOST_FOREACH(const CTransaction&tx, block.vtx)
-        txs.push_back(tx.GetHash().GetHex());
+    {
+        if (verbosity >= 2)
+        {
+            Object txobj;
+            TxToJSON(tx, block.GetHash(), txobj);
+            // TxToJSON omits the serialised form, but getrawtransaction's
+            // verbose reply carries it and callers derive the tx's serialised
+            // size from it. Supply it here too, so verbosity=2 is a true
+            // drop-in for a per-tx getrawtransaction rather than silently
+            // losing that field.
+            CDataStream ssTx(SER_NETWORK, PROTOCOL_VERSION);
+            ssTx << tx;
+            txobj.push_back(Pair("hex", HexStr(ssTx.begin(), ssTx.end())));
+            txs.push_back(txobj);
+        }
+        else
+        {
+            txs.push_back(tx.GetHash().GetHex());
+        }
+    }
     result.push_back(Pair("tx", txs));
     result.push_back(Pair("time", (boost::int64_t)block.GetBlockTime()));
     result.push_back(Pair("nonce", (boost::uint64_t)block.nNonce));
@@ -151,9 +177,13 @@ Value getblockhash(const Array &params, bool fHelp) {
 
 Value getblock(const Array &params, bool fHelp) {
 
-    if(fHelp || (params.size() != 1)) {
-        string msg = "getblock <hash>\n"
-          "Displays details of a block with a <hash> given.";
+    if(fHelp || (params.size() < 1) || (params.size() > 2)) {
+        string msg = "getblock <hash> [verbosity]\n"
+          "Displays details of a block with a <hash> given.\n"
+          "If verbosity is 0, returns the serialised block as a hex-encoded string.\n"
+          "If verbosity is 1 (default), returns an object with a \"tx\" array of txids.\n"
+          "If verbosity is 2, returns an object with a \"tx\" array of fully expanded\n"
+          "transaction objects, which saves a separate getrawtransaction call per tx.";
         throw(runtime_error(msg));
     }
 
@@ -163,11 +193,26 @@ Value getblock(const Array &params, bool fHelp) {
     if(!mapBlockIndex.count(hash))
       throw(JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found"));
 
+    int verbosity = 1;
+    if (params.size() > 1)
+    {
+        verbosity = params[1].get_int();
+        if (verbosity < 0 || verbosity > 2)
+            throw(JSONRPCError(RPC_INVALID_PARAMETER, "verbosity must be 0, 1 or 2"));
+    }
+
     CBlock block;
     CBlockIndex *pblockindex = mapBlockIndex[hash];
     block.ReadFromDisk(pblockindex, true);
 
-    return(blockToJSON(block, pblockindex));
+    if (verbosity == 0)
+    {
+        CDataStream ssBlock(SER_NETWORK, PROTOCOL_VERSION);
+        ssBlock << block;
+        return(HexStr(ssBlock.begin(), ssBlock.end()));
+    }
+
+    return(blockToJSON(block, pblockindex, verbosity));
 }
 
 
