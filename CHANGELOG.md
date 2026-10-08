@@ -231,6 +231,11 @@ suite passes all 106 cases. New coverage in this change:
   (3309) — with one-byte-short, one-byte-long, empty, oversized and
   correctly-sized-but-bogus blobs, plus the last-byte-is-sighash layout,
   all rejected while the exact sizes pass.
+- `signrawtransaction` diagnostics: per-input `errors` array (omitted when
+  empty) with reasons "Input not found or already spent", "Unable to sign input,
+  no corresponding output for SIGHASH_SINGLE", "Unable to sign input", and
+  "Unable to sign input, script does not satisfy"; `fSigned` reflects whether a
+  signature was emitted rather than `VerifyScript()`'s result.
 - `dumphybridkey` / `importhybridkey` single-key export/import round trip
   (WIF + Base64-DER re-parsed, validated, and loaded through the same
   `CHybridKeyDisk` / `LoadHybridKey` path as wallet-generated keys).

@@ -218,7 +218,17 @@ Walkthrough of the legacy test sources that were restored:
   checkpoint API using real Phoenixcoin checkpoint heights.
 - `key_tests.cpp` uses Phoenixcoin base58 secret/address vectors (the
   codebase always serializes public keys compressed).
-- `rpc_tests.cpp` includes `rpcmain.h` (the old `rpc.h` header is gone).
+- `rpc_tests.cpp` includes `rpcmain.h` (the old `rpc.h` header is gone). It also
+  covers `signrawtransaction` diagnostics: missing prevout, no usable signing key,
+  partial P2SH hybrid multisig, SIGHASH_SINGLE with no corresponding output, already
+  fully signed returning `complete=true` without an `errors` array, the sequential
+  2-of-3 partial+merge flow, and a hybrid 2-of-3 case where the signer holds no
+  matching key. The `errors` array (omitted when empty) reports per-input `txid`,
+  `vout`, `scriptSig`, `sequence` and `error` (one of: `"Input not found or already spent"`,
+  `"Unable to sign input, no corresponding output for SIGHASH_SINGLE"`, `"Unable to sign input"`,
+  or `"Unable to sign input, script does not satisfy"`). The `fSigned` derivation uses
+  whether a signature was actually emitted (not the `VerifyScript()` return) to
+  distinguish partial multisig signatures from having no key.
 - `wallet_tests.cpp` passes the new `fSpendable` argument to the
   `COutput` constructor. The wallet test suite also carries a
   backward-compatibility regression for the change-tracking wallet
@@ -329,7 +339,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 106 test cases...
+Running 114 test cases...
 
 *** No errors detected
 ```
