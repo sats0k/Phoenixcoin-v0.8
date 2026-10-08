@@ -765,7 +765,7 @@ bool CTxDB::LoadBlockIndex()
                      {
                           CTxIndex txindex;
                           if (ReadTxIndex(txin.prevout.hash, txindex))
-                              if (txindex.vSpent.size()-1 < txin.prevout.n || txindex.vSpent[txin.prevout.n].IsNull())
+                              if (txin.prevout.n >= txindex.vSpent.size() || txindex.vSpent[txin.prevout.n].IsNull())
                               {
                                   printf("LoadBlockIndex(): *** found unspent prevout %s:%i in %s\n", txin.prevout.hash.ToString().c_str(), txin.prevout.n, hashTx.ToString().c_str());
                                   pindexFork = pindex->pprev;
