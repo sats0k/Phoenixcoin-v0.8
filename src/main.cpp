@@ -2313,6 +2313,7 @@ bool ProcessBlock(CNode *pfrom, CBlock *pblock) {
 
     // Recursively process any orphan blocks that depended on this one
     vector<uint256> vWorkQueue;
+    vWorkQueue.reserve(mapOrphanBlocksByPrev.count(hash) + 1);
     vWorkQueue.push_back(hash);
     for (unsigned int i = 0; i < vWorkQueue.size(); i++)
     {
@@ -3249,8 +3250,17 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
                 pindex = pindex->pnext;
         }
 
-        vector<CBlock> vHeaders;
+        // Count the headers first so the response vector is allocated once
+        // instead of growing as headers are appended.
         int nLimit = 4000;
+        int nHeaderCount = 0;
+        for (CBlockIndex* pindexCount = pindex; pindexCount &&
+             nHeaderCount < nLimit && pindexCount->GetBlockHash() != hashStop;
+             pindexCount = pindexCount->pnext)
+            ++nHeaderCount;
+
+        vector<CBlock> vHeaders;
+        vHeaders.reserve(nHeaderCount);
         printf("getheaders %d to %s\n", (pindex ? pindex->nHeight : -1), hashStop.ToString().substr(0,20).c_str());
         for (; pindex; pindex = pindex->pnext)
         {
@@ -3286,6 +3296,15 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             SyncWithWallets(tx, NULL, true);
             RelayMessage(inv, vMsg);
             mapAlreadyAskedFor.erase(inv);
+            // The orphan transactions that depend on this one will be re-processed
+            // below: pre-size the queues so they don't grow incrementally.
+            unsigned int nDirectOrphans = 0;
+            map<uint256, map<uint256, CDataStream*> >::const_iterator miOrphans =
+                mapOrphanTransactionsByPrev.find(inv.hash);
+            if (miOrphans != mapOrphanTransactionsByPrev.end())
+                nDirectOrphans = miOrphans->second.size();
+            vWorkQueue.reserve(nDirectOrphans + 1);
+            vEraseQueue.reserve(nDirectOrphans + 1);
             vWorkQueue.push_back(inv.hash);
             vEraseQueue.push_back(inv.hash);
 
@@ -3378,6 +3397,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         std::vector<uint256> vtxid;
         mempool.queryHashes(vtxid);
         vector<CInv> vInv;
+        vInv.reserve(std::min((size_t)MAX_INV_SZ, vtxid.size()));
         for (unsigned int i = 0; i < vtxid.size(); i++) {
             CInv inv(MSG_TX, vtxid[i]);
             vInv.push_back(inv);
@@ -3758,6 +3778,7 @@ bool SendMessages(CNode *pto, bool fSendTrickle) {
         // Message: getdata
         //
         vector<CInv> vGetData;
+        vGetData.reserve(1000);
         int64 nNow = GetTime() * 1000000;
         CTxDB txdb("r");
         while (!pto->mapAskFor.empty() && (*pto->mapAskFor.begin()).first <= nNow)

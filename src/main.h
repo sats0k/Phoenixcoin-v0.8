@@ -944,6 +944,9 @@ public:
     uint256 BuildMerkleTree(const std::vector<uint256>& vTxHashes) const
     {
         vMerkleTree.clear();
+        // Leaves plus internal levels are < 2*leaves + 1 nodes total:
+        // allocate once instead of repeatedly growing the tree vector.
+        vMerkleTree.reserve(vTxHashes.size() * 2 + 1);
 
         BOOST_FOREACH(const uint256& hash, vTxHashes)
             vMerkleTree.push_back(hash);
@@ -966,6 +969,7 @@ public:
     uint256 BuildMerkleTree() const
     {
         vMerkleTree.clear();
+        vMerkleTree.reserve(vtx.size() * 2 + 1);
         BOOST_FOREACH(const CTransaction& tx, vtx)
             vMerkleTree.push_back(tx.GetHash());
         int j = 0;
@@ -1414,6 +1418,9 @@ public:
     void Set(const CBlockIndex* pindex)
     {
         vHave.clear();
+        // A locator is bounded by ~10 entries plus one per exponential step,
+        // which is ~32 for any chain that fits in the block hashes.
+        vHave.reserve(32);
         int nStep = 1;
         while (pindex)
         {
