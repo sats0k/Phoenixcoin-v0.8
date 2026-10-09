@@ -896,23 +896,30 @@ public:
     {
         // Read from the beginning of the buffer
         assert(nSize >= 0);
-        unsigned int nReadPosNext = nReadPos + nSize;
-        if (nReadPosNext >= vch.size())
+        assert(nReadPos <= vch.size());
+        // Bytes actually available; saturates at 0 so neither the comparison
+        // below nor the subtraction can wrap around.
+        size_t nAvail = (nReadPos < vch.size()) ? vch.size() - nReadPos : 0;
+        if ((size_t)nSize <= nAvail)
         {
-            if (nReadPosNext > vch.size())
+            if (nSize > 0)
+                memcpy(pch, &vch[nReadPos], nSize);
+            nReadPos += nSize;
+            if (nReadPos == vch.size())
             {
-                /* Don't trigger an exception here with setstate(std::ios::failbit) */
-                printf("ERROR: CDataStream::read() : end of data\n");
-                memset(pch, 0, nSize);
-                nSize = vch.size() - nReadPos;
+                // Whenever we reach the end, take the opportunity to clear the buffer
+                nReadPos = 0;
+                vch.clear();
             }
-            memcpy(pch, &vch[nReadPos], nSize);
-            nReadPos = 0;
-            vch.clear();
             return (*this);
         }
-        memcpy(pch, &vch[nReadPos], nSize);
-        nReadPos = nReadPosNext;
+        /* Don't trigger an exception here with setstate(std::ios::failbit) */
+        printf("ERROR: CDataStream::read() : end of data\n");
+        memset(pch, 0, nSize);
+        if (nAvail > 0)
+            memcpy(pch, &vch[nReadPos], nAvail);
+        nReadPos = 0;
+        vch.clear();
         return (*this);
     }
 
@@ -920,20 +927,23 @@ public:
     {
         // Ignore from the beginning of the buffer
         assert(nSize >= 0);
-        unsigned int nReadPosNext = nReadPos + nSize;
-        if (nReadPosNext >= vch.size())
+        assert(nReadPos <= vch.size());
+        size_t nAvail = (nReadPos < vch.size()) ? vch.size() - nReadPos : 0;
+        if ((size_t)nSize <= nAvail)
         {
-            if (nReadPosNext > vch.size())
+            nReadPos += nSize;
+            if (nReadPos == vch.size())
             {
-                /* Don't trigger an exception here with setstate(std::ios::failbit) */
-                printf("ERROR: CDataStream::ignore() : end of data\n");
-                nSize = vch.size() - nReadPos;
+                // Whenever we reach the end, take the opportunity to clear the buffer
+                nReadPos = 0;
+                vch.clear();
             }
-            nReadPos = 0;
-            vch.clear();
             return (*this);
         }
-        nReadPos = nReadPosNext;
+        /* Don't trigger an exception here with setstate(std::ios::failbit) */
+        printf("ERROR: CDataStream::ignore() : end of data\n");
+        nReadPos = 0;
+        vch.clear();
         return (*this);
     }
 
