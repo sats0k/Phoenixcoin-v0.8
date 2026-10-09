@@ -1313,54 +1313,89 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
     for (unsigned int i = 0; i < vin.size(); i++)
     {
         COutPoint prevout = vin[i].prevout;
-        if (inputsRet.count(prevout.hash))
-            continue; // Got it already
 
-        // Read txindex
-        CTxIndex& txindex = inputsRet[prevout.hash].first;
-        bool fFound = true;
-        if ((fBlock || fMiner) && mapTestPool.count(prevout.hash))
+        // Got it already? Several inputs may spend outputs of the same
+        // previous transaction.
+        MapPrevTx::iterator itPrev = inputsRet.find(prevout.hash);
+        if (itPrev != inputsRet.end())
+            continue;
+
+        // Insert the cache entry exactly once, so each previous transaction
+        // is only looked up and read a single time.
+        itPrev = inputsRet.insert(make_pair(prevout.hash,
+                     make_pair(CTxIndex(), CTransaction()))).first;
+        CTxIndex& txindex = itPrev->second.first;
+        CTransaction& txPrev = itPrev->second.second;
+
+        map<uint256, CTxIndex>::const_iterator itPool = mapTestPool.end();
+        if ((fBlock || fMiner) &&
+            (itPool = mapTestPool.find(prevout.hash)) != mapTestPool.end())
         {
             // Get txindex from current proposed changes
-            txindex = mapTestPool.find(prevout.hash)->second;
+            txindex = itPool->second;
         }
         else
         {
-            // Read txindex from txdb
-            fFound = txdb.ReadTxIndex(prevout.hash, txindex);
-        }
-        if (!fFound && (fBlock || fMiner))
-            return fMiner ? false : error("FetchInputs() : %s prev tx %s index entry not found", GetHash().ToString().substr(0,10).c_str(),  prevout.hash.ToString().substr(0,10).c_str());
-
-        // Read txPrev
-        CTransaction& txPrev = inputsRet[prevout.hash].second;
-        if (!fFound || txindex.pos == CDiskTxPos(1,1,1))
-        {
-            // Get prev tx from single transactions in memory
+            // When accepting into the memory pool, inputs that come from other
+            // pool transactions cannot be found in the database, so consult the
+            // pool first and skip the guaranteed-miss disk read below.  This is
+            // only valid for the loose-transaction path: mining and block
+            // validation must resolve inputs against the proposed/current chain.
+            if (!(fBlock || fMiner))
             {
                 LOCK(mempool.cs);
-                if (!mempool.exists(prevout.hash))
-                    return error("FetchInputs() : %s mempool Tx prev not found %s", GetHash().ToString().substr(0,10).c_str(),  prevout.hash.ToString().substr(0,10).c_str());
-                txPrev = mempool.lookup(prevout.hash);
+                map<uint256, CTransaction>::const_iterator itMempool = mempool.mapTx.find(prevout.hash);
+                if (itMempool != mempool.mapTx.end())
+                {
+                    txPrev = itMempool->second;
+                    txindex.vSpent.resize(txPrev.vout.size());
+                    continue;
+                }
             }
-            if (!fFound)
-                txindex.vSpent.resize(txPrev.vout.size());
+
+            // Read txindex from txdb
+            bool fFound = txdb.ReadTxIndex(prevout.hash, txindex);
+            if (!fFound && (fBlock || fMiner))
+            {
+                if (fMiner)
+                    return false;
+                return error("FetchInputs() : %s prev tx %s index entry not found",
+                    GetHash().ToString().substr(0,10).c_str(),
+                    prevout.hash.ToString().substr(0,10).c_str());
+            }
+
+            if (!fFound || txindex.pos == CDiskTxPos(1,1,1))
+            {
+                // Get prev tx from single transactions in memory
+                {
+                    LOCK(mempool.cs);
+                    if (!mempool.exists(prevout.hash))
+                        return error("FetchInputs() : %s mempool Tx prev not found %s",
+                            GetHash().ToString().substr(0,10).c_str(),
+                            prevout.hash.ToString().substr(0,10).c_str());
+                    txPrev = mempool.lookup(prevout.hash);
+                }
+                if (!fFound)
+                    txindex.vSpent.resize(txPrev.vout.size());
+                continue;
+            }
         }
-        else
-        {
-            // Get prev tx from disk
-            if (!txPrev.ReadFromDisk(txindex.pos))
-                return error("FetchInputs() : %s ReadFromDisk prev tx %s failed", GetHash().ToString().substr(0,10).c_str(),  prevout.hash.ToString().substr(0,10).c_str());
-        }
+
+        // Get prev tx from disk
+        if (!txPrev.ReadFromDisk(txindex.pos))
+            return error("FetchInputs() : %s ReadFromDisk prev tx %s failed",
+                GetHash().ToString().substr(0,10).c_str(),
+                prevout.hash.ToString().substr(0,10).c_str());
     }
 
     // Make sure all prevout.n indexes are valid:
     for (unsigned int i = 0; i < vin.size(); i++)
     {
         const COutPoint prevout = vin[i].prevout;
-        assert(inputsRet.count(prevout.hash) != 0);
-        const CTxIndex& txindex = inputsRet[prevout.hash].first;
-        const CTransaction& txPrev = inputsRet[prevout.hash].second;
+        MapPrevTx::const_iterator miPrev = inputsRet.find(prevout.hash);
+        assert(miPrev != inputsRet.end());
+        const CTxIndex& txindex = miPrev->second.first;
+        const CTransaction& txPrev = miPrev->second.second;
         if (prevout.n >= txPrev.vout.size() || prevout.n >= txindex.vSpent.size())
         {
             // Revisit this if/when transaction replacement is implemented and allows
@@ -3910,24 +3945,12 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
             bool fMissingInputs = false;
             BOOST_FOREACH(const CTxIn& txin, tx.vin)
             {
-                // Read prev transaction
-                CTransaction txPrev;
-                CTxIndex txindex;
-                if (!txPrev.ReadFromDisk(txdb, txin.prevout, txindex))
+                // Inputs that come from other memory-pool transactions can
+                // never be found in the chain database, so consult the pool
+                // first and skip the guaranteed-miss disk read for them.
+                map<uint256, CTransaction>::iterator miDep = mempool.mapTx.find(txin.prevout.hash);
+                if (miDep != mempool.mapTx.end())
                 {
-                    // This should never happen; all transactions in the memory
-                    // pool should connect to either transactions in the chain
-                    // or other transactions in the memory pool.
-                    if (!mempool.mapTx.count(txin.prevout.hash))
-                    {
-                        printf("ERROR: mempool transaction missing input\n");
-                        if (fDebug) assert("mempool transaction missing input" == 0);
-                        fMissingInputs = true;
-                        if (porphan)
-                            vOrphan.pop_back();
-                        break;
-                    }
-
                     // Has to wait for dependencies
                     if (!porphan)
                     {
@@ -3937,8 +3960,24 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
                     }
                     mapDependers[txin.prevout.hash].push_back(porphan);
                     porphan->setDependsOn.insert(txin.prevout.hash);
-                    nTotalIn += mempool.mapTx[txin.prevout.hash].vout[txin.prevout.n].nValue;
+                    nTotalIn += miDep->second.vout[txin.prevout.n].nValue;
                     continue;
+                }
+
+                // Read prev transaction from the block chain
+                CTransaction txPrev;
+                CTxIndex txindex;
+                if (!txPrev.ReadFromDisk(txdb, txin.prevout, txindex))
+                {
+                    // This should never happen; all transactions in the memory
+                    // pool should connect to either transactions in the chain
+                    // or other transactions in the memory pool.
+                    printf("ERROR: mempool transaction missing input\n");
+                    if (fDebug) assert("mempool transaction missing input" == 0);
+                    fMissingInputs = true;
+                    if (porphan)
+                        vOrphan.pop_back();
+                    break;
                 }
                 int64 nValueIn = txPrev.vout[txin.prevout.n].nValue;
                 nTotalIn += nValueIn;
