@@ -2,10 +2,10 @@ The sources in this directory are unit test cases. Boost includes a
 unit testing framework, and since Phoenixcoin already uses Boost, the
 Boost Unit Test Framework is used for the project's unit tests.
 
-The current test executable is called `test_phoenixcoin`. The main
-test source file is `test_bitcoin.cpp`, which provides the Boost test
-module and the common test setup. Individual test cases are implemented
-in separate source files.
+The current test executable is called `test_phoenixcoin`. The Boost test
+module and `main()` entry point are provided by `test_main.cpp`;
+`test_bitcoin.cpp` provides the common test setup (`TestingSetup`).
+Individual test cases are implemented in separate source files.
 
 ## Current tests
 
@@ -38,6 +38,7 @@ uint256_tests.cpp
 util_tests.cpp
 wallet_tests.cpp
 testutil.cpp
+test_main.cpp
 ```
 
 `testutil.cpp` provides shared helpers (e.g. `read_json`) for the data
@@ -299,22 +300,35 @@ All of the disabled legacy test suites are now enabled again.
 
 ## Building the tests
 
-Build the test executable with the Boost static libraries:
+Build the test executable with the shared Boost Unit Test Framework:
 
 ```
-make -j4 STATIC=1 -f Makefile.linux test_phoenixcoin
+make -j4 DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 ```
 
 If necessary, perform a clean build first:
 
 ```
 make -f Makefile.linux clean
-make -j4 STATIC=1 -f Makefile.linux test_phoenixcoin
+make -j4 DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 ```
 
-Use `STATIC=1` rather than `DYNAMIC=1`: the shared Boost Unit Test
-Framework library does not export `main`, so a `DYNAMIC=1` build fails
-to link the test executable.
+`DYNAMIC=1` or `STATIC=1` must be passed: `TESTLIBS` (which links the
+Boost Unit Test Framework) is only populated in these two make paths, so
+a bare `make test_phoenixcoin` fails to link. `test_main.cpp` defines
+`BOOST_TEST_MODULE` and `BOOST_TEST_MAIN`; the module macro was removed
+from `test_bitcoin.cpp` so that only one translation unit generates the
+module entry point regardless of whether the local Boost auto-derives
+`BOOST_TEST_MAIN` from `BOOST_TEST_MODULE`.
+
+- With `DYNAMIC=1`, `TESTDEFS` adds `-DBOOST_TEST_DYN_LINK`, so
+  `test_main.cpp` emits `main()` and links against
+  `libboost_unit_test_framework.so`. This is the portable choice: the
+  shared library does not export `main` on every Boost version, but here
+  the driver always supplies it.
+- With `STATIC=1`, `main` comes from `libboost_unit_test_framework.a`
+  itself (the classic single-exe convention), and `test_main.cpp`
+  contributes the module init.
 
 ## Running the tests
 
@@ -480,8 +494,14 @@ in `src/Makefile.linux`, so test sources are rebuilt when headers change.
 
 ## Boost Unit Test Framework
 
-The test executable uses the Boost Unit Test Framework statically when
-built with `STATIC=1`. The build system links against:
+With `DYNAMIC=1` the test executable links against the shared Boost Unit
+Test Framework:
+
+```
+libboost_unit_test_framework.so
+```
+
+with `STATIC=1` it links against the static archive:
 
 ```
 libboost_unit_test_framework.a
