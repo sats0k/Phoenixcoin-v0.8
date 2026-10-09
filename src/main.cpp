@@ -3770,11 +3770,15 @@ public:
     set<uint256> setDependsOn;
     double dPriority;
     double dFeePerKb;
+    unsigned int nTxSize;
+    int64 nValueOut;
 
     COrphan(CTransaction* ptxIn)
     {
         ptx = ptxIn;
         dPriority = dFeePerKb = 0;
+        nTxSize = 0;
+        nValueOut = 0;
     }
 
     void print() const
@@ -3791,7 +3795,8 @@ uint64 nLastBlockTx = 0;
 uint64 nLastBlockSize = 0;
 
 // We want to sort transactions by priority and fee, so:
-typedef boost::tuple<double, double, CTransaction*> TxPriority;
+// (priority, feePerKb, tx, serialized size, value out)
+typedef boost::tuple<double, double, CTransaction*, unsigned int, int64> TxPriority;
 class TxPriorityCompare
 {
     bool byFee;
@@ -3938,22 +3943,29 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
             }
             if (fMissingInputs) continue;
 
-            // Priority is sum(valuein * age) / txsize
+            // The serialized size and spendable value are needed again when
+            // the tx is popped from the queue, so compute them once here and
+            // carry them along instead of recomputing them later.
             unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
+            int64 nValueOut = tx.GetValueOut();
+
+            // Priority is sum(valuein * age) / txsize
             dPriority /= nTxSize;
 
             // This is a more accurate fee-per-kilobyte than is used by the client code, because the
             // client code rounds up the size to the nearest 1K. That's good, because it gives an
             // incentive to create smaller transactions.
-            double dFeePerKb =  double(nTotalIn-tx.GetValueOut()) / (double(nTxSize)/1000.0);
+            double dFeePerKb =  double(nTotalIn-nValueOut) / (double(nTxSize)/1000.0);
 
             if (porphan)
             {
                 porphan->dPriority = dPriority;
                 porphan->dFeePerKb = dFeePerKb;
+                porphan->nTxSize = nTxSize;
+                porphan->nValueOut = nValueOut;
             }
             else
-                vecPriority.push_back(TxPriority(dPriority, dFeePerKb, &(*mi).second));
+                vecPriority.push_back(TxPriority(dPriority, dFeePerKb, &(*mi).second, nTxSize, nValueOut));
         }
 
         // Collect transactions into block
@@ -3972,12 +3984,13 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
             double dPriority = vecPriority.front().get<0>();
             double dFeePerKb = vecPriority.front().get<1>();
             CTransaction& tx = *(vecPriority.front().get<2>());
+            unsigned int nTxSize = vecPriority.front().get<3>();
+            int64 nValueOut = vecPriority.front().get<4>();
 
             std::pop_heap(vecPriority.begin(), vecPriority.end(), comparer);
             vecPriority.pop_back();
 
             // Size limits
-            unsigned int nTxSize = ::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION);
             if (nBlockSize + nTxSize >= nBlockMaxSize)
                 continue;
 
@@ -4002,18 +4015,20 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
 
             // Connecting shouldn't fail due to dependency on other memory pool transactions
             // because we're already processing them in order of dependency
-            map<uint256, CTxIndex> mapTestPoolTmp(mapTestPool);
             MapPrevTx mapInputs;
             bool fInvalid;
-            if (!tx.FetchInputs(txdb, mapTestPoolTmp, false, true, mapInputs, fInvalid))
+            // FetchInputs only reads mapTestPool, so probe against the live map
+            // and clone it only once the tx is actually about to be connected.
+            if (!tx.FetchInputs(txdb, mapTestPool, false, true, mapInputs, fInvalid))
                 continue;
 
-            int64 nTxFees = tx.GetValueIn(mapInputs)-tx.GetValueOut();
+            int64 nTxFees = tx.GetValueIn(mapInputs)-nValueOut;
 
             nTxSigOps += tx.GetP2SHSigOpCount(mapInputs);
             if (nBlockSigOps + nTxSigOps >= MAX_BLOCK_SIGOPS)
                 continue;
 
+            map<uint256, CTxIndex> mapTestPoolTmp(mapTestPool);
             if (!tx.ConnectInputs(mapInputs, mapTestPoolTmp, CDiskTxPos(1,1,1), pindexPrev, false, true))
                 continue;
             mapTestPoolTmp[tx.GetHash()] = CTxIndex(CDiskTxPos(1,1,1), tx.vout.size());
@@ -4043,7 +4058,7 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
                         porphan->setDependsOn.erase(hash);
                         if (porphan->setDependsOn.empty())
                         {
-                            vecPriority.push_back(TxPriority(porphan->dPriority, porphan->dFeePerKb, porphan->ptx));
+                            vecPriority.push_back(TxPriority(porphan->dPriority, porphan->dFeePerKb, porphan->ptx, porphan->nTxSize, porphan->nValueOut));
                             std::push_heap(vecPriority.begin(), vecPriority.end(), comparer);
                         }
                     }
