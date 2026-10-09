@@ -264,12 +264,16 @@ inline bool VerifyHybridSignature(
         return false;
 
     // ------------------------------------------------------------
-    // Compute the transaction sighash for ECDSA.
-    // ML-DSA independently uses the same canonical sighash preimage
-    // with hybrid domain separation.
+    // Compute the transaction sighash and its preimage in a single pass.
+    // ECDSA hashes the preimage; ML-DSA applies hybrid domain separation.
     // ------------------------------------------------------------
-    uint256 sighash =
-        SignatureHash(scriptCode, txTo, nIn, hashTypeEC);
+    uint256 sighash;
+    std::vector<unsigned char> sighash_preimage;
+    if (!SignatureHashWithPreimage(scriptCode, txTo, nIn, hashTypeEC,
+                                   sighash, sighash_preimage))
+    {
+        return false;
+    }
 
     // ------------------------------------------------------------
     // Verify ECDSA signature
@@ -292,11 +296,6 @@ inline bool VerifyHybridSignature(
     std::vector<unsigned char> mldsaSig(
         vchSigML.begin(),
         vchSigML.end() - 1);
-
-    // Construct the canonical sighash preimage using the same logic as SignatureHash()
-    std::vector<unsigned char> sighash_preimage;
-    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, hashTypeEC, sighash_preimage))
-        return false;
 
     // Apply domain separation for ML-DSA
     std::vector<unsigned char> hybridMsg = BuildHybridMessage(sighash_preimage);

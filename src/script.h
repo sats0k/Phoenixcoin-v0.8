@@ -630,4 +630,21 @@ bool ConstructSignatureHashPreimage(
     const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn,
     int nHashType, std::vector<unsigned char>& preimageOut);
 
+/**
+ * Compute the transaction signature hash and its canonical preimage in a
+ * single pass.
+ *
+ * Hybrid verification consumes both: ECDSA hashes the preimage, while ML-DSA
+ * applies hybrid domain separation to it. Calling SignatureHash() and then
+ * ConstructSignatureHashPreimage() separately builds the preimage (a full
+ * transaction copy plus serialization) twice. This variant constructs it
+ * exactly once.
+ *
+ * Returns false on invalid parameters (invalid nIn or SIGHASH_SINGLE index
+ * out of range), leaving the outputs unchanged.
+ */
+bool SignatureHashWithPreimage(
+    const CScript& scriptCode, const CTransaction& txTo, unsigned int nIn,
+    int nHashType, uint256& sighashRet, std::vector<unsigned char>& preimageOut);
+
 #endif /* SCRIPT_H */

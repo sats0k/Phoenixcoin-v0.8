@@ -1205,15 +1205,12 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                         break;
                     }
 
-                    // --- Compute the sighash using the signature's type ---
-                    uint256 sighash =
-                        SignatureHash(scriptCode, txTo, nIn, sigHashType);
-
-                    // Construct canonical preimage for ML-DSA domain separation
+                    // --- Compute the sighash and its preimage in one pass ---
+                    uint256 sighash;
                     std::vector<unsigned char> sighash_preimage;
-                    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn,
-                                                        sigHashType,
-                                                        sighash_preimage))
+                    if (!SignatureHashWithPreimage(scriptCode, txTo, nIn,
+                                                   sigHashType,
+                                                   sighash, sighash_preimage))
                         return false;
 
                     std::vector<unsigned char> hybridMsg =
@@ -1292,16 +1289,31 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
     return(true);
 }
 
-uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo,
-                      unsigned int nIn, int nHashType) {
-    std::vector<unsigned char> preimage;
+bool SignatureHashWithPreimage(const CScript& scriptCode,
+                               const CTransaction& txTo,
+                               unsigned int nIn, int nHashType,
+                               uint256& sighashRet,
+                               std::vector<unsigned char>& preimageOut) {
     if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, nHashType,
-                                        preimage)) {
+                                        preimageOut)) {
         printf("ERROR: SignatureHash() : invalid parameters\n");
-        return 1;
+        return false;
     }
 
-    return Hash(preimage.begin(), preimage.end());
+    sighashRet = Hash(preimageOut.begin(), preimageOut.end());
+    return true;
+}
+
+uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo,
+                      unsigned int nIn, int nHashType) {
+    uint256 sighash;
+    std::vector<unsigned char> preimage;
+
+    if (!SignatureHashWithPreimage(scriptCode, txTo, nIn, nHashType,
+                                   sighash, preimage))
+        return 1;
+
+    return sighash;
 }
 
 // Valid signature cache, to avoid doing expensive ECDSA signature checking
@@ -2095,14 +2107,13 @@ bool SignHybridTx(const CKeyStore& keystore, const CScript& scriptPubKey,
         return false;
 
     CScript scriptCode(scriptPubKey);
-    uint256 sighash = SignatureHash(scriptCode, txTo, nIn, nHashType);
 
     std::vector<unsigned char> hybridMsg;
-
+    uint256 sighash;
     std::vector<unsigned char> sighash_preimage;
-    if (!ConstructSignatureHashPreimage(scriptCode, txTo, nIn, nHashType,
-                                        sighash_preimage))
-    return false;
+    if (!SignatureHashWithPreimage(scriptCode, txTo, nIn, nHashType,
+                                   sighash, sighash_preimage))
+        return false;
 
     hybridMsg = BuildHybridMessage(sighash_preimage);
 
