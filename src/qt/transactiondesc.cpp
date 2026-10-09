@@ -244,6 +244,11 @@ QString TransactionDesc::toHTML(CWallet *wallet, CWalletTx &wtx, int unit) {
                 continue;
             }
 
+            if(vin.prevout.n >= txPrev.vout.size()) {
+                strHTML += "<li>" + tr("(invalid input)") + "</li>";
+                continue;
+            }
+
             strHTML += "<li>";
 
             CTxDestination address;

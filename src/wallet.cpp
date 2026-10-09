@@ -1614,7 +1614,21 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey)
             set<CWalletTx*> setCoins;
             BOOST_FOREACH(const CTxIn& txin, wtxNew.vin)
             {
-                CWalletTx &coin = mapWallet[txin.prevout.hash];
+                map<uint256, CWalletTx>::iterator mi =
+                    mapWallet.find(txin.prevout.hash);
+                if (mi == mapWallet.end())
+                {
+                    printf("CommitTransaction() : prev tx %s not in wallet\n",
+                      txin.prevout.hash.ToString().c_str());
+                    continue;
+                }
+                CWalletTx &coin = mi->second;
+                if (txin.prevout.n >= coin.vout.size())
+                {
+                    printf("CommitTransaction() : prevout %s:%u out of range\n",
+                      txin.prevout.hash.ToString().c_str(), txin.prevout.n);
+                    continue;
+                }
                 coin.BindWallet(this);
                 coin.MarkSpent(txin.prevout.n);
                 coin.WriteToDisk();
@@ -2139,7 +2153,12 @@ set< set<CTxDestination> > CWallet::GetAddressGroupings()
             BOOST_FOREACH(CTxIn txin, pcoin->vin)
             {
                 CTxDestination address;
-                if(!ExtractDestination(mapWallet[txin.prevout.hash].vout[txin.prevout.n].scriptPubKey, address))
+                map<uint256, CWalletTx>::const_iterator mi =
+                    mapWallet.find(txin.prevout.hash);
+                if (mi == mapWallet.end() ||
+                    txin.prevout.n >= mi->second.vout.size())
+                    continue;
+                if(!ExtractDestination(mi->second.vout[txin.prevout.n].scriptPubKey, address))
                     continue;
                 grouping.insert(address);
             }
@@ -2148,7 +2167,6 @@ set< set<CTxDestination> > CWallet::GetAddressGroupings()
             for (unsigned int i = 0; i < pcoin->vout.size(); i++)
                 if (pcoin->IsChange(i))
                 {
-                    CWalletTx tx = mapWallet[pcoin->vin[0].prevout.hash];
                     CTxDestination txoutAddr;
                     if(!ExtractDestination(pcoin->vout[i].scriptPubKey, txoutAddr))
                         continue;

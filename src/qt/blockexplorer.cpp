@@ -218,6 +218,9 @@ void BlockExplorer::updateExplorer(bool block) {
             if(!GetTransaction(hash_in, txPrev, hashBlock_in))
               continue;
 
+            if(vin.prevout.n >= txPrev.vout.size())
+              continue;
+
             CTxDestination address;
             if(!ExtractDestination(txPrev.vout[vin.prevout.n].scriptPubKey, address))
               address = CNoDestination();

@@ -428,9 +428,11 @@ void WalletModel::getOutputs(const std::vector<COutPoint> &vOutpoints, std::vect
 
     BOOST_FOREACH(const COutPoint &outpoint, vOutpoints) {
         if(!wallet->mapWallet.count(outpoint.hash)) continue;
-        int nDepth = wallet->mapWallet[outpoint.hash].GetDepthInMainChain();
+        CWalletTx &wtx = wallet->mapWallet[outpoint.hash];
+        if(outpoint.n >= wtx.vout.size()) continue;
+        int nDepth = wtx.GetDepthInMainChain();
         if(nDepth < 0) continue;
-        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true);
+        COutput out(&wtx, outpoint.n, nDepth, true);
         vOutputs.push_back(out);
     }
 }
@@ -446,9 +448,11 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> > &mapCoins) 
     /* Add locked coins */
     BOOST_FOREACH(const COutPoint &outpoint, vLockedCoins) {
         if(!wallet->mapWallet.count(outpoint.hash)) continue;
-        int nDepth = wallet->mapWallet[outpoint.hash].GetDepthInMainChain();
+        CWalletTx &wtx = wallet->mapWallet[outpoint.hash];
+        if(outpoint.n >= wtx.vout.size()) continue;
+        int nDepth = wtx.GetDepthInMainChain();
         if(nDepth < 0) continue;
-        COutput out(&wallet->mapWallet[outpoint.hash], outpoint.n, nDepth, true);
+        COutput out(&wtx, outpoint.n, nDepth, true);
         vCoins.push_back(out);
     }
 
@@ -457,8 +461,11 @@ void WalletModel::listCoins(std::map<QString, std::vector<COutput> > &mapCoins) 
 
         while(cout.tx->IsChange(cout.i) &&
           (cout.tx->vin.size() > 0) && wallet->IsMine(cout.tx->vin[0])) {
-            if(!wallet->mapWallet.count(cout.tx->vin[0].prevout.hash)) break;
-            cout = COutput(&wallet->mapWallet[cout.tx->vin[0].prevout.hash], cout.tx->vin[0].prevout.n, 0, true);
+            const COutPoint &prevout = cout.tx->vin[0].prevout;
+            if(!wallet->mapWallet.count(prevout.hash)) break;
+            CWalletTx &prevWtx = wallet->mapWallet[prevout.hash];
+            if(prevout.n >= prevWtx.vout.size()) break;
+            cout = COutput(&prevWtx, prevout.n, 0, true);
         }
 
         CTxDestination address;
