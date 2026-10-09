@@ -3459,6 +3459,12 @@ bool ProcessMessages(CNode *pfrom) {
      * (4 bytes) message checksum
      * (X bytes) message data */
 
+    // Header size is constant, and the saved header is reused across messages
+    // instead of being reallocated each iteration.
+    const int nHeaderSize = vRecv.GetSerializeSize(CMessageHeader());
+    vector<char> vHeaderSave;
+    vHeaderSave.reserve(nHeaderSize);
+
     while(true) {
 
         // Don't bother if send buffer is too full to respond anyway
@@ -3467,7 +3473,6 @@ bool ProcessMessages(CNode *pfrom) {
         // Scan for message start
         CDataStream::iterator pstart = search(vRecv.begin(), vRecv.end(),
           BEGIN(pchMessageStart), END(pchMessageStart));
-        int nHeaderSize = vRecv.GetSerializeSize(CMessageHeader());
         if((vRecv.end() - pstart) < nHeaderSize) {
             if((int)vRecv.size() > nHeaderSize) {
                 if(fDebug) printf("ProcessMessages(): message start not found\n");
@@ -3482,7 +3487,7 @@ bool ProcessMessages(CNode *pfrom) {
         vRecv.erase(vRecv.begin(), pstart);
 
         // Read header
-        vector<char> vHeaderSave(vRecv.begin(), vRecv.begin() + nHeaderSize);
+        vHeaderSave.assign(vRecv.begin(), vRecv.begin() + nHeaderSize);
         CMessageHeader hdr;
         vRecv >> hdr;
         if(!hdr.IsCommandValid()) {
