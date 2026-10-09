@@ -2623,30 +2623,46 @@ bool LoadExternalBlockFile(FILE* fileIn)
         LOCK(cs_main);
         try {
             CAutoFile blkdat(fileIn, SER_DISK, CLIENT_VERSION);
+            unsigned char pchData[65536];
             unsigned int nPos = 0;
-            while (nPos != std::numeric_limits<uint32_t>::max() && blkdat.good() && !fRequestShutdown)
+            // nPos is 32-bit: every advance below is bounded so that it cannot
+            // wrap nPos around to a smaller file offset (which would restart
+            // the scan and loop over the same data forever).
+            const uint32_t nPosCeiling = std::numeric_limits<uint32_t>::max()
+                                       - (sizeof(pchData) + 4 + MAX_BLOCK_SIZE);
+            while (nPos <= nPosCeiling && blkdat.good() && !fRequestShutdown)
             {
-                unsigned char pchData[65536];
                 do {
+                    if (nPos > nPosCeiling)
+                    {
+                        printf("LoadExternalBlockFile() : file position overflow at %u, stopping\n", nPos);
+                        nPos = std::numeric_limits<uint32_t>::max();
+                        break;
+                    }
                     fseek(blkdat, nPos, SEEK_SET);
-                    int nRead = fread(pchData, 1, sizeof(pchData), blkdat);
+                    size_t nRead = fread(pchData, 1, sizeof(pchData), blkdat);
                     if (nRead <= 8)
                     {
                         nPos = std::numeric_limits<uint32_t>::max();
                         break;
                     }
-                    void* nFind = memchr(pchData, pchMessageStart[0], nRead+1-sizeof(pchMessageStart));
+                    // Scan only the bytes actually read, stopping early enough
+                    // that a match still leaves a whole message header in range.
+                    size_t nScan = nRead - (sizeof(pchMessageStart) - 1);
+                    unsigned char* nFind = (unsigned char*)memchr(pchData, pchMessageStart[0], nScan);
                     if (nFind)
                     {
-                        if (memcmp(nFind, pchMessageStart, sizeof(pchMessageStart))==0)
+                        size_t nOffset = nFind - pchData;
+                        if (nOffset + sizeof(pchMessageStart) <= nRead &&
+                            memcmp(nFind, pchMessageStart, sizeof(pchMessageStart))==0)
                         {
-                            nPos += ((unsigned char*)nFind - pchData) + sizeof(pchMessageStart);
+                            nPos += nOffset + sizeof(pchMessageStart);
                             break;
                         }
-                        nPos += ((unsigned char*)nFind - pchData) + 1;
+                        nPos += nOffset + 1;
                     }
                     else
-                        nPos += sizeof(pchData) - sizeof(pchMessageStart) + 1;
+                        nPos += nScan;
                 } while(!fRequestShutdown);
                 if (nPos == std::numeric_limits<uint32_t>::max())
                     break;
