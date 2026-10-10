@@ -3158,17 +3158,21 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         uint256 hashStop;
         vRecv >> locator >> hashStop;
 
-        /* Time limit for responding to a particular peer */
+        /* Locate the best block of the caller that matches our chain;
+         * it must be the genesis block if no match */
+        CBlockIndex *pindex = locator.GetBlockIndex();
+
+        /* Time limit for responding to a particular peer. A peer that is far
+         * behind our tip is still catching up, so let it pull consecutive
+         * 1000-block batches without the usual anti-spam delay. */
         uint nCurrentTime = (uint)GetTime();
-        if((nCurrentTime - 5U) < pfrom->nGetblocksReceiveTime) {
+        uint nInterval = (pindexBest && pindex &&
+          (pindexBest->nHeight - pindex->nHeight) > 1000) ? 1U : 5U;
+        if((nCurrentTime - nInterval) < pfrom->nGetblocksReceiveTime) {
             return(error("message getblocks spam"));
         } else {
             pfrom->nGetblocksReceiveTime = nCurrentTime;
         }
-
-        /* Locate the best block of the caller that matches our chain;
-         * it must be the genesis block if no match */
-        CBlockIndex *pindex = locator.GetBlockIndex();
 
         /* Start with the next block if available */
         if(pindex->pnext) pindex = pindex->pnext;
@@ -3622,9 +3626,6 @@ bool ProcessMessages(CNode *pfrom) {
 }
 
 
-/* Time stamp of the last getblocks polling request */
-uint nGetblocksTimePolling = 0;
-
 bool SendMessages(CNode *pto, bool fSendTrickle) {
 
     /* Valid version must be received first */
@@ -3653,14 +3654,12 @@ bool SendMessages(CNode *pto, bool fSendTrickle) {
         /* Convert to seconds */
         nCurrentTime /= 1000000;
 
-        /* Ask a random peer for inventory */
-        if(fSendTrickle && IsInitialBlockDownload() &&
-          (nBestHeight < pto->nStartingHeight) &&
-          ((nCurrentTime - nTimeBestReceived) > 1LL) &&
-          ((nCurrentTime - nGetblocksTimePolling) > 1LL)) {
-            nGetblocksTimePolling = nCurrentTime;
+        /* While catching up, request inventory from every peer that is ahead
+         * of us. PushGetBlocks() applies its own per-peer time limit, so the
+         * requests fan out across peers instead of being funnelled through a
+         * single global once-per-second timer. */
+        if(IsInitialBlockDownload() && (nBestHeight < pto->nStartingHeight))
             pto->PushGetBlocks(pindexBest, uint256(0));
-        }
 
         // Resend wallet transactions that haven't gotten in a block yet
         ResendWalletTransactions();

@@ -99,8 +99,11 @@ unsigned short GetListenPort()
 void CNode::PushGetBlocks(CBlockIndex *pindexBegin, uint256 hashEnd) {
     uint nCurrentTime = (uint)GetTime();
 
-    /* Time limit for asking a particular peer */
-    if((nCurrentTime - 5U) < nGetblocksAskTime)
+    /* Time limit for asking a particular peer. Relaxed during the initial
+     * block download so a peer can be polled for consecutive batches instead
+     * of at most once every five seconds. */
+    uint nInterval = IsInitialBlockDownload() ? 1U : 5U;
+    if((nCurrentTime - nInterval) < nGetblocksAskTime)
       return;
     else
       nGetblocksAskTime = nCurrentTime;

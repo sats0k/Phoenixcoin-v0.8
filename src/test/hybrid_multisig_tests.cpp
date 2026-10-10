@@ -3420,3 +3420,46 @@ BOOST_AUTO_TEST_CASE(hybrid_key_export_import_roundtrip)
     BOOST_REQUIRE(SignHybridMessage(loaded, msg, sig2));
     BOOST_CHECK(VerifyHybridMessage(sig2, imported.GetHybridID(), msg));
 }
+
+BOOST_AUTO_TEST_CASE(block_pow_hash_memoization)
+{
+    /*
+     * GetHashPoW() memoises the neoscrypt result keyed on the full 80-byte
+     * header and the profile. CheckBlock() is invoked twice per block during
+     * normal connection, so the second call must be a cache hit returning the
+     * exact same value, while any header mutation must invalidate it.
+     */
+    CBlock block;
+    block.nVersion        = 2;
+    block.hashPrevBlock   = uint256(11);
+    block.hashMerkleRoot  = uint256(22);
+    block.nTime           = 0;   /* < switch time -> scrypt profile 0x3 */
+    block.nBits           = 0x1d00ffff;
+    block.nNonce          = 42;
+
+    const uint profile = 0x3 | nNeoScryptOptions;
+
+    /* Reference value computed directly, bypassing the cache. */
+    uint256 expected1;
+    neoscrypt((const uchar*)&block.nVersion, (uchar*)&expected1, profile);
+
+    /* Fresh call and the following cache hit must both match the reference. */
+    BOOST_CHECK(block.GetHashPoW() == expected1);
+    BOOST_CHECK(block.GetHashPoW() == expected1);
+
+    /* Mutating the header must invalidate the cache: the result must equal a
+     * freshly computed neoscrypt over the new header, not the stale value. */
+    block.nNonce = 43;
+    uint256 expected2;
+    neoscrypt((const uchar*)&block.nVersion, (uchar*)&expected2, profile);
+    BOOST_CHECK(expected2 != expected1);
+    BOOST_CHECK(block.GetHashPoW() == expected2);
+    BOOST_CHECK(block.GetHashPoW() == expected2);
+
+    /* A different previous-block hash must also invalidate the cache. */
+    block.hashPrevBlock = uint256(33);
+    uint256 expected3;
+    neoscrypt((const uchar*)&block.nVersion, (uchar*)&expected3, profile);
+    BOOST_CHECK(expected3 != expected2);
+    BOOST_CHECK(block.GetHashPoW() == expected3);
+}

@@ -834,6 +834,16 @@ public:
     mutable int nDoS;
     bool DoS(int nDoSIn, bool fIn) const { nDoS += nDoSIn; return fIn; }
 
+    // Cache for GetHashPoW(). The proof-of-work hash is expensive (neoscrypt)
+    // and CheckBlock() runs twice per block during normal connection: once from
+    // ProcessBlock() and again from ConnectBlock(). Keyed on the exact 80-byte
+    // header and the neoscrypt profile that produced the result, so any
+    // mutation that could change the hash invalidates it.
+    mutable bool fCachedPoWValid;
+    mutable unsigned char vchCachedPoWHeader[80];
+    mutable unsigned int nCachedPoWProfile;
+    mutable uint256 hashCachedPoW;
+
     CBlock()
     {
         SetNull();
@@ -867,6 +877,7 @@ public:
         vtx.clear();
         vMerkleTree.clear();
         nDoS = 0;
+        fCachedPoWValid = false;
     }
 
     bool IsNull() const
@@ -882,7 +893,6 @@ public:
     /* Calculates block proof-of-work hash using either NeoScrypt or Scrypt */
     uint256 GetHashPoW() const {
         uint profile = 0x0;
-        uint256 hash;
 
         /* All blocks generated up to this time point are Scrypt only */
         if((fTestNet && (nTime < nTestnetSwitchV2)) ||
@@ -902,9 +912,23 @@ public:
 
         profile |= nNeoScryptOptions;
 
+        /* Memoised: the hash is a pure function of the 80-byte header and the
+         * profile, so an identical key must produce an identical result. This
+         * makes the second CheckBlock() per block (ConnectBlock) skip the
+         * expensive neoscrypt call. */
+        if (fCachedPoWValid && nCachedPoWProfile == profile &&
+          memcmp(vchCachedPoWHeader, &nVersion, sizeof(vchCachedPoWHeader)) == 0)
+            return hashCachedPoW;
+
+        uint256 hash;
         neoscrypt((uchar *) &nVersion, (uchar *) &hash, profile);
 
-        return(hash);
+        memcpy(vchCachedPoWHeader, &nVersion, sizeof(vchCachedPoWHeader));
+        nCachedPoWProfile = profile;
+        hashCachedPoW = hash;
+        fCachedPoWValid = true;
+
+        return hash;
     }
 
     /* Extracts block height from v2+ coin base;
