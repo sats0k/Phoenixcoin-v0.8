@@ -1191,11 +1191,30 @@ public:
 
     CBigNum GetBlockWork() const
     {
+        // The work contribution of a block depends only on its compact target
+        // (nBits), which changes at most once per retarget interval.  The
+        // 256-bit big-number division below is expensive, so memoize it per
+        // distinct nBits.  This turns the O(chain length) divisions performed
+        // while loading the block index into O(distinct targets).  Callers
+        // (block index loading and cs_main-guarded block acceptance) are
+        // serialized, so no locking is required.  The cache is intentionally
+        // leaked so it is never torn down concurrently with the shutdown
+        // thread's exit() call.
+        static std::map<unsigned int, CBigNum>* pMapWorkCache = NULL;
+        if (pMapWorkCache == NULL)
+            pMapWorkCache = new std::map<unsigned int, CBigNum>();
+
+        std::map<unsigned int, CBigNum>::const_iterator mi = pMapWorkCache->find(nBits);
+        if (mi != pMapWorkCache->end())
+            return mi->second;
+
         CBigNum bnTarget;
         bnTarget.SetCompact(nBits);
-        if (bnTarget <= 0)
-            return 0;
-        return (CBigNum(1)<<256) / (bnTarget+1);
+        CBigNum bnWork;
+        if (bnTarget > 0)
+            bnWork = (CBigNum(1)<<256) / (bnTarget+1);
+        (*pMapWorkCache)[nBits] = bnWork;
+        return bnWork;
     }
 
     bool IsInMainChain() const

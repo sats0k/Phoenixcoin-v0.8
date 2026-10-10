@@ -816,15 +816,30 @@ bool CTxDB::LoadBlockIndexGuts()
         // Unserialize
 
         try {
-        string strType;
-        ssKey >> strType;
-        if (strType == "blockindex" && !fRequestShutdown)
+        // The key layout for every index record is the varint length of the
+        // string prefix followed by the type string itself and then the 32-byte
+        // block hash, i.e. make_pair(string, uint256).  We compare the prefix
+        // bytes directly instead of constructing a std::string each record,
+        // and we reuse the hash already present in the key rather than
+        // recomputing the SHA256d header hash via CDiskBlockIndex::GetBlockHash().
+        uint64 nSize = ReadCompactSize(ssKey);
+        if (nSize != 10 || ssKey.size() < 10 + 32)
+            break; // finished loading block index
+        if (memcmp(&ssKey[0], "blockindex", 10) != 0)
+            break;
+        ssKey.ignore(10);
+        uint256 hashBlock;
+        ssKey >> hashBlock;
+
+        if (fRequestShutdown)
+            break; // if shutdown was requested while loading
+
         {
             CDiskBlockIndex diskindex;
             ssValue >> diskindex;
 
             // Construct block index object
-            CBlockIndex* pindexNew = InsertBlockIndex(diskindex.GetBlockHash());
+            CBlockIndex* pindexNew = InsertBlockIndex(hashBlock);
             pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
             pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
             pindexNew->nFile          = diskindex.nFile;
@@ -837,12 +852,8 @@ bool CTxDB::LoadBlockIndexGuts()
             pindexNew->nNonce         = diskindex.nNonce;
 
             // Watch for genesis block
-            if (pindexGenesisBlock == NULL && diskindex.GetBlockHash() == hashGenesisBlock)
+            if (pindexGenesisBlock == NULL && hashBlock == hashGenesisBlock)
                 pindexGenesisBlock = pindexNew;
-        }
-        else
-        {
-            break; // if shutdown requested or finished loading block index
         }
         }    // try
         catch (std::exception &e) {
