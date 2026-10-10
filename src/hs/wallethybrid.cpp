@@ -966,6 +966,27 @@ void CWallet::BackfillHybridUsedKeys()
 
     bool fChanged = false;
 
+    // One-time CKeyID -> CHybridKeyID index. The scan below visits every output
+    // of every wallet transaction; probing each legacy-address output against
+    // the key maps with a linear scan (and a Hash160 per candidate) is quadratic
+    // and dominates wallet load once the pool holds thousands of keys. The
+    // at-rest (encrypted) records carry secpPub in the clear, so they can be
+    // indexed even while the wallet is locked. mapHybridKeys entries are
+    // inserted first so they win on a tie, mirroring the original scan order.
+    std::map<CKeyID, CHybridKeyID> mapLegacyToHybrid;
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator hk =
+             mapHybridKeys.begin();
+         hk != mapHybridKeys.end(); ++hk)
+    {
+        mapLegacyToHybrid.insert(std::make_pair(hk->second.GetKeyID(), hk->first));
+    }
+    for (std::map<CHybridKeyID, CHybridKeyDisk>::const_iterator dk =
+             mapHybridKeyDisk.begin();
+         dk != mapHybridKeyDisk.end(); ++dk)
+    {
+        mapLegacyToHybrid.insert(std::make_pair(dk->second.secpPub.GetID(), dk->first));
+    }
+
     for (std::map<CHybridKeyID, CHybridAddressEntry>::const_iterator it =
              mapHybridAddressBook.begin();
          it != mapHybridAddressBook.end(); ++it)
@@ -995,32 +1016,13 @@ void CWallet::BackfillHybridUsedKeys()
             else if (const CKeyID* pKeyID = boost::get<CKeyID>(&dest))
             {
                 // A payment made to the legacy (secp) address of a hybrid key.
-                // match by the embedded public key, which is present in the
-                // at-rest records even while an encrypted wallet is locked.
-                for (std::map<CHybridKeyID, CHybridKey>::const_iterator hk =
-                         mapHybridKeys.begin();
-                     hk != mapHybridKeys.end(); ++hk)
+                // Match by the embedded public key via the index built above.
+                std::map<CKeyID, CHybridKeyID>::const_iterator lt =
+                    mapLegacyToHybrid.find(*pKeyID);
+                if (lt != mapLegacyToHybrid.end())
                 {
-                    if (hk->second.GetKeyID() == *pKeyID)
-                    {
-                        hybridID = hk->first;
-                        fFound = true;
-                        break;
-                    }
-                }
-                if (!fFound)
-                {
-                    for (std::map<CHybridKeyID, CHybridKeyDisk>::const_iterator
-                             dk = mapHybridKeyDisk.begin();
-                         dk != mapHybridKeyDisk.end(); ++dk)
-                    {
-                        if (dk->second.secpPub.GetID() == *pKeyID)
-                        {
-                            hybridID = dk->first;
-                            fFound = true;
-                            break;
-                        }
-                    }
+                    hybridID = lt->second;
+                    fFound = true;
                 }
             }
 
