@@ -587,11 +587,11 @@ Testing has covered:
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (30 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **114 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (30 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **115 test cases** and passes with no errors:
 
 ```bash
 cd src
-make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
+make -j$(nproc) DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 ./test_phoenixcoin
 ```
 

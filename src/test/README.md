@@ -353,7 +353,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 114 test cases...
+Running 115 test cases...
 
 *** No errors detected
 ```
