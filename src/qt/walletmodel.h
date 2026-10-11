@@ -14,6 +14,7 @@ class TransactionTableModel;
 class CWallet;
 class WalletModelTransaction;
 class CKeyID;
+class CHybridKeyID;
 class CPubKey;
 class COutput;
 class COutPoint;
@@ -122,6 +123,7 @@ public:
     UnlockContext requestUnlock();
 
     bool getPubKey(const CKeyID &address, CPubKey &vchPubKeyOut) const;
+    bool haveHybridKey(const CHybridKeyID &address) const;
     void getOutputs(const std::vector<COutPoint> &vOutpoints, std::vector<COutput> &vOutputs);
     void listCoins(std::map<QString, std::vector<COutput> > &mapCoins) const;
 

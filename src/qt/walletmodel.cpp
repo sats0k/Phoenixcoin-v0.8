@@ -423,6 +423,10 @@ bool WalletModel::getPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const 
     return(wallet->GetPubKey(address, vchPubKeyOut));
 }
 
+bool WalletModel::haveHybridKey(const CHybridKeyID &address) const {
+    return(wallet->HaveHybridKey(address));
+}
+
 /* Returns a list of COutputs from COutPoints */
 void WalletModel::getOutputs(const std::vector<COutPoint> &vOutpoints, std::vector<COutput> &vOutputs) {
 

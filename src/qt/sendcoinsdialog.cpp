@@ -520,10 +520,19 @@ void SendCoinsDialog::coinControlChangeEdited(const QString &text) {
         if(!associatedLabel.isEmpty()) {
             ui->labelCoinControlChangeLabel->setText(associatedLabel);
         } else {
-            CPubKey pubkey;
+            CCoinAddress addr(text.toStdString());
             CKeyID keyid;
-            CCoinAddress(text.toStdString()).GetKeyID(keyid);
-            if(model->getPubKey(keyid, pubkey)) {
+            CHybridKeyID hybridID;
+            CPubKey pubkey;
+            if(addr.GetHybridKeyID(hybridID)) {
+                /* Hybrid (quantum-resistant) change address */
+                if(model->haveHybridKey(hybridID)) {
+                    ui->labelCoinControlChangeLabel->setText(tr("(no label)"));
+                } else {
+                    ui->labelCoinControlChangeLabel->setStyleSheet("QLabel{color:red;}");
+                    ui->labelCoinControlChangeLabel->setText(tr("Warning: unknown change address"));
+                }
+            } else if(addr.GetKeyID(keyid) && model->getPubKey(keyid, pubkey)) {
                 ui->labelCoinControlChangeLabel->setText(tr("(no label)"));
             } else {
                 ui->labelCoinControlChangeLabel->setStyleSheet("QLabel{color:red;}");
