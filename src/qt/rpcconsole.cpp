@@ -2,6 +2,9 @@
 #include <QThread>
 #include <QKeyEvent>
 #include <QScrollBar>
+#include <QTimer>
+#include <QTableWidget>
+#include <QHeaderView>
 
 #if (QT_VERSION < 0x050000)
 #include <QUrl>
@@ -19,6 +22,8 @@
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "ui_rpcconsole.h"
+
+#include "net.h"
 
 // TODO: make it possible to filter out categories (esp debug messages when implemented)
 // TODO: receive errors and debug messages through ClientModel
@@ -207,6 +212,26 @@ RPCConsole::RPCConsole(QWidget *parent) :
     ui->showCLOptionsButton->setIcon(QIcon(":/icons/options"));
 #endif
 
+    // Prepare the peers table
+    QStringList peerTableHeaders;
+    peerTableHeaders << tr("Address") << tr("Direction") << tr("Version")
+      << tr("User Agent") << tr("Starting Height") << tr("Ping Time")
+      << tr("Received") << tr("Sent");
+    ui->peerTableWidget->setColumnCount(peerTableHeaders.size());
+    ui->peerTableWidget->setHorizontalHeaderLabels(peerTableHeaders);
+    ui->peerTableWidget->verticalHeader()->setVisible(false);
+    ui->peerTableWidget->horizontalHeader()->setStretchLastSection(true);
+#if (QT_VERSION < 0x050000)
+    ui->peerTableWidget->horizontalHeader()->setResizeMode(
+      QHeaderView::ResizeToContents);
+#else
+    ui->peerTableWidget->horizontalHeader()->setSectionResizeMode(
+      QHeaderView::ResizeToContents);
+#endif
+
+    peerTimer = new QTimer(this);
+    connect(peerTimer, SIGNAL(timeout()), this, SLOT(updatePeerList()));
+
     // Install event filter for up and down arrow
     ui->lineEdit->installEventFilter(this);
     ui->messagesWidget->installEventFilter(this);
@@ -287,6 +312,10 @@ void RPCConsole::setClientModel(ClientModel *model)
         updateTrafficStats(model->getTotalBytesRx(), model->getTotalBytesTx());
         connect(model, SIGNAL(bytesChanged(quint64,quint64)), this, SLOT(updateTrafficStats(quint64, quint64)));
 
+        // Refresh the peers table and keep it up to date
+        updatePeerList();
+        peerTimer->start(3000);
+
         // Provide initial values
         ui->clientVersion->setText(model->formatFullVersion());
         ui->buildDateTime->setText(model->formatBuildDateTime());
@@ -296,6 +325,11 @@ void RPCConsole::setClientModel(ClientModel *model)
         ui->isTestNet->setChecked(model->isTestNet());
 
         setNumBlocks(model->getNumBlocks(), model->getNumBlocksOfPeers());
+    }
+    else
+    {
+        peerTimer->stop();
+        ui->peerTableWidget->setRowCount(0);
     }
 }
 
@@ -372,6 +406,58 @@ void RPCConsole::setNumBlocks(int count, int countOfPeers)
         // If there is no current number available display N/A instead of 0, which can't ever be true
         ui->totalBlocks->setText(clientModel->getNumBlocksOfPeers() == 0 ? tr("N/A") : QString::number(clientModel->getNumBlocksOfPeers()));
         ui->lastBlockTime->setText(clientModel->getLastBlockDate().toString());
+    }
+}
+
+void RPCConsole::updatePeerList()
+{
+    std::vector<CNodeStats> vstats;
+    {
+        LOCK(cs_vNodes);
+        vstats.reserve(vNodes.size());
+        BOOST_FOREACH(CNode* pnode, vNodes) {
+            CNodeStats stats;
+            pnode->copyStats(stats);
+            vstats.push_back(stats);
+        }
+    }
+
+    ui->peerTableWidget->setRowCount(vstats.size());
+
+    int row = 0;
+    BOOST_FOREACH(const CNodeStats& stats, vstats)
+    {
+        QString direction = stats.fInbound ? tr("Inbound") : tr("Outbound");
+        QString height = (stats.nStartingHeight == -1)
+          ? QString("N/A") : QString::number(stats.nStartingHeight);
+        QString ping = (stats.nPingTime >= (~0U - 1U))
+          ? QString("N/A") : tr("%1 ms").arg(stats.nPingTime);
+
+        ui->peerTableWidget->setItem(row, 0,
+          new QTableWidgetItem(QString::fromStdString(stats.addrName)));
+        ui->peerTableWidget->setItem(row, 1, new QTableWidgetItem(direction));
+        ui->peerTableWidget->setItem(row, 2,
+          new QTableWidgetItem(QString::number(stats.nVersion)));
+        ui->peerTableWidget->setItem(row, 3,
+          new QTableWidgetItem(QString::fromStdString(stats.strSubVer)));
+
+        QTableWidgetItem *heightItem = new QTableWidgetItem(height);
+        heightItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        ui->peerTableWidget->setItem(row, 4, heightItem);
+
+        QTableWidgetItem *pingItem = new QTableWidgetItem(ping);
+        pingItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        ui->peerTableWidget->setItem(row, 5, pingItem);
+
+        QTableWidgetItem *rxItem = new QTableWidgetItem(FormatBytes(stats.nRxBytes));
+        rxItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        ui->peerTableWidget->setItem(row, 6, rxItem);
+
+        QTableWidgetItem *txItem = new QTableWidgetItem(FormatBytes(stats.nTxBytes));
+        txItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        ui->peerTableWidget->setItem(row, 7, txItem);
+
+        row++;
     }
 }
 

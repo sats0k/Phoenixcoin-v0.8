@@ -8,6 +8,10 @@ namespace Ui {
 }
 class ClientModel;
 
+QT_BEGIN_NAMESPACE
+class QTimer;
+QT_END_NAMESPACE
+
 /* Local Phoenixcoin RPC console */
 class RPCConsole: public QDialog {
     Q_OBJECT
@@ -42,6 +46,8 @@ private slots:
     void updateTrafficStats(quint64 totalBytesIn, quint64 totalBytesOut);
     /* Clear traffic graph */
     void on_btnClearTrafficGraph_clicked();
+    /* Update the list of connected peers shown in the peers tab */
+    void updatePeerList();
 
 public slots:
     void clear();
@@ -69,6 +75,7 @@ private:
     ClientModel *clientModel;
     QStringList history;
     int historyPtr;
+    QTimer *peerTimer;
 
     static QString FormatBytes(quint64 nBytes);
     void setTrafficGraphRange(int nMinutes);

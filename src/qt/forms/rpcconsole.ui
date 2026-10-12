@@ -726,12 +726,38 @@
         </layout>
        </item>
       </layout>
+      </widget>
+      <widget class="QWidget" name="tab_peers">
+       <attribute name="title">
+        <string>&amp;Peers</string>
+       </attribute>
+       <layout class="QVBoxLayout" name="verticalLayout_5">
+        <item>
+         <widget class="QTableWidget" name="peerTableWidget">
+          <property name="alternatingRowColors">
+           <bool>true</bool>
+          </property>
+          <property name="selectionMode">
+           <enum>QAbstractItemView::NoSelection</enum>
+          </property>
+          <property name="editTriggers">
+           <set>QAbstractItemView::NoEditTriggers</set>
+          </property>
+          <property name="showGrid">
+           <bool>false</bool>
+          </property>
+          <property name="wordWrap">
+           <bool>false</bool>
+          </property>
+         </widget>
+        </item>
+       </layout>
+      </widget>
      </widget>
-    </widget>
-   </item>
-  </layout>
- </widget>
- <customwidgets>
+    </item>
+   </layout>
+  </widget>
+  <customwidgets>
   <customwidget>
    <class>TrafficGraphWidget</class>
    <extends>QWidget</extends>
