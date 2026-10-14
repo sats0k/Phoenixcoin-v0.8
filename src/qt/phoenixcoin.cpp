@@ -4,6 +4,7 @@
 
 #include <QApplication>
 #include <QFont>
+#include <QFontDatabase>
 #include <QPalette>
 #include <QStyle>
 #include <QStyleFactory>
@@ -13,6 +14,9 @@
 #include <QTranslator>
 #include <QSplashScreen>
 #include <QLibraryInfo>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
 
 #if (QT_VERSION < 0x050000)
 #include <QTextCodec>
@@ -123,10 +127,54 @@ static void handleRunawayException(std::exception *e) {
     exit(1);
 }
 
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MAC)
+/* The static Qt build has no fontconfig and looks for fonts in a compile-time
+ * prefix directory that does not exist on other machines. Unless the caller
+ * already selected a font directory, point Qt at a system font directory so the
+ * binary still renders text when copied to another system. */
+static void setupPortableFontDir() {
+    if (qEnvironmentVariableIsSet("QT_QPA_FONTDIR"))
+        return;
+
+    const QStringList filters = {"*.ttf", "*.ttc", "*.otf", "*.pfa", "*.pfb"};
+    const QStringList dirs = {
+        "/usr/share/fonts/truetype/dejavu",  // Debian/Ubuntu
+        "/usr/share/fonts/TTF",              // Arch/Fedora/openSUSE
+        "/usr/share/fonts/truetype",
+        "/usr/share/fonts",
+        "/usr/local/share/fonts",
+        QDir::homePath() + "/.local/share/fonts",
+        QDir::homePath() + "/.fonts"
+    };
+
+    for (const QString &dir : dirs) {
+        QDir d(dir);
+        if (d.exists() && !d.entryList(filters, QDir::Files).isEmpty()) {
+            qputenv("QT_QPA_FONTDIR", QFile::encodeName(d.absolutePath()));
+            return;
+        }
+    }
+
+    // Last resort: the first font file found anywhere under the usual roots
+    const QStringList roots = {"/usr/share/fonts", "/usr/local/share/fonts"};
+    for (const QString &root : roots) {
+        QDirIterator it(root, filters, QDir::Files, QDirIterator::Subdirectories);
+        if (it.hasNext()) {
+            qputenv("QT_QPA_FONTDIR", QFile::encodeName(QFileInfo(it.next()).absolutePath()));
+            return;
+        }
+    }
+}
+#endif
+
 int main(int argc, char *argv[])
 {
     // Do this early as we don't want to bother initializing if we are just calling IPC
     ipcScanRelay(argc, argv);
+
+#if !defined(Q_OS_WIN) && !defined(Q_OS_MAC)
+    setupPortableFontDir();
+#endif
 
     // Internal string conversion is all UTF-8
 #if (QT_VERSION < 0x050000)
@@ -137,8 +185,28 @@ int main(int argc, char *argv[])
     Q_INIT_RESOURCE(phoenixcoin);
     QApplication app(argc, argv);
 
-    // Use Cantarell as the default font (static Qt is built without fontconfig)
-    app.setFont(QFont("Cantarell", 9));
+    // Register the DejaVu fonts embedded in the binary's resources so text
+    // renders on systems whose font directory the static (fontconfig-less) Qt
+    // build cannot find. See the "/fonts" section of phoenixcoin.qrc.
+    static const char *embeddedFonts[] = {
+        ":/fonts/dejavu-sans",
+        ":/fonts/dejavu-sans-bold",
+        ":/fonts/dejavu-sans-oblique",
+        ":/fonts/dejavu-sans-bold-oblique",
+        ":/fonts/dejavu-sans-mono",
+        ":/fonts/dejavu-sans-mono-bold"
+    };
+    for (const char *font : embeddedFonts)
+        QFontDatabase::addApplicationFont(QString::fromLatin1(font));
+
+    // Route the generic family names to the embedded fonts; without fontconfig
+    // Qt cannot resolve "Monospace" or the generic aliases on its own.
+    QFont::insertSubstitution(QStringLiteral("Monospace"), QStringLiteral("DejaVu Sans Mono"));
+    QFont::insertSubstitution(QStringLiteral("Sans Serif"), QStringLiteral("DejaVu Sans"));
+
+    // Use the embedded font as the application default so rendering is
+    // identical regardless of the fonts installed on the host.
+    app.setFont(QFont(QStringLiteral("DejaVu Sans"), 9));
 
 
     // Install global event filter that makes sure that long tooltips can be word-wrapped

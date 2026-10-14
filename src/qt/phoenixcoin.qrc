@@ -81,6 +81,12 @@
     </qresource>
     <qresource prefix="/fonts">
         <file alias="fontawesome">res/fonts/fa-solid-900.ttf</file>
+        <file alias="dejavu-sans">res/fonts/DejaVuSans.ttf</file>
+        <file alias="dejavu-sans-bold">res/fonts/DejaVuSans-Bold.ttf</file>
+        <file alias="dejavu-sans-oblique">res/fonts/DejaVuSans-Oblique.ttf</file>
+        <file alias="dejavu-sans-bold-oblique">res/fonts/DejaVuSans-BoldOblique.ttf</file>
+        <file alias="dejavu-sans-mono">res/fonts/DejaVuSansMono.ttf</file>
+        <file alias="dejavu-sans-mono-bold">res/fonts/DejaVuSansMono-Bold.ttf</file>
     </qresource>
     <qresource prefix="/translations">
         <file alias="de">locale/phoenixcoin_de.qm</file>
