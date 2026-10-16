@@ -6,6 +6,7 @@
 #include <map>
 #include <utility>
 #include <set>
+#include <iterator>
 #include <unordered_set>
 
 #include <boost/foreach.hpp>
@@ -1358,11 +1359,12 @@ class CSignatureCache {
         if(nMaxCacheSize <= 0) return;
         LOCK(cs_sigcache);
         while(static_cast<int64>(setValid.size()) > nMaxCacheSize) {
-            // Evict an arbitrary entry. Eviction is unbucketed and thus
-            // effectively random, which helps foil would-be DoS attackers who
-            // might try to pre-generate and re-use a set of valid signatures
-            // just-slightly-greater than our cache size.
-            setValid.erase(setValid.begin());
+            // Evict a random entry. Random because that helps foil would-be
+            // DoS attackers who might try to pre-generate and re-use a set of
+            // valid signatures just-slightly-greater than our cache size.
+            std::unordered_set<sigdata_type, Hasher>::iterator it = setValid.begin();
+            std::advance(it, GetRand(setValid.size()));
+            setValid.erase(it);
         }
         sigdata_type k(hash, vchSig, pubKey);
         setValid.insert(k);
