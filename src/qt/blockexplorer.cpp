@@ -93,9 +93,7 @@ BlockExplorer::BlockExplorer(QWidget *parent) :
 
     setBaseSize(760, 470);
 
-#if (QT_VERSION >= 0x040700)
     ui->txLine->setPlaceholderText(tr("Payment ID"));
-#endif
 
     connect(ui->blockButton, SIGNAL(pressed()), this, SLOT(blockClicked()));
     connect(ui->txButton, SIGNAL(pressed()), this, SLOT(txClicked()));

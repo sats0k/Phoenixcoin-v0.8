@@ -18,10 +18,6 @@
 #include <QDirIterator>
 #include <QFileInfo>
 
-#if (QT_VERSION < 0x050000)
-#include <QTextCodec>
-#endif
-
 #include "init.h"
 #include "ui_interface.h"
 #include "util.h"
@@ -177,10 +173,6 @@ int main(int argc, char *argv[])
 #endif
 
     // Internal string conversion is all UTF-8
-#if (QT_VERSION < 0x050000)
-    QTextCodec::setCodecForTr(QTextCodec::codecForName("UTF-8"));
-    QTextCodec::setCodecForCStrings(QTextCodec::codecForTr());
-#endif
 
     Q_INIT_RESOURCE(phoenixcoin);
     QApplication app(argc, argv);

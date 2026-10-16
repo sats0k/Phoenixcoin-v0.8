@@ -123,11 +123,7 @@ CoinControl::CoinControl(QWidget *parent) :
       this, SLOT(viewItemChanged(QTreeWidgetItem *, int)));
 
     /* Click on header */
-#if (QT_VERSION < 0x050000)
-    ui->treeWidget->header()->setClickable(true);
-#else
     ui->treeWidget->header()->setSectionsClickable(true);
-#endif
     connect(ui->treeWidget->header(), SIGNAL(sectionClicked(int)),
       this, SLOT(headerSectionClicked(int)));
 

@@ -6,9 +6,7 @@
 #include <QTableWidget>
 #include <QHeaderView>
 
-#if (QT_VERSION < 0x050000)
 #include <QUrl>
-#endif
 
 #include <openssl/crypto.h>  /* for SSLEAY_VERSION */
 #include <boost/version.hpp>  /* for BOOST_VERSION */
@@ -221,13 +219,8 @@ RPCConsole::RPCConsole(QWidget *parent) :
     ui->peerTableWidget->setHorizontalHeaderLabels(peerTableHeaders);
     ui->peerTableWidget->verticalHeader()->setVisible(false);
     ui->peerTableWidget->horizontalHeader()->setStretchLastSection(true);
-#if (QT_VERSION < 0x050000)
-    ui->peerTableWidget->horizontalHeader()->setResizeMode(
-      QHeaderView::ResizeToContents);
-#else
     ui->peerTableWidget->horizontalHeader()->setSectionResizeMode(
       QHeaderView::ResizeToContents);
-#endif
 
     peerTimer = new QTimer(this);
     connect(peerTimer, SIGNAL(timeout()), this, SLOT(updatePeerList()));

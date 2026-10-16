@@ -25,11 +25,11 @@ unix:!macx {
     QMAKE_LFLAGS += -flto=auto -Wl,--gc-sections
 }
 
-greaterThan(QT_MAJOR_VERSION, 4): {
+greaterThan(QT_MAJOR_VERSION, 4) {
     QT += widgets
     message("Building with the Qt v5 support$$escape_expand(\\n)")
 } else {
-    message("Building with the Qt v4 support$$escape_expand(\\n)")
+    error("Qt5 or newer is required to build the GUI")
 }
 
 

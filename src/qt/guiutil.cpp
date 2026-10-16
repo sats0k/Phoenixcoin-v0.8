@@ -16,12 +16,8 @@
 #include <QPalette>
 #include <QList>
 
-#if (QT_VERSION < 0x050000)
-#include <QUrl>
-#else
 #include <QUrlQuery>
 #include <QStandardPaths>
-#endif
 
 #include "init.h"  /* for HelpMessage() */
 #include "util.h"
@@ -135,12 +131,8 @@ bool parseCoinURI(const QUrl &uri, SendCoinsRecipient *out) {
     rv.address = uri.path();
     rv.amount = 0;
 
-#if (QT_VERSION < 0x050000)
-    QList<QPair<QString, QString> > items = uri.queryItems();
-#else
     QUrlQuery uriQuery(uri);
     QList<QPair<QString, QString> > items = uriQuery.queryItems();
-#endif
 
     for (QList<QPair<QString, QString> >::iterator i = items.begin(); i != items.end(); i++)
     {
@@ -192,11 +184,7 @@ bool parseCoinURI(QString uri, SendCoinsRecipient *out) {
 
 QString HtmlEscape(const QString &str, bool fMultiLine) {
 
-#if (QT_VERSION < 0x050000)
-    QString escaped = Qt::escape(str);
-#else
     QString escaped = str.toHtmlEscaped();
-#endif
 
     if(fMultiLine)
     {
@@ -237,11 +225,7 @@ QString getSaveFileName(QWidget *parent, const QString &caption,
     QString myDir;
     if(dir.isEmpty()) {
         /* The default location is the home directory */
-#if (QT_VERSION < 0x050000)
-        myDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
         myDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
     } else myDir = dir;
     QString result = QFileDialog::getSaveFileName(parent, caption, myDir, filter, &selectedFilter);
 

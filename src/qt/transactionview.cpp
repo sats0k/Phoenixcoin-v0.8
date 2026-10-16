@@ -76,17 +76,11 @@ TransactionView::TransactionView(QWidget *parent) :
     hlayout->addWidget(typeWidget);
 
     addressWidget = new QLineEdit(this);
-#if QT_VERSION >= 0x040700
-    /* Do not move this to the XML file, Qt before 4.7 will choke on it */
     addressWidget->setPlaceholderText(tr("Enter address or label to search"));
-#endif
     hlayout->addWidget(addressWidget);
 
     amountWidget = new QLineEdit(this);
-#if QT_VERSION >= 0x040700
-    /* Do not move this to the XML file, Qt before 4.7 will choke on it */
     amountWidget->setPlaceholderText(tr("Min amount"));
-#endif
 #ifdef Q_OS_MAC
     amountWidget->setFixedWidth(97);
 #else
@@ -175,13 +169,8 @@ void TransactionView::setModel(WalletModel *model)
         transactionView->horizontalHeader()->resizeSection(TransactionTableModel::Status, 23);
         transactionView->horizontalHeader()->resizeSection(TransactionTableModel::Date, 120);
         transactionView->horizontalHeader()->resizeSection(TransactionTableModel::Type, 120);
-#if (QT_VERSION < 0x050000)
-        transactionView->horizontalHeader()->setResizeMode(TransactionTableModel::ToAddress,
-          QHeaderView::Stretch);
-#else
         transactionView->horizontalHeader()->setSectionResizeMode(TransactionTableModel::ToAddress,
           QHeaderView::Stretch);
-#endif
         transactionView->horizontalHeader()->resizeSection(TransactionTableModel::Amount, 100);
     }
 }

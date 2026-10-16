@@ -1,5 +1,5 @@
 /*
- * Qt4 GUI
+ * Qt GUI
  *
  * W.J. van der Laan 2011-2012
  * The Bitcoin Developers 2011-2012
@@ -29,13 +29,8 @@
 #include <QTimer>
 #include <QDragEnterEvent>
 
-#if (QT_VERSION < 0x050000)
-#include <QUrl>
-#include <QDesktopServices>
-#else
 #include <QMimeData>
 #include <QStandardPaths>
-#endif
 
 #include "util.h"
 
@@ -996,11 +991,7 @@ void GUI::cloneWallet() {
    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
    if(!ctx.isValid()) return;
 
-#if (QT_VERSION < 0x050000)
-    QString saveDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
     QString saveDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
 
     QString filename = QFileDialog::getSaveFileName(this, tr("Clone Wallet"),
       saveDir, tr("Wallet Data (*.dat)"));
@@ -1023,11 +1014,7 @@ void GUI::exportWallet() {
    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
    if(!ctx.isValid()) return;
 
-#if (QT_VERSION < 0x050000)
-    QString saveDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
     QString saveDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
 
     QString filename = QFileDialog::getSaveFileName(this, tr("Export Wallet Keys"),
       saveDir, tr("Wallet Keys (*.txt)"));
@@ -1050,11 +1037,7 @@ void GUI::importWallet() {
    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
    if(!ctx.isValid()) return;
 
-#if (QT_VERSION < 0x050000)
-    QString openDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
     QString openDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
 
     QString filename = QFileDialog::getOpenFileName(this, tr("Import Wallet Keys"),
       openDir, tr("Wallet Keys (*.txt)"));
@@ -1077,11 +1060,7 @@ void GUI::dumpHybridKeys() {
    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
    if(!ctx.isValid()) return;
 
-#if (QT_VERSION < 0x050000)
-    QString saveDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
     QString saveDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
 
     QString filename = QFileDialog::getSaveFileName(this, tr("Export Hybrid Keys"),
       saveDir, tr("Hybrid Keys (*.txt)"));
@@ -1107,11 +1086,7 @@ void GUI::importHybridKeys() {
    WalletModel::UnlockContext ctx(walletModel->requestUnlock());
    if(!ctx.isValid()) return;
 
-#if (QT_VERSION < 0x050000)
-    QString openDir = QDesktopServices::storageLocation(QDesktopServices::HomeLocation);
-#else
     QString openDir = QStandardPaths::writableLocation(QStandardPaths::HomeLocation);
-#endif
 
     QString filename = QFileDialog::getOpenFileName(this, tr("Import Hybrid Keys"),
       openDir, tr("Hybrid Keys (*.txt)"));

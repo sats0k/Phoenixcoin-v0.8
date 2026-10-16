@@ -74,12 +74,8 @@ void MacDockIconHandler::setIcon(const QIcon &icon) {
     else {
         QSize size = icon.actualSize(QSize(128, 128));
         QPixmap pixmap = icon.pixmap(size);
-#if (QT_VERSION < 0x050000)
-        CGImageRef cgImage = pixmap.toMacCGImageRef();
-#else
         QImage img = pixmap.toImage();
         CGImageRef cgImage = img.toCGImage();
-#endif
         CGContextRef imageContext = nil;
         NSRect imageRect = NSMakeRect(0.0, 0.0, 0.0, 0.0);
         imageRect.size = NSMakeSize(CGImageGetWidth(cgImage), CGImageGetHeight(cgImage));

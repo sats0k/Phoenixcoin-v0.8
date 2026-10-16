@@ -45,11 +45,7 @@ public:
         QVariant value = index.data(Qt::ForegroundRole);
         QColor foreground = option.palette.color(QPalette::Text);
 
-#if (QT_VERSION < 0x050000)
-        if(qVariantCanConvert<QColor>(value))
-#else
         if(value.canConvert<QColor>())
-#endif
           foreground = qvariant_cast<QColor>(value);
 
         painter->setPen(foreground);
