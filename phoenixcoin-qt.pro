@@ -17,6 +17,14 @@ contains(NATIVE, 1) {
     QMAKE_CXXFLAGS_RELEASE += -march=native -mtune=native
 }
 
+# Link-time optimisation + dead-code elimination (GCC/ELF only; mac relies on
+# -dead_strip, Windows/MinGW is left untouched).
+unix:!macx {
+    QMAKE_CFLAGS_RELEASE += -flto=auto -ffunction-sections -fdata-sections
+    QMAKE_CXXFLAGS_RELEASE += -flto=auto -ffunction-sections -fdata-sections
+    QMAKE_LFLAGS += -flto=auto -Wl,--gc-sections
+}
+
 greaterThan(QT_MAJOR_VERSION, 4): {
     QT += widgets
     message("Building with the Qt v5 support$$escape_expand(\\n)")

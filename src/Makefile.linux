@@ -12,7 +12,10 @@ LD := $(CXX)
 
 # Optimisation flags. Override NATIVE to disable native tuning, e.g. `make NATIVE=`.
 NATIVE ?= -march=native -mtune=native
-OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE) -pthread
+# Link-time optimisation with per-function/data sections and linker GC. Set
+# LTO= to disable, e.g. `make LTO=`.
+LTO ?= -flto=auto -ffunction-sections -fdata-sections
+OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE) -pthread $(LTO)
 
 # Warnings. The stringop-* false positives come from vendored json_spirit.
 WARN = -Wall -Wextra -Wformat -Wformat-security \
@@ -26,7 +29,7 @@ CWARN = -Wpedantic -Wmissing-prototypes
 override CFLAGS := $(OPT) $(WARN) $(CWARN) $(CFLAGS)
 override CXXFLAGS := $(OPT) $(WARN) $(CXXFLAGS)
 
-LDFLAGS = -Wl,-O2 -Wl,-s
+LDFLAGS = -Wl,-O2 -Wl,-s $(LTO) -Wl,--gc-sections -Wno-stringop-overflow -Wno-stringop-overread
 
 DEPSDIR = /usr/local
 
