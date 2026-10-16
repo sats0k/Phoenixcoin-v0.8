@@ -33,6 +33,7 @@
 #include <QString>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QVariant>
 
 #include "base58.h"
 
@@ -297,6 +298,32 @@ void CoinControl::clipboardLowOutput() {
 void CoinControl::clipboardChange() {
     GUIUtil::setClipboard(ui->labelCoinControlChange->text() \
       .left(ui->labelCoinControlChange->text().indexOf(" ")));
+}
+
+/* Compare numerically on the columns that expose a real value through
+ * Qt::UserRole (amount, confirmations) or Qt::UserRole + 1 (priority). This
+ * keeps the order correct for any magnitude, which the old approach of
+ * comparing space-padded strings did not once a value exceeded its pad width
+ * or overflowed int64. Everything else falls back to the default text sort. */
+bool CoinControlTreeWidgetItem::operator<(const QTreeWidgetItem &other) const
+{
+    const QTreeWidget *widget = treeWidget();
+    if(!widget)
+        return QTreeWidgetItem::operator<(other);
+
+    const int column = widget->sortColumn();
+
+    const QVariant lhs = data(column, Qt::UserRole);
+    const QVariant rhs = other.data(column, Qt::UserRole);
+    if(lhs.isValid() && rhs.isValid())
+        return lhs.toLongLong() < rhs.toLongLong();
+
+    const QVariant lp = data(column, Qt::UserRole + 1);
+    const QVariant rp = other.data(column, Qt::UserRole + 1);
+    if(lp.isValid() && rp.isValid())
+        return lp.toDouble() < rp.toDouble();
+
+    return QTreeWidgetItem::operator<(other);
 }
 
 /* Tree view: sort */
@@ -579,7 +606,7 @@ void CoinControl::updateView() {
     model->listCoins(mapCoins);
 
     BOOST_FOREACH(PAIRTYPE(QString, vector<COutput>) coins, mapCoins) {
-        QTreeWidgetItem *itemWalletAddress = new QTreeWidgetItem();
+        QTreeWidgetItem *itemWalletAddress = new CoinControlTreeWidgetItem();
         QString sWalletAddress = coins.first;
         QString sWalletLabel = "";
 
@@ -617,9 +644,9 @@ void CoinControl::updateView() {
 
             QTreeWidgetItem *itemOutput;
             if(treeMode) {
-                itemOutput = new QTreeWidgetItem(itemWalletAddress);
+                itemOutput = new CoinControlTreeWidgetItem(itemWalletAddress);
             } else {
-                itemOutput = new QTreeWidgetItem(ui->treeWidget);
+                itemOutput = new CoinControlTreeWidgetItem(ui->treeWidget);
             }
             itemOutput->setFlags(flgCheckbox);
             itemOutput->setCheckState(COLUMN_CHECKBOX,Qt::Unchecked);
@@ -659,12 +686,16 @@ void CoinControl::updateView() {
 
             itemOutput->setText(COLUMN_AMOUNT_INT64,
               strPad(QString::number(out.tx->vout[out.i].nValue), 15, " "));
+            itemOutput->setData(COLUMN_AMOUNT_INT64, Qt::UserRole,
+              QVariant((qlonglong)out.tx->vout[out.i].nValue));
 
             itemOutput->setText(COLUMN_DATE,
               QDateTime::fromTime_t(out.tx->GetTxTime()).toString("yy-MM-dd hh:mm"));
 
             itemOutput->setText(COLUMN_CONFIRMATIONS,
               strPad(QString::number(out.nDepth), 8, " "));
+            itemOutput->setData(COLUMN_CONFIRMATIONS, Qt::UserRole,
+              QVariant((qlonglong)out.nDepth));
 
             /* 78 = 2 * 34 + 10 */
             double dPriority = ((double)out.tx->vout[out.i].nValue /
@@ -675,6 +706,8 @@ void CoinControl::updateView() {
 
             itemOutput->setText(COLUMN_PRIORITY_INT64,
                strPad(QString::number((int64)dPriority), 20, " "));
+            itemOutput->setData(COLUMN_PRIORITY_INT64, Qt::UserRole + 1,
+              QVariant(dPriority));
 
             dPrioritySum += (double)out.tx->vout[out.i].nValue  * (out.nDepth + 1);
 
@@ -701,12 +734,16 @@ void CoinControl::updateView() {
 
             itemWalletAddress->setText(COLUMN_AMOUNT_INT64,
               strPad(QString::number(nSum), 15, " "));
+            itemWalletAddress->setData(COLUMN_AMOUNT_INT64, Qt::UserRole,
+              QVariant((qlonglong)nSum));
 
             itemWalletAddress->setText(COLUMN_PRIORITY,
               CoinControl::getPriorityLabel(dPrioritySum));
 
             itemWalletAddress->setText(COLUMN_PRIORITY_INT64,
               strPad(QString::number((int64)dPrioritySum), 20, " "));
+            itemWalletAddress->setData(COLUMN_PRIORITY_INT64, Qt::UserRole + 1,
+              QVariant(dPrioritySum));
         }
     }
 
