@@ -2,6 +2,7 @@
 // Unit tests for denial-of-service detection/prevention code
 //
 #include <algorithm>
+#include <iterator>
 
 #include <boost/assign/list_of.hpp> // for 'map_list_of()'
 #include <boost/date_time/posix_time/posix_time_types.hpp>
@@ -18,8 +19,8 @@
 // Tests this internal-to-main.cpp method:
 extern bool AddOrphanTx(const CDataStream& vMsg);
 extern unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans);
-extern std::map<uint256, CDataStream*> mapOrphanTransactions;
-extern std::map<uint256, std::map<uint256, CDataStream*> > mapOrphanTransactionsByPrev;
+extern std::unordered_map<uint256, CDataStream*, uint256Hasher> mapOrphanTransactions;
+extern std::unordered_map<uint256, std::unordered_map<uint256, CDataStream*, uint256Hasher>, uint256Hasher> mapOrphanTransactionsByPrev;
 
 // ComputeMinWork used to live in main.cpp (see Bitcoin v0.6.x). It was dropped
 // when the Phoenixcoin difficulty algorithm was reworked into its phased form.
@@ -163,10 +164,8 @@ BOOST_AUTO_TEST_CASE(DoS_checknbits)
 
 CTransaction RandomOrphan()
 {
-    std::map<uint256, CDataStream*>::iterator it;
-    it = mapOrphanTransactions.lower_bound(GetRandHash());
-    if (it == mapOrphanTransactions.end())
-        it = mapOrphanTransactions.begin();
+    auto it = mapOrphanTransactions.begin();
+    std::advance(it, GetRand(mapOrphanTransactions.size()));
     const CDataStream* pvMsg = it->second;
     CTransaction tx;
     CDataStream(*pvMsg) >> tx;

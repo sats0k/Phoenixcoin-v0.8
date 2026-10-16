@@ -6,6 +6,8 @@
 #include <string>
 #include <algorithm>
 #include <map>
+#include <unordered_map>
+#include <iterator>
 #include <utility>
 #include <list>
 #include <vector>
@@ -59,11 +61,11 @@ int64 nTimeBestReceived = 0;
 
 CMedianFilter<int> cPeerBlockCounts(5, 0); // Amount of blocks that other nodes claim to have
 
-map<uint256, CBlock*> mapOrphanBlocks;
+unordered_map<uint256, CBlock*, uint256Hasher> mapOrphanBlocks;
 multimap<uint256, CBlock*> mapOrphanBlocksByPrev;
 
-map<uint256, CDataStream*> mapOrphanTransactions;
-map<uint256, map<uint256, CDataStream*> > mapOrphanTransactionsByPrev;
+unordered_map<uint256, CDataStream*, uint256Hasher> mapOrphanTransactions;
+unordered_map<uint256, unordered_map<uint256, CDataStream*, uint256Hasher>, uint256Hasher> mapOrphanTransactionsByPrev;
 
 // Constant stuff for coinbase transactions we create:
 CScript COINBASE_FLAGS;
@@ -241,10 +243,8 @@ unsigned int LimitOrphanTxSize(unsigned int nMaxOrphans)
     while (mapOrphanTransactions.size() > nMaxOrphans)
     {
         // Evict a random orphan:
-        uint256 randomhash = GetRandHash();
-        map<uint256, CDataStream*>::iterator it = mapOrphanTransactions.lower_bound(randomhash);
-        if (it == mapOrphanTransactions.end())
-            it = mapOrphanTransactions.begin();
+        auto it = mapOrphanTransactions.begin();
+        std::advance(it, GetRand(mapOrphanTransactions.size()));
         EraseOrphanTx(it->first);
         ++nEvicted;
     }
@@ -750,7 +750,7 @@ void CTxMemPool::queryHashes(std::vector<uint256>& vtxid)
 
     LOCK(cs);
     vtxid.reserve(mapTx.size());
-    for (map<uint256, CTransaction>::iterator mi = mapTx.begin(); mi != mapTx.end(); ++mi)
+    for (auto mi = mapTx.begin(); mi != mapTx.end(); ++mi)
         vtxid.push_back((*mi).first);
 }
 
@@ -1344,7 +1344,7 @@ bool CTransaction::FetchInputs(CTxDB& txdb, const map<uint256, CTxIndex>& mapTes
             if (!(fBlock || fMiner))
             {
                 LOCK(mempool.cs);
-                map<uint256, CTransaction>::const_iterator itMempool = mempool.mapTx.find(prevout.hash);
+                auto itMempool = mempool.mapTx.find(prevout.hash);
                 if (itMempool != mempool.mapTx.end())
                 {
                     txPrev = itMempool->second;
@@ -3303,7 +3303,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             // The orphan transactions that depend on this one will be re-processed
             // below: pre-size the queues so they don't grow incrementally.
             unsigned int nDirectOrphans = 0;
-            map<uint256, map<uint256, CDataStream*> >::const_iterator miOrphans =
+            auto miOrphans =
                 mapOrphanTransactionsByPrev.find(inv.hash);
             if (miOrphans != mapOrphanTransactionsByPrev.end())
                 nDirectOrphans = miOrphans->second.size();
@@ -3316,7 +3316,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             for (unsigned int i = 0; i < vWorkQueue.size(); i++)
             {
                 uint256 hashPrev = vWorkQueue[i];
-                for (map<uint256, CDataStream*>::iterator mi = mapOrphanTransactionsByPrev[hashPrev].begin();
+                for (auto mi = mapOrphanTransactionsByPrev[hashPrev].begin();
                      mi != mapOrphanTransactionsByPrev[hashPrev].end();
                      ++mi)
                 {
@@ -3953,7 +3953,7 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
         // This vector will be sorted into a priority queue:
         vector<TxPriority> vecPriority;
         vecPriority.reserve(mempool.mapTx.size());
-        for (map<uint256, CTransaction>::iterator mi = mempool.mapTx.begin(); mi != mempool.mapTx.end(); ++mi)
+        for (auto mi = mempool.mapTx.begin(); mi != mempool.mapTx.end(); ++mi)
         {
             CTransaction& tx = (*mi).second;
             if (tx.IsCoinBase() || !tx.IsFinal())
@@ -3968,7 +3968,7 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
                 // Inputs that come from other memory-pool transactions can
                 // never be found in the chain database, so consult the pool
                 // first and skip the guaranteed-miss disk read for them.
-                map<uint256, CTransaction>::iterator miDep = mempool.mapTx.find(txin.prevout.hash);
+                auto miDep = mempool.mapTx.find(txin.prevout.hash);
                 if (miDep != mempool.mapTx.end())
                 {
                     // Has to wait for dependencies

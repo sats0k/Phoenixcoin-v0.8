@@ -117,14 +117,7 @@ extern CCriticalSection cs_main;
 
 // The block index is looked up on nearly every block/transaction path, so use
 // an O(1) hash map instead of the original O(log n) std::map.
-struct BlockHasher
-{
-    size_t operator()(const uint256& hash) const
-    {
-        return (size_t)(hash.GetLow64() ^ (hash.GetLow64(1) * 0x9e3779b97f4a7c15ULL));
-    }
-};
-typedef std::unordered_map<uint256, CBlockIndex*, BlockHasher> BlockMap;
+typedef std::unordered_map<uint256, CBlockIndex*, uint256Hasher> BlockMap;
 extern BlockMap mapBlockIndex;
 extern uint256 hashGenesisBlock;
 extern CBlockIndex* pindexGenesisBlock;
@@ -143,7 +136,7 @@ extern int64 nTimeBestReceived;
 extern CCriticalSection cs_setpwalletRegistered;
 extern std::set<CWallet*> setpwalletRegistered;
 extern unsigned char pchMessageStart[4];
-extern std::map<uint256, CBlock *> mapOrphanBlocks;
+extern std::unordered_map<uint256, CBlock*, uint256Hasher> mapOrphanBlocks;
 
 // Settings
 extern int64 nTransactionFee;
@@ -283,6 +276,16 @@ public:
 
     void print() const {
         printf("%s\n", ToString().c_str());
+    }
+};
+
+/** Hash functor for containers keyed by COutPoint (e.g. the mempool spend map). */
+struct COutPointHasher
+{
+    size_t operator()(const COutPoint& o) const
+    {
+        return (size_t)(o.hash.GetLow64() ^ (o.hash.GetLow64(1) * 0x9e3779b97f4a7c15ULL)
+                        ^ (o.n * 0x100000001b3ULL));
     }
 };
 
@@ -1563,8 +1566,8 @@ class CTxMemPool
 {
 public:
     mutable CCriticalSection cs;
-    std::map<uint256, CTransaction> mapTx;
-    std::map<COutPoint, CInPoint> mapNextTx;
+    std::unordered_map<uint256, CTransaction, uint256Hasher> mapTx;
+    std::unordered_map<COutPoint, CInPoint, COutPointHasher> mapNextTx;
 
     bool accept(CTxDB& txdb, CTransaction &tx,
                 bool fCheckInputs, bool* pfMissingInputs);

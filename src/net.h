@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <deque>
 #include <map>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #include <set>
@@ -204,7 +205,7 @@ protected:
 
 public:
     int64 nReleaseTime;
-    std::map<uint256, CRequestTracker> mapRequests;
+    std::unordered_map<uint256, CRequestTracker, uint256Hasher> mapRequests;
     CCriticalSection cs_mapRequests;
     uint nGetblocksAskTime;
     uint nGetblocksReceiveTime;

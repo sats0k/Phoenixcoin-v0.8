@@ -8,6 +8,7 @@
 
 #include <string>
 #include <vector>
+#include <cstddef>
 
 #include <limits.h>
 #include <stdio.h>
@@ -575,6 +576,15 @@ public:
             memcpy(pn, &vch[0], sizeof(pn));
         else
             *this = 0;
+    }
+};
+
+/** Hash functor for containers keyed by uint256 (std::unordered_map/set). */
+struct uint256Hasher
+{
+    size_t operator()(const uint256& h) const
+    {
+        return (size_t)(h.GetLow64() ^ (h.GetLow64(1) * 0x9e3779b97f4a7c15ULL));
     }
 };
 
