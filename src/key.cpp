@@ -470,9 +470,8 @@ bool CKey::SetCompactSignature(const uint256& hash,
 
 bool CKey::Verify(uint256 hash, const std::vector<unsigned char>& sig) const {
     secp256k1_pubkey pub;
-    std::vector<unsigned char> pk = vchPubKey.Raw();
-    if (!secp256k1_ec_pubkey_parse(g_secp256k1_verify_ctx, &pub, pk.data(),
-                                   pk.size()))
+    if (!secp256k1_ec_pubkey_parse(g_secp256k1_verify_ctx, &pub,
+                                   vchPubKey.begin(), vchPubKey.size()))
         return false;
 
     secp256k1_ecdsa_signature signature;

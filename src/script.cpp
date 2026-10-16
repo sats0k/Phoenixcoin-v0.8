@@ -6,9 +6,11 @@
 #include <map>
 #include <utility>
 #include <set>
+#include <unordered_set>
 
 #include <boost/foreach.hpp>
 #include <boost/tuple/tuple.hpp>
+#include <boost/functional/hash.hpp>
 
 #include <openssl/evp.h>
 
@@ -1324,7 +1326,19 @@ class CSignatureCache {
   private:
     // sigdata_type is (signature hash, signature, public key):
     typedef boost::tuple<uint256, std::vector<unsigned char>, std::vector<unsigned char> > sigdata_type;
-    std::set< sigdata_type> setValid;
+
+    // Hashing the full tuple keeps the exact (sighash, sig, pubkey) key
+    // semantics of the original std::set while giving O(1) average lookups.
+    struct Hasher {
+        size_t operator()(const sigdata_type& v) const {
+            size_t seed = boost::hash_range(boost::get<0>(v).begin(), boost::get<0>(v).end());
+            boost::hash_combine(seed, boost::get<1>(v));
+            boost::hash_combine(seed, boost::get<2>(v));
+            return seed;
+        }
+    };
+
+    std::unordered_set<sigdata_type, Hasher> setValid;
     CCriticalSection cs_sigcache;
 
   public:
@@ -1332,10 +1346,7 @@ class CSignatureCache {
     Get(uint256 hash, const std::vector<unsigned char>& vchSig, const std::vector<unsigned char>& pubKey) {
         LOCK(cs_sigcache);
         sigdata_type k(hash, vchSig, pubKey);
-        std::set<sigdata_type>::iterator mi = setValid.find(k);
-        if(mi != setValid.end())
-            return(true);
-        return(false);
+        return setValid.find(k) != setValid.end();
     }
 
     void Set(uint256 hash, const std::vector<unsigned char>& vchSig, const std::vector<unsigned char>& pubKey) {
@@ -1347,17 +1358,11 @@ class CSignatureCache {
         if(nMaxCacheSize <= 0) return;
         LOCK(cs_sigcache);
         while(static_cast<int64>(setValid.size()) > nMaxCacheSize) {
-            // Evict a random entry. Random because that helps
-            // foil would-be DoS attackers who might try to pre-generate
-            // and re-use a set of valid signatures just-slightly-greater
-            // than our cache size.
-            uint256 randomHash = GetRandHash();
-            std::vector<unsigned char> unused;
-            std::set<sigdata_type>::iterator it =
-                setValid.lower_bound(sigdata_type(randomHash, unused, unused));
-            if(it == setValid.end())
-                it = setValid.begin();
-            setValid.erase(*it);
+            // Evict an arbitrary entry. Eviction is unbucketed and thus
+            // effectively random, which helps foil would-be DoS attackers who
+            // might try to pre-generate and re-use a set of valid signatures
+            // just-slightly-greater than our cache size.
+            setValid.erase(setValid.begin());
         }
         sigdata_type k(hash, vchSig, pubKey);
         setValid.insert(k);

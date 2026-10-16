@@ -2319,7 +2319,7 @@ void CWallet::GetKeyBirthTimes(std::map<CKeyID, int64> &mapKeyBirth) const {
       it != mapWallet.end(); it++) {
         /* Iterate over all wallet transactions */
         const CWalletTx &wtx = (*it).second;
-        std::map<uint256, CBlockIndex *>::const_iterator blit = mapBlockIndex.find(wtx.hashBlock);
+        BlockMap::const_iterator blit = mapBlockIndex.find(wtx.hashBlock);
         if((blit != mapBlockIndex.end()) && (blit->second->IsInMainChain())) {
             /* Those already in blocks */
             int nHeight = blit->second->nHeight;

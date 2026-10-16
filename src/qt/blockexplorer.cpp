@@ -190,7 +190,7 @@ void BlockExplorer::updateExplorer(bool block) {
             return;
         }
 
-        map<uint256, CBlockIndex *>::iterator mi = mapBlockIndex.find(hashBlock);
+        BlockMap::iterator mi = mapBlockIndex.find(hashBlock);
         if(mi != mapBlockIndex.end() && (*mi).second) {
              CBlockIndex *pindex = (*mi).second;
              if(pindex->IsInMainChain()) nHeight = pindex->nHeight;

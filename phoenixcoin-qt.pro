@@ -8,6 +8,15 @@ CONFIG += thread
 QMAKE_CFLAGS += -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT
 QT += core gui network
 
+# Performance: force optimised release flags (asserts compiled out, -O3).
+QMAKE_CFLAGS_RELEASE += -O3 -DNDEBUG
+QMAKE_CXXFLAGS_RELEASE += -O3 -DNDEBUG
+# Enable native CPU tuning (SIMD, BMI, etc.) with: qmake NATIVE=1
+contains(NATIVE, 1) {
+    QMAKE_CFLAGS_RELEASE += -march=native -mtune=native
+    QMAKE_CXXFLAGS_RELEASE += -march=native -mtune=native
+}
+
 greaterThan(QT_MAJOR_VERSION, 4): {
     QT += widgets
     message("Building with the Qt v5 support$$escape_expand(\\n)")
@@ -149,6 +158,9 @@ contains(NEED_QT_PLUGINS, 1) {
 }
 
 QMAKE_CXXFLAGS_WARN_ON = -fdiagnostics-show-option -Wall -Wextra -Wformat -Wformat-security
+# GCC >= 13 false positive in vendored json_spirit at -O3 (range hint is in an
+# assert that is compiled out under -DNDEBUG).
+QMAKE_CXXFLAGS += -Wno-stringop-overflow
 
 # Input
 DEPENDPATH += src src/json src/qt

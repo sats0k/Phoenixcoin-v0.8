@@ -10,12 +10,14 @@ CC = gcc
 CXX = g++
 LD := $(CXX)
 
-# Optimisation flags
-OPT = -pipe -O3 -fomit-frame-pointer -fno-stack-protector -pthread
+# Optimisation flags. Override NATIVE to disable native tuning, e.g. `make NATIVE=`.
+NATIVE ?= -march=native -mtune=native
+OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE) -pthread
 
-# Warnings
+# Warnings. The stringop-* false positives come from vendored json_spirit.
 WARN = -Wall -Wextra -Wformat -Wformat-security \
--Wno-stringop-overread
+-Wno-stringop-overread \
+-Wno-stringop-overflow
 
 # Warnings C
 CWARN = -Wpedantic -Wmissing-prototypes

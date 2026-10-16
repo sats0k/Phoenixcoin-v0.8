@@ -13,6 +13,7 @@
 #include "serialize.h"
 #include "net.h"
 #include "util.h"
+#include "main.h" /* for the BlockMap typedef used by GetLastCheckpoint */
 
 /* Shouldn't be higher than the default number of confirmations for regular transactions
  * to avoid double spends and other abuse;
@@ -51,7 +52,7 @@ namespace Checkpoints {
     int GetTotalBlocksEstimate();
 
     /* Returns the last CBlockIndex * in mapBlockIndex that is a checkpoint */
-    CBlockIndex *GetLastCheckpoint(const std::map<uint256, CBlockIndex *> &mapBlockIndex);
+    CBlockIndex *GetLastCheckpoint(const BlockMap &mapBlockIndex);
 
     extern uint256 hashSyncCheckpoint;
     extern CSyncCheckpoint checkpointMessage;
