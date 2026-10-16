@@ -10,12 +10,13 @@ CC = gcc
 CXX = g++
 LD := $(CXX)
 
-# Optimisation flags. Override NATIVE to disable native tuning, e.g. `make NATIVE=`.
-NATIVE ?= -march=native -mtune=native
+# Optimisation flags. Native CPU tuning (SIMD, BMI, ...) is opt-in so release
+# builds stay portable across machines: enable it with `make NATIVE=1`.
+NATIVE_FLAGS = $(if $(filter 1,$(NATIVE)),-march=native -mtune=native,)
 # Link-time optimisation with per-function/data sections and linker GC. Set
 # LTO= to disable, e.g. `make LTO=`.
 LTO ?= -flto=auto -ffunction-sections -fdata-sections
-OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE) -pthread $(LTO)
+OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE_FLAGS) -pthread $(LTO)
 
 # Warnings. The stringop-* false positives come from vendored json_spirit.
 WARN = -Wall -Wextra -Wformat -Wformat-security \
