@@ -13,6 +13,7 @@
 #include <vector>
 #include <set>
 #include <limits>
+#include <tuple>
 
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/filesystem.hpp>
@@ -3856,7 +3857,7 @@ uint64 nLastBlockSize = 0;
 
 // We want to sort transactions by priority and fee, so:
 // (priority, feePerKb, tx, serialized size, value out)
-typedef boost::tuple<double, double, CTransaction*, unsigned int, int64> TxPriority;
+typedef std::tuple<double, double, CTransaction*, unsigned int, int64> TxPriority;
 class TxPriorityCompare
 {
     bool byFee;
@@ -3866,15 +3867,15 @@ public:
     {
         if (byFee)
         {
-            if (a.get<1>() == b.get<1>())
-                return a.get<0>() < b.get<0>();
-            return a.get<1>() < b.get<1>();
+            if (std::get<1>(a) == std::get<1>(b))
+                return std::get<0>(a) < std::get<0>(b);
+            return std::get<1>(a) < std::get<1>(b);
         }
         else
         {
-            if (a.get<0>() == b.get<0>())
-                return a.get<1>() < b.get<1>();
-            return a.get<0>() < b.get<0>();
+            if (std::get<0>(a) == std::get<0>(b))
+                return std::get<1>(a) < std::get<1>(b);
+            return std::get<0>(a) < std::get<0>(b);
         }
     }
 };
@@ -4045,11 +4046,11 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
         while (!vecPriority.empty())
         {
             // Take highest priority transaction off the priority queue:
-            double dPriority = vecPriority.front().get<0>();
-            double dFeePerKb = vecPriority.front().get<1>();
-            CTransaction& tx = *(vecPriority.front().get<2>());
-            unsigned int nTxSize = vecPriority.front().get<3>();
-            int64 nValueOut = vecPriority.front().get<4>();
+            double dPriority = std::get<0>(vecPriority.front());
+            double dFeePerKb = std::get<1>(vecPriority.front());
+            CTransaction& tx = *(std::get<2>(vecPriority.front()));
+            unsigned int nTxSize = std::get<3>(vecPriority.front());
+            int64 nValueOut = std::get<4>(vecPriority.front());
 
             std::pop_heap(vecPriority.begin(), vecPriority.end(), comparer);
             vecPriority.pop_back();

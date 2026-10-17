@@ -8,9 +8,9 @@
 #include <set>
 #include <iterator>
 #include <unordered_set>
+#include <tuple>
 
 #include <boost/foreach.hpp>
-#include <boost/tuple/tuple.hpp>
 #include <boost/functional/hash.hpp>
 
 #include <openssl/evp.h>
@@ -1326,15 +1326,15 @@ uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo,
 class CSignatureCache {
   private:
     // sigdata_type is (signature hash, signature, public key):
-    typedef boost::tuple<uint256, std::vector<unsigned char>, std::vector<unsigned char> > sigdata_type;
+    typedef std::tuple<uint256, std::vector<unsigned char>, std::vector<unsigned char> > sigdata_type;
 
     // Hashing the full tuple keeps the exact (sighash, sig, pubkey) key
     // semantics of the original std::set while giving O(1) average lookups.
     struct Hasher {
         size_t operator()(const sigdata_type& v) const {
-            size_t seed = boost::hash_range(boost::get<0>(v).begin(), boost::get<0>(v).end());
-            boost::hash_combine(seed, boost::get<1>(v));
-            boost::hash_combine(seed, boost::get<2>(v));
+            size_t seed = boost::hash_range(std::get<0>(v).begin(), std::get<0>(v).end());
+            boost::hash_combine(seed, std::get<1>(v));
+            boost::hash_combine(seed, std::get<2>(v));
             return seed;
         }
     };

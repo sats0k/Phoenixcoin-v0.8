@@ -4,7 +4,6 @@
 #include <boost/assign/std/vector.hpp>
 #include <boost/test/unit_test.hpp>
 #include <boost/foreach.hpp>
-#include <boost/tuple/tuple.hpp>
 
 #include <openssl/ec.h>
 #include <openssl/err.h>
