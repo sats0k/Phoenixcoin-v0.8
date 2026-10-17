@@ -16,7 +16,10 @@ NATIVE_FLAGS = $(if $(filter 1,$(NATIVE)),-march=native -mtune=native,)
 # Link-time optimisation with per-function/data sections and linker GC. Set
 # LTO= to disable, e.g. `make LTO=`.
 LTO ?= -flto=auto -ffunction-sections -fdata-sections
-OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fno-stack-protector $(NATIVE_FLAGS) -pthread $(LTO)
+# Hardening: stack protector and _FORTIFY_SOURCE (needs -O, which OPT has).
+# C++ standard is pinned explicitly rather than relying on the compiler default.
+CXXSTD = -std=gnu++20
+OPT = -pipe -O3 -DNDEBUG -fomit-frame-pointer -fstack-protector-strong -D_FORTIFY_SOURCE=2 $(NATIVE_FLAGS) -pthread $(LTO)
 
 # Warnings. The stringop-* false positives come from vendored json_spirit.
 WARN = -Wall -Wextra -Wformat -Wformat-security \
@@ -28,7 +31,7 @@ CWARN = -Wpedantic -Wmissing-prototypes
 
 # Additionals and overrides
 override CFLAGS := $(OPT) $(WARN) $(CWARN) $(CFLAGS)
-override CXXFLAGS := $(OPT) $(WARN) $(CXXFLAGS)
+override CXXFLAGS := $(OPT) $(WARN) $(CXXSTD) $(CXXFLAGS)
 
 LDFLAGS = -Wl,-O2 -Wl,-s $(LTO) -Wl,--gc-sections -Wno-stringop-overflow -Wno-stringop-overread
 

@@ -11,6 +11,12 @@ QT += core gui network
 # Performance: force optimised release flags (asserts compiled out, -O3).
 QMAKE_CFLAGS_RELEASE += -O3 -DNDEBUG
 QMAKE_CXXFLAGS_RELEASE += -O3 -DNDEBUG
+# Hardening: stack protector and _FORTIFY_SOURCE (needs optimisation).
+QMAKE_CFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=2
+QMAKE_CXXFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=2
+# Pin the C++ standard (must match CMakeLists.txt and src/Makefile.linux) so the
+# build does not depend on the compiler's default -std.
+QMAKE_CXXFLAGS += -std=gnu++20
 # Enable native CPU tuning (SIMD, BMI, etc.) with: qmake NATIVE=1
 contains(NATIVE, 1) {
     QMAKE_CFLAGS_RELEASE += -march=native -mtune=native
