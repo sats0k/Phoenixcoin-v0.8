@@ -16,8 +16,8 @@
 #include <tuple>
 
 #include <boost/algorithm/string/replace.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <filesystem>
+#include <fstream>
 
 #include "init.h"
 #include "alert.h"
@@ -2350,7 +2350,7 @@ bool ProcessBlock(CNode *pfrom, CBlock *pblock) {
 
 
 bool CheckDiskSpace(uint64 nAdditionalBytes) {
-    uint64 nFreeBytesAvailable = boost::filesystem::space(GetDataDir()).available;
+    uint64 nFreeBytesAvailable = std::filesystem::space(GetDataDir()).available;
 
     // Check for nMinDiskSpace bytes (currently 50MB)
     if (nFreeBytesAvailable < nMinDiskSpace + nAdditionalBytes)
@@ -2367,7 +2367,7 @@ bool CheckDiskSpace(uint64 nAdditionalBytes) {
     return true;
 }
 
-static boost::filesystem::path BlockFilePath(unsigned int nFile) {
+static std::filesystem::path BlockFilePath(unsigned int nFile) {
     string strBlockFn = strprintf("blk%04u.dat", nFile);
     return GetDataDir() / strBlockFn;
 }

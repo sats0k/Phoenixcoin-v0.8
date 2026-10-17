@@ -7,7 +7,7 @@
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/replace.hpp>
 #include <boost/algorithm/string/split.hpp>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <boost/foreach.hpp>
 #include <boost/preprocessor/stringize.hpp>
 
@@ -85,7 +85,7 @@ ParseScript(string s)
 Array
 read_json(const std::string& filename)
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
     fs::path testFile = fs::current_path() / "test" / "data" / filename;
 
 #ifdef TEST_DATA_DIR

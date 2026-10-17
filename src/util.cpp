@@ -9,8 +9,8 @@
 #include <stdarg.h>
 
 #include <boost/algorithm/string/join.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <filesystem>
+#include <fstream>
 #include <boost/foreach.hpp>
 #include <boost/program_options/detail/config_file.hpp>
 #include <boost/program_options/parsers.hpp>
@@ -164,7 +164,7 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
         static FILE *fileout = NULL;
 
         if(!fileout) {
-            boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
+            std::filesystem::path pathDebug = GetDataDir() / "debug.log";
             fileout = fopen(pathDebug.string().c_str(), "a");
             if(fileout) setbuf(fileout, NULL); // unbuffered
         }
@@ -183,7 +183,7 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
             /* Reopen the log file if requested */
             if(fReopenDebugLog) {
                 fReopenDebugLog = false;
-                boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
+                std::filesystem::path pathDebug = GetDataDir() / "debug.log";
                 if(freopen(pathDebug.string().c_str(),"a",fileout))
                   setbuf(fileout, NULL); // unbuffered
             }
@@ -924,13 +924,13 @@ void PrintExceptionContinue(std::exception* pex, const char* pszThread)
     strMiscWarning = message;
 }
 
-boost::filesystem::path GetDefaultDataDir() {
-    namespace fs = boost::filesystem;
+std::filesystem::path GetDefaultDataDir() {
+    namespace fs = std::filesystem;
     fs::path path;
 
 #ifdef WINDOWS
     /* Windows: current directory \ data for livenet */
-    path = boost::filesystem::current_path() / "data";
+    path = std::filesystem::current_path() / "data";
 #else
     /* Linux, Mac OS X, *BSD and so on: ~/.phoenixcoin */
     char *pszHome = getenv("HOME");
@@ -949,9 +949,9 @@ boost::filesystem::path GetDefaultDataDir() {
     return(path);
 }
 
-const boost::filesystem::path &GetDataDir(bool fNetSpecific)
+const std::filesystem::path &GetDataDir(bool fNetSpecific)
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     static fs::path pathCached[2];
     static CCriticalSection csPathCached;
@@ -967,7 +967,7 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     LOCK(csPathCached);
 
     if (mapArgs.count("-datadir")) {
-        path = fs::system_complete(mapArgs["-datadir"]);
+        path = fs::absolute(mapArgs["-datadir"]);
         if(!fs::is_directory(path)) {
             path.clear();
             return(path);
@@ -985,8 +985,8 @@ const boost::filesystem::path &GetDataDir(bool fNetSpecific)
     return path;
 }
 
-boost::filesystem::path GetConfigFile() {
-    namespace fs = boost::filesystem;
+std::filesystem::path GetConfigFile() {
+    namespace fs = std::filesystem;
 
     fs::path pathConfigFile;
     if(mapArgs.count("-conf")) pathConfigFile = fs::path(mapArgs["-conf"]);
@@ -1003,7 +1003,7 @@ boost::filesystem::path GetConfigFile() {
 void ReadConfigFile(map<string, string>& mapSettingsRet,
                     map<string, vector<string> >& mapMultiSettingsRet)
 {
-    boost::filesystem::ifstream streamConfig(GetConfigFile());
+    std::ifstream streamConfig(GetConfigFile());
 
     /* Absence of phoenixcoin.conf is acceptable */
     if(!streamConfig.good()) return;
@@ -1025,14 +1025,14 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
     }
 }
 
-boost::filesystem::path GetPidFile() {
-    boost::filesystem::path pathPidFile(GetArg("-pid", "phoenixcoind.pid"));
+std::filesystem::path GetPidFile() {
+    std::filesystem::path pathPidFile(GetArg("-pid", "phoenixcoind.pid"));
     if(!pathPidFile.is_absolute()) pathPidFile = GetDataDir() / pathPidFile;
     return(pathPidFile);
 }
 
 #ifndef WINDOWS
-void CreatePidFile(const boost::filesystem::path &path, pid_t pid)
+void CreatePidFile(const std::filesystem::path &path, pid_t pid)
 {
     FILE* file = fopen(path.string().c_str(), "w");
     if (file)
@@ -1043,7 +1043,7 @@ void CreatePidFile(const boost::filesystem::path &path, pid_t pid)
 }
 #endif
 
-bool RenameOver(boost::filesystem::path src, boost::filesystem::path dest)
+bool RenameOver(std::filesystem::path src, std::filesystem::path dest)
 {
 #ifdef WINDOWS
     return MoveFileExA(src.string().c_str(), dest.string().c_str(),
@@ -1092,7 +1092,7 @@ int GetFilesize(FILE* file)
 }
 
 void ShrinkDebugFile() {
-    boost::filesystem::path pathLog = GetDataDir() / "debug.log";
+    std::filesystem::path pathLog = GetDataDir() / "debug.log";
     FILE *file = fopen(pathLog.string().c_str(), "r");
     /* If the file size exceeds 10Mb, crop it to the last 100Kb */
     if(file && (GetFilesize(file) > 10 * 1024 * 1024)) {

@@ -4,8 +4,8 @@
 
 #include <string>
 
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <filesystem>
+#include <fstream>
 
 #include <openssl/err.h>      // ERR_get_error, ERR_error_string_n
 
@@ -245,10 +245,10 @@ Value importwallet(const Array &params, bool fHelp) {
 
     EnsureWalletIsUnlocked();
 
-    boost::filesystem::ifstream file;
-    boost::filesystem::path pathImportFile = params[0].get_str().c_str();
+    std::ifstream file;
+    std::filesystem::path pathImportFile = params[0].get_str().c_str();
     if(!pathImportFile.is_absolute()) pathImportFile = GetDataDir(true) / pathImportFile;
-    if(!boost::filesystem::exists(pathImportFile))
+    if(!std::filesystem::exists(pathImportFile))
       throw(JSONRPCError(RPC_INVALID_PARAMETER, "The file with wallet keys doesn't exist"));
     file.open(pathImportFile, std::ios_base::in);
     if(!file.good())
@@ -298,10 +298,10 @@ Value dumpwallet(const Array &params, bool fHelp) {
 
     EnsureWalletIsUnlocked();
 
-    boost::filesystem::ofstream file;
-    boost::filesystem::path pathDumpFile = params[0].get_str().c_str();
+    std::ofstream file;
+    std::filesystem::path pathDumpFile = params[0].get_str().c_str();
     if(!pathDumpFile.is_absolute()) pathDumpFile = GetDataDir(true) / pathDumpFile;
-    if(boost::filesystem::exists(pathDumpFile))
+    if(std::filesystem::exists(pathDumpFile))
       throw(JSONRPCError(RPC_INVALID_PARAMETER, "The file for wallet keys exists already"));
     file.open(pathDumpFile, std::ios_base::out);
     if(!file.good())

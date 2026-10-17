@@ -61,7 +61,6 @@ $(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
 
 ifdef DYNAMIC
 LIBS += \
-    -l:libboost_filesystem.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_program_options.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_thread.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_chrono.so$(BOOST_LIB_SUFFIX) \
@@ -72,7 +71,6 @@ TESTDEFS += -DBOOST_TEST_DYN_LINK
 TESTLIBS += -l:libboost_unit_test_framework.so$(BOOST_LIB_SUFFIX)
 else ifdef STATIC
 LIBS += \
-    -l:libboost_filesystem$(BOOST_LIB_SUFFIX).a \
     -l:libboost_program_options$(BOOST_LIB_SUFFIX).a \
     -l:libboost_thread$(BOOST_LIB_SUFFIX).a \
     -l:libboost_chrono$(BOOST_LIB_SUFFIX).a \
@@ -82,7 +80,6 @@ LIBS += \
 TESTLIBS += -l:libboost_unit_test_framework$(BOOST_LIB_SUFFIX).a
 else
 LIBS += \
-    -lboost_filesystem$(BOOST_LIB_SUFFIX) \
     -lboost_program_options$(BOOST_LIB_SUFFIX) \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \

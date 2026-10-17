@@ -10,7 +10,7 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/filesystem.hpp>
+#include <filesystem>
 #include <boost/variant/get.hpp>
 #include <boost/version.hpp>
 
@@ -597,16 +597,16 @@ bool BackupWallet(const CWallet& wallet, const string& strDest)
                 bitdb.mapFileUseCount.erase(wallet.strWalletFile);
 
                 // Copy wallet.dat
-                boost::filesystem::path pathSrc = GetDataDir() / wallet.strWalletFile;
-                boost::filesystem::path pathDest(strDest);
-                if(boost::filesystem::is_directory(pathDest)) pathDest /= wallet.strWalletFile;
+                std::filesystem::path pathSrc = GetDataDir() / wallet.strWalletFile;
+                std::filesystem::path pathDest(strDest);
+                if(std::filesystem::is_directory(pathDest)) pathDest /= wallet.strWalletFile;
 
                 try {
-                    boost::filesystem::copy_file(pathSrc, pathDest,
-                     boost::filesystem::copy_options::overwrite_existing);
+                    std::filesystem::copy_file(pathSrc, pathDest,
+                     std::filesystem::copy_options::overwrite_existing);
                     printf("copied wallet.dat to %s\n", pathDest.string().c_str());
                     return true;
-                } catch(const boost::filesystem::filesystem_error &e) {
+                } catch(const std::filesystem::filesystem_error &e) {
                     printf("error copying wallet.dat to %s - %s\n", pathDest.string().c_str(), e.what());
                     return false;
                 }

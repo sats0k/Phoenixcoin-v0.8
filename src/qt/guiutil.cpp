@@ -1,5 +1,5 @@
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <filesystem>
+#include <fstream>
 
 #include <QDateTime>
 #include <QDoubleValidator>
@@ -288,10 +288,10 @@ bool isObscured(QWidget *w)
 
 void openDebugLogfile()
 {
-    boost::filesystem::path pathDebug = GetDataDir() / "debug.log";
+    std::filesystem::path pathDebug = GetDataDir() / "debug.log";
 
     /* Open debug.log with the associated application */
-    if (boost::filesystem::exists(pathDebug))
+    if (std::filesystem::exists(pathDebug))
         QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdString(pathDebug.string())));
 }
 
@@ -320,21 +320,21 @@ bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt)
 }
 
 #ifdef WINDOWS
-boost::filesystem::path static StartupShortcutPath() {
+std::filesystem::path static StartupShortcutPath() {
     TCHAR szPath[MAX_PATH];
     SHGetFolderPath(NULL, CSIDL_STARTUP, NULL, 0, szPath);
     PathAppend(szPath, TEXT("Phoenixcoin.lnk"));
-    return((boost::filesystem::path)szPath);
+    return((std::filesystem::path)szPath);
 }
 
 bool GetStartOnSystemStartup() {
-    return(boost::filesystem::exists(StartupShortcutPath()));
+    return(std::filesystem::exists(StartupShortcutPath()));
 }
 
 bool SetStartOnSystemStartup(bool fAutoStart)
 {
     // If the shortcut exists already, remove it for updating
-    boost::filesystem::remove(StartupShortcutPath());
+    std::filesystem::remove(StartupShortcutPath());
 
     if (fAutoStart)
     {
@@ -391,9 +391,9 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 // Follow the Desktop Application Autostart Spec:
 //  http://standards.freedesktop.org/autostart-spec/autostart-spec-latest.html
 
-boost::filesystem::path static GetAutostartDir()
+std::filesystem::path static GetAutostartDir()
 {
-    namespace fs = boost::filesystem;
+    namespace fs = std::filesystem;
 
     char* pszConfigHome = getenv("XDG_CONFIG_HOME");
     if (pszConfigHome) return fs::path(pszConfigHome) / "autostart";
@@ -402,13 +402,13 @@ boost::filesystem::path static GetAutostartDir()
     return fs::path();
 }
 
-boost::filesystem::path static GetAutostartFilePath() {
+std::filesystem::path static GetAutostartFilePath() {
     return(GetAutostartDir() / "phoenixcoin.desktop");
 }
 
 bool GetStartOnSystemStartup()
 {
-    boost::filesystem::ifstream optionFile(GetAutostartFilePath());
+    std::ifstream optionFile(GetAutostartFilePath());
     if (!optionFile.good())
         return false;
     // Scan through file for "Hidden=true":
@@ -428,7 +428,7 @@ bool GetStartOnSystemStartup()
 bool SetStartOnSystemStartup(bool fAutoStart)
 {
     if (!fAutoStart)
-        boost::filesystem::remove(GetAutostartFilePath());
+        std::filesystem::remove(GetAutostartFilePath());
     else
     {
         char pszExePath[MAX_PATH+1];
@@ -436,9 +436,9 @@ bool SetStartOnSystemStartup(bool fAutoStart)
         if (readlink("/proc/self/exe", pszExePath, sizeof(pszExePath)-1) == -1)
             return false;
 
-        boost::filesystem::create_directories(GetAutostartDir());
+        std::filesystem::create_directories(GetAutostartDir());
 
-        boost::filesystem::ofstream optionFile(GetAutostartFilePath(), std::ios_base::out|std::ios_base::trunc);
+        std::ofstream optionFile(GetAutostartFilePath(), std::ios_base::out|std::ios_base::trunc);
         if (!optionFile.good())
             return false;
         /* Write a phoenixcoin.desktop file to the autostart directory */

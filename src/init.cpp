@@ -12,8 +12,8 @@
 #endif
 
 
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
+#include <filesystem>
+#include <fstream>
 #include <boost/interprocess/sync/file_lock.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 
@@ -91,7 +91,7 @@ void Shutdown(void */*parg*/) {
         bitdb.Flush(false);
         StopNode();
         bitdb.Flush(true);
-        boost::filesystem::remove(GetPidFile());
+        std::filesystem::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
         NewThread(ExitTimeout, NULL);
@@ -138,7 +138,7 @@ bool AppInit(int argc, char* argv[])
         /* If Qt is used, parameters/phoenixcoin.conf are parsed
          * in qt/phoenixcoin.cpp's main() */
         ParseParameters(argc, argv);
-        if (!boost::filesystem::is_directory(GetDataDir(false)))
+        if (!std::filesystem::is_directory(GetDataDir(false)))
         {
             fprintf(stderr, "Error: Specified directory does not exist\n");
             Shutdown(NULL);
@@ -481,7 +481,7 @@ bool AppInit2()
     std::string strDataDir = GetDataDir().string();
 
     /* Make sure only a single Phoenixcoin process is using the data directory */
-    boost::filesystem::path pathLockFile = GetDataDir() / ".lock";
+    std::filesystem::path pathLockFile = GetDataDir() / ".lock";
     FILE* file = fopen(pathLockFile.string().c_str(), "a"); // empty lock file; created if it doesn't exist.
     if (file) fclose(file);
     static boost::interprocess::file_lock lock(pathLockFile.string().c_str());
@@ -553,7 +553,7 @@ bool AppInit2()
             return false;
     }
 
-    if(boost::filesystem::exists(GetDataDir() / "wallet.dat")) {
+    if(std::filesystem::exists(GetDataDir() / "wallet.dat")) {
         CDBEnv::VerifyResult r = bitdb.Verify("wallet.dat", CWalletDB::Recover);
         if (r == CDBEnv::RECOVER_OK)
         {
@@ -841,13 +841,13 @@ bool AppInit2()
         }
     }
 
-    boost::filesystem::path pathBootstrap = GetDataDir() / "bootstrap.dat";
-    if(boost::filesystem::exists(pathBootstrap)) {
+    std::filesystem::path pathBootstrap = GetDataDir() / "bootstrap.dat";
+    if(std::filesystem::exists(pathBootstrap)) {
         uiInterface.InitMessage(_("Importing bootstrap blockchain data file."));
 
         FILE *file = fopen(pathBootstrap.string().c_str(), "rb");
         if (file) {
-            boost::filesystem::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
+            std::filesystem::path pathBootstrapOld = GetDataDir() / "bootstrap.dat.old";
             LoadExternalBlockFile(file);
             RenameOver(pathBootstrap, pathBootstrapOld);
         }

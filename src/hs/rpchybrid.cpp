@@ -3,6 +3,7 @@
 // file LICENCE or http://opensource.org/license/mit
 
 #include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include <iterator>
 #include <map>
@@ -12,8 +13,6 @@
 
 #include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/filesystem.hpp>
-#include <boost/filesystem/fstream.hpp>
 #include <boost/variant/get.hpp>
 
 #include <openssl/crypto.h>
@@ -468,7 +467,7 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
     // clobber a previous good file. Enforced here, in the shared helper, so
     // every caller (RPC and Qt GUI alike) gets the same guarantee; there is no
     // check/TOCTOU split between an RPC pre-check and the actual write.
-    if (boost::filesystem::exists(boost::filesystem::path(strDst))) {
+    if (std::filesystem::exists(std::filesystem::path(strDst))) {
         strError = "The file for wallet keys exists already";
         return false;
     }
@@ -545,7 +544,7 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
         // an empty placeholder claimed earlier by the RPC wrapper. Remove it
         // so a failed export cannot be mistaken for a complete backup.
         boost::system::error_code ec;
-        boost::filesystem::remove(boost::filesystem::path(strDst), ec);
+        std::filesystem::remove(std::filesystem::path(strDst), ec);
         strError = strprintf(
             "%i hybrid key(s) could not be serialized and were skipped; no "
             "backup file was written (see debug log)",
@@ -564,8 +563,8 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
     const std::string strTmp = strDst + ".tmp";
     boost::system::error_code ec;
 
-    boost::filesystem::ofstream file;
-    file.open(boost::filesystem::path(strTmp), std::ios_base::out |
+    std::ofstream file;
+    file.open(std::filesystem::path(strTmp), std::ios_base::out |
                                                    std::ios_base::trunc);
     if (!file.is_open()) {
         strError = "Cannot create the file for wallet keys";
@@ -599,13 +598,13 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
     file.flush();
     if (file.fail()) {
         file.close();
-        boost::filesystem::remove(boost::filesystem::path(strTmp), ec);
+        std::filesystem::remove(std::filesystem::path(strTmp), ec);
         strError = "Failed while writing the hybrid key export";
         return false;
     }
     file.close();
     if (file.fail()) {
-        boost::filesystem::remove(boost::filesystem::path(strTmp), ec);
+        std::filesystem::remove(std::filesystem::path(strTmp), ec);
         strError = "Failed while writing the hybrid key export";
         return false;
     }
@@ -614,22 +613,22 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
     // name can never end up pointing at unsynced or partially flushed data.
     FILE* fCommit = fopen(strTmp.c_str(), "rb");
     if (!fCommit) {
-        boost::filesystem::remove(boost::filesystem::path(strTmp), ec);
+        std::filesystem::remove(std::filesystem::path(strTmp), ec);
         strError = "Cannot open the file for syncing the hybrid key export";
         return false;
     }
     int nCommit = FileCommit(fCommit);
     fclose(fCommit);
     if (nCommit != 0) {
-        boost::filesystem::remove(boost::filesystem::path(strTmp), ec);
+        std::filesystem::remove(std::filesystem::path(strTmp), ec);
         strError = "Failed to sync the hybrid key export to disk";
         return false;
     }
 
-    boost::filesystem::rename(boost::filesystem::path(strTmp),
-                              boost::filesystem::path(strDst), ec);
+    std::filesystem::rename(std::filesystem::path(strTmp),
+                              std::filesystem::path(strDst), ec);
     if (ec) {
-        boost::filesystem::remove(boost::filesystem::path(strTmp), ec);
+        std::filesystem::remove(std::filesystem::path(strTmp), ec);
         strError = "Failed to move the hybrid key export into place";
         return false;
     }
@@ -776,7 +775,7 @@ Value dumphybridkeys(const Array& params, bool fHelp) {
 
     EnsureWalletIsUnlocked();
 
-    boost::filesystem::path pathDumpFile = params[0].get_str().c_str();
+    std::filesystem::path pathDumpFile = params[0].get_str().c_str();
     if (!pathDumpFile.is_absolute())
         pathDumpFile = GetDataDir(true) / pathDumpFile;
 
@@ -802,10 +801,10 @@ Value importhybridkeys(const Array& params, bool fHelp) {
 
     EnsureWalletIsUnlocked();
 
-    boost::filesystem::path pathImportFile = params[0].get_str().c_str();
+    std::filesystem::path pathImportFile = params[0].get_str().c_str();
     if (!pathImportFile.is_absolute())
         pathImportFile = GetDataDir(true) / pathImportFile;
-    if (!boost::filesystem::exists(pathImportFile))
+    if (!std::filesystem::exists(pathImportFile))
         throw JSONRPCError(RPC_INVALID_PARAMETER,
                            "The file with wallet keys doesn't exist");
 
