@@ -687,10 +687,15 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_locked_ismine)
  * Regression for the IsMine() hybrid gate: a key that exists at rest
  * (mapHybridKeyDisk) but is not loaded must not be reported SPENDABLE.
  *
- * Gating on HaveHybridKeyByHash() instead of CanSignHybridKeyByHash() lets coin
- * selection offer an output whose key is still encrypted, SignSignature() then
- * returns false, and the caller sees an unexplained -4 "Transaction creation
- * failed". This walks the full lifecycle -- locked/disk-only, then materialised
+ * Gating on CanSignHybridKeyByHash() keeps coin selection from offering an
+ * output whose key is still encrypted: SignSignature() would then return false
+ * and the caller would see an unexplained -4 "Transaction creation failed".
+ * The hash-gated (P2HPKH) form still recognises ownership via
+ * HaveHybridKeyByHash() and reports it MINE_WATCH_ONLY, so coin control and the
+ * balance list the address while the wallet is locked without offering it for
+ * spending. The multisig form still reports MINE_NO, because its ownership
+ * check (HaveHybridKeyByLegacyID) is served by an index over the loaded keys
+ * only. This walks the full lifecycle -- locked/disk-only, then materialised
  * -- and pins IsMine() at each step.
  */
 BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
@@ -719,13 +724,15 @@ BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
     BOOST_REQUIRE(keystore.HaveHybridKeyByHash(diskOnlyID));
 
     // ...but it cannot be signed for, so IsMine() must not claim the output is
-    // spendable. Coin selection gates on exactly this answer.
+    // spendable. Coin selection gates on exactly this answer. The multisig
+    // form is still hidden (MINE_NO): its ownership check uses the legacy-ID
+    // index, which only covers the loaded keys.
     BOOST_CHECK(!keystore.CanSignHybridKeyByHash(diskOnlyID));
     BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
 
-    // The hash-gated form must report the same, so both IsMine() branches are
-    // pinned by this one case.
-    BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_NO);
+    // The hash-gated form recognises ownership while locked and reports it
+    // watch-only: listed by coin control and the balance, but never spendable.
+    BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_WATCH_ONLY);
 
     // The same must hold on the legacy-ECDSA-ID path, which is the IsMine()
     // hot path for hybrid pubkey outputs.

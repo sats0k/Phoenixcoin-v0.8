@@ -7,6 +7,7 @@
 #include <fstream>
 #include <iterator>
 #include <map>
+#include <set>
 #include <sstream>
 #include <string>
 #include <vector>
@@ -861,37 +862,49 @@ Value listhybridaddresses(const Array& params, bool fHelp) {
     {
         LOCK(pwalletMain->cs_wallet);
 
+        std::set<CHybridKeyID> emitted;
+
+        const auto appendEntry =
+            [&](const CHybridKeyID& hybridID, const CPubKey& secpPub,
+                int64_t nCreateTime) {
+                if (!emitted.insert(hybridID).second)
+                    return;
+
+                std::string strLabel;
+
+                std::map<CHybridKeyID, CHybridAddressEntry>::const_iterator ab =
+                    pwalletMain->mapHybridAddressBook.find(hybridID);
+
+                if (ab != pwalletMain->mapHybridAddressBook.end())
+                    strLabel = ab->second.strLabel;
+
+                if (!fIncludeEmpty && strLabel.empty())
+                    return;
+
+                CCoinAddress address(hybridID);
+
+                Object obj;
+                obj.push_back(Pair("address", address.ToString()));
+                obj.push_back(Pair("label", strLabel));
+                obj.push_back(Pair("pubkey_ecdsa", HexStr(secpPub.Raw())));
+                obj.push_back(Pair("created",
+                    static_cast<boost::int64_t>(nCreateTime)));
+
+                result.push_back(obj);
+            };
+
         for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
                  pwalletMain->mapHybridKeys.begin();
              it != pwalletMain->mapHybridKeys.end(); ++it) {
-            const CHybridKeyID& hybridID = it->first;
-            const CHybridKey& hybridKey = it->second;
+            appendEntry(it->first, it->second.secpPub, it->second.nCreateTime);
+        }
 
-            printf("Stored ID    : %s\n", hybridID.ToString().c_str());
-            printf("Address      : %s\n",
-                   CCoinAddress(hybridID).ToString().c_str());
-
-            std::string strLabel;
-
-            std::map<CHybridKeyID, CHybridAddressEntry>::const_iterator ab =
-                pwalletMain->mapHybridAddressBook.find(hybridID);
-
-            if (ab != pwalletMain->mapHybridAddressBook.end())
-                strLabel = ab->second.strLabel;
-
-            if (!fIncludeEmpty && strLabel.empty()) continue;
-
-            CCoinAddress address(hybridID);
-
-            Object obj;
-            obj.push_back(Pair("address", address.ToString()));
-            obj.push_back(Pair("label", strLabel));
-            obj.push_back(
-                Pair("pubkey_ecdsa", HexStr(hybridKey.secpPub.Raw())));
-            obj.push_back(Pair(
-                "created", static_cast<boost::int64_t>(hybridKey.nCreateTime)));
-
-            result.push_back(obj);
+        // Encrypted wallets keep their at-rest records in mapHybridKeyDisk
+        // while locked; include them so addresses are listed without an unlock.
+        for (std::map<CHybridKeyID, CHybridKeyDisk>::const_iterator it =
+                 pwalletMain->mapHybridKeyDisk.begin();
+             it != pwalletMain->mapHybridKeyDisk.end(); ++it) {
+            appendEntry(it->first, it->second.secpPub, it->second.nCreateTime);
         }
     }
 

@@ -1854,6 +1854,17 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
                 keystore.CanSignHybridKeyByHash(hash))
                 return MINE_SPENDABLE;
 
+            // The key belongs to this wallet but cannot sign right now (the
+            // wallet is locked, so the key material is still encrypted on
+            // disk). HaveHybridKeyByHash() also consults mapHybridKeyDisk, so
+            // this recognises ownership while locked. Mark the output
+            // watch-only rather than hiding it: coin control and the balance
+            // will list it, but coin selection skips non-spendable outputs
+            // (see SelectCoinsMinConf), so it is never handed to
+            // SignSignature and cannot abort an otherwise valid transaction.
+            if (keystore.HaveHybridKeyByHash(hash))
+                return MINE_WATCH_ONLY;
+
             break;
         }
 
