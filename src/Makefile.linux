@@ -167,35 +167,28 @@ obj/%.o: %.cpp
 	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
 	  rm -f $(@:%.o=%.d)
 
+# Sources in hs/ need the same -MMD dependency tracking as everything else:
+# the pattern rule above cannot see them because the source lives in a
+# subdirectory, so without this rule a shared-header edit (wallet.h, script.h,
+# ...) rebuilds the rest of the binary but leaves these objects compiled
+# against the old class layout. That silently produces a daemon whose
+# CWallet/CBlock member offsets disagree between translation units.
+obj/%.o: hs/%.cpp
+	$(CXX) -c $(CXXFLAGS) $(DEFS) $(INCS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	  rm -f $(@:%.o=%.d)
+
 obj/neoscrypt.o: neoscrypt.c
-	$(CC) $(CFLAGS) -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -c -o $@ $^
+	$(CC) $(CFLAGS) -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -MMD -MF $(@:%.o=%.d) -c -o $@ $^
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	  rm -f $(@:%.o=%.d)
 
 obj/neoscrypt_asm.o: neoscrypt_asm.S
 	$(CC) -c -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -o $@ $^
-
-obj/hybrid_signer.o: hs/hybrid_signer.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/hybrid_verify.o: hs/hybrid_verify.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/hybrid_message.o: hs/hybrid_message.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/wallethybrid.o: hs/wallethybrid.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/wallet_hybrid_address.o: hs/wallet_hybrid_address.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/hybrid_consensus.o: hs/hybrid_consensus.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/walletdb_hybrid.o: hs/walletdb_hybrid.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
-
-obj/rpchybrid.o: hs/rpchybrid.cpp
-	$(CXX) $(CXXFLAGS) $(DEFS) $(INCS) -c $< -o $@
 
 phoenixcoind: $(OBJS:obj/%=obj/%)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
