@@ -1844,6 +1844,17 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
                 keystore.CanSignHybridKeyByLegacyID(ecdsaPub.GetID()))
                 return MINE_SPENDABLE;
 
+            // The key belongs to this wallet but cannot sign right now (the
+            // wallet is locked, so the key material is still encrypted on
+            // disk). HaveHybridKeyByLegacyID() also consults the at-rest
+            // records, so this recognises ownership while locked. Mark the
+            // output watch-only rather than hiding it: it is listed by coin
+            // control and the balance, but coin selection skips non-spendable
+            // outputs (see SelectCoinsMinConf), so it is never handed to
+            // SignSignature.
+            if (keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                return MINE_WATCH_ONLY;
+
             break;
         }
 
@@ -1885,6 +1896,21 @@ isminetype IsMine(const CKeyStore &keystore, const CScript &scriptPubKey) {
 
             if (!keystore.IsLocked() && fAll)
                 return MINE_SPENDABLE;
+
+            // Owned but not signable right now (e.g. the wallet is locked).
+            // Require ALL keys, mirroring the SPENDABLE branch: a partially
+            // owned multisig must stay MINE_NO so it is not mistaken for a
+            // wallet output.
+            bool fAllOwned = true;
+            for (int i = 0; i < nN && fAllOwned; ++i) {
+                CPubKey ecdsaPub(vSolutions[1 + i * 2]);
+                if (!keystore.HaveHybridKeyByLegacyID(ecdsaPub.GetID()))
+                    fAllOwned = false;
+            }
+
+            if (fAllOwned)
+                return MINE_WATCH_ONLY;
+
             break;
         }
     }

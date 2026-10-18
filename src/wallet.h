@@ -118,22 +118,26 @@ public:
     // mapHybridKeys/mapHybridSigners on first unlock.
     std::map<CHybridKeyID, CHybridKeyDisk> mapHybridKeyDisk;
 
-    // Reverse index over mapHybridKeys: legacy ECDSA key ID -> hybrid key ID.
-    // HaveHybridKeyByLegacyID() is called once per hybrid script output by
-    // IsMine(), so scanning mapHybridKeys and recomputing GetKeyID() (a
-    // Hash160) for every key makes coin selection cost
-    // O(outputs * hybrid keys) hashes. This index turns it into a single
-    // map lookup. It is rebuilt lazily whenever mapHybridKeys grows or is
-    // explicitly invalidated, so the many mapHybridKeys.emplace() call
-    // sites do not each have to be kept in sync.
+    // Reverse index over the wallet's hybrid keys: legacy ECDSA key ID ->
+    // hybrid key ID. HaveHybridKeyByLegacyID() is called once per hybrid script
+    // output by IsMine(), so scanning the key maps and recomputing GetKeyID()
+    // (a Hash160) for every key makes coin selection cost
+    // O(outputs * hybrid keys) hashes. This index turns it into a single map
+    // lookup. It covers both mapHybridKeys and the at-rest mapHybridKeyDisk
+    // records (whose secpPub is stored in the clear), so ownership of a hybrid
+    // key can be answered while the wallet is locked. It is rebuilt lazily
+    // whenever either map changes size or is explicitly invalidated, so the
+    // many emplace() call sites do not each have to be kept in sync.
     mutable std::map<CKeyID, CHybridKeyID> mapHybridKeyByLegacyID;
     mutable size_t nHybridLegacyIndexSize;
+    mutable size_t nHybridLegacyIndexDiskSize;
     mutable bool fHybridLegacyIndexDirty;
 
     // ===== Hybrid key access methods (override from CKeyStore) =====
     // Shared by HaveHybridKeyByLegacyID() and GetHybridKeyIDByLegacyKeyID();
-    // both used to do a linear scan over mapHybridKeys recomputing a Hash160
-    // per key. Maintains mapHybridKeyByLegacyID and does a single lookup.
+    // both used to do a linear scan recomputing a Hash160 per key. Maintains
+    // mapHybridKeyByLegacyID (over mapHybridKeys and mapHybridKeyDisk) and does
+    // a single lookup.
     bool FindHybridKeyByLegacyID(const CKeyID& keyID,
                                  CHybridKeyID& hybridIDOut) const;
     bool HaveHybridKey(const CHybridKeyID &address) const override;
@@ -170,6 +174,7 @@ public:
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nHybridLegacyIndexSize = 0;
+        nHybridLegacyIndexDiskSize = 0;
         fHybridLegacyIndexDirty = true;
     }
     CWallet(std::string strWalletFileIn)
@@ -182,6 +187,7 @@ public:
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
         nHybridLegacyIndexSize = 0;
+        nHybridLegacyIndexDiskSize = 0;
         fHybridLegacyIndexDirty = true;
     }
 

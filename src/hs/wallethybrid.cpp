@@ -232,30 +232,37 @@ bool CWallet::FindHybridKeyByLegacyID(const CKeyID& keyID,
     LOCK(cs_wallet);
 
     // Correctness argument for the rebuild trigger below. The index is keyed by
-    // CHybridKey::GetKeyID(), which returns exactly secpPub.GetID(). For a key
-    // already resident in mapHybridKeys, secpPub is written only while a new
-    // CHybridKey is being constructed prior to insertion (hs/rpchybrid.cpp:299,
-    // hs/wallethybrid.cpp:443/513/575/728/851); no code path rewrites it in
-    // place, and the one operator[] site (hs/wallethybrid.cpp:740) only binds a
-    // CHybridKey to FromMemoryEncrypted(const CHybridKey&, ...), which cannot
-    // mutate it. So an entry's indexed value is immutable once inserted, and the
-    // index can only go stale if the SET of entries changes.
+    // CHybridKey::GetKeyID() (== secpPub.GetID()); the at-rest records expose
+    // the same secpPub. For a key already resident in mapHybridKeys, secpPub is
+    // written only while a new CHybridKey is being constructed prior to
+    // insertion (hs/rpchybrid.cpp:299, hs/wallethybrid.cpp:443/513/575/728/851);
+    // no code path rewrites it in place, and the one operator[] site
+    // (hs/wallethybrid.cpp:740) only binds a CHybridKey to
+    // FromMemoryEncrypted(const CHybridKey&, ...), which cannot mutate it. So an
+    // entry's indexed value is immutable once inserted, and the index can only
+    // go stale if the SET of entries changes.
     //
     // Every set change in the current code is covered: insertions go through
     // emplace() or operator[], which grow size(); the single clear()
     // (src/wallet.cpp:190) sets fHybridLegacyIndexDirty explicitly because
     // dropping to an empty map is otherwise indistinguishable from a stale
-    // build. Comparing size is therefore sufficient.
+    // build. Both maps are tracked, because mapHybridKeyDisk is populated and
+    // cleared independently of mapHybridKeys (load, DecryptHybridKeys, Lock).
+    // Comparing sizes is therefore sufficient.
     //
     // A future change that removes a key, or replaces one key with another in a
     // single 1:1 swap, would leave size() unchanged and silently desync the
-    // index. There is currently no mapHybridKeys::erase() in the tree. If one is
-    // added, either preserve the same size by setting fHybridLegacyIndexDirty
-    // or stop relying on the size comparison.
+    // index. There is currently no erase() on either map. If one is added,
+    // either preserve the same size by setting fHybridLegacyIndexDirty or stop
+    // relying on the size comparison.
     if (fHybridLegacyIndexDirty ||
-        nHybridLegacyIndexSize != mapHybridKeys.size())
+        nHybridLegacyIndexSize != mapHybridKeys.size() ||
+        nHybridLegacyIndexDiskSize != mapHybridKeyDisk.size())
     {
         mapHybridKeyByLegacyID.clear();
+
+        // Loaded keys first so a materialised, spendable record wins a tie,
+        // mirroring the original scan over mapHybridKeys.
         for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
                  mapHybridKeys.begin();
              it != mapHybridKeys.end(); ++it)
@@ -265,7 +272,20 @@ bool CWallet::FindHybridKeyByLegacyID(const CKeyID& keyID,
             mapHybridKeyByLegacyID.insert(
                 std::make_pair(it->second.GetKeyID(), it->first));
         }
+
+        // At-rest (encrypted) records carry secpPub in the clear, so they can
+        // be indexed while the wallet is locked. insert() does not overwrite,
+        // so a loaded entry for the same key keeps its place.
+        for (std::map<CHybridKeyID, CHybridKeyDisk>::const_iterator it =
+                 mapHybridKeyDisk.begin();
+             it != mapHybridKeyDisk.end(); ++it)
+        {
+            mapHybridKeyByLegacyID.insert(
+                std::make_pair(it->second.secpPub.GetID(), it->first));
+        }
+
         nHybridLegacyIndexSize = mapHybridKeys.size();
+        nHybridLegacyIndexDiskSize = mapHybridKeyDisk.size();
         fHybridLegacyIndexDirty = false;
     }
 
@@ -280,6 +300,10 @@ bool CWallet::FindHybridKeyByLegacyID(const CKeyID& keyID,
 
 bool CWallet::HaveHybridKeyByLegacyID(const CKeyID& keyID) const
 {
+    // Ownership, not spendability: true when the key is loaded OR only present
+    // as an encrypted at-rest record. This mirrors HaveHybridKeyByHash() and is
+    // what lets IsMine() mark a locked hybrid pubkey/multisig output
+    // watch-only. Use CanSignHybridKeyByLegacyID() for the spendability gate.
     CHybridKeyID unusedHybridID;
     return FindHybridKeyByLegacyID(keyID, unusedHybridID);
 }
@@ -1087,7 +1111,16 @@ bool CWallet::GetUnusedHybridKey(CHybridKeyID& hybridID)
 bool CWallet::GetHybridKeyIDByLegacyKeyID(const CKeyID& keyID,
                                           CHybridKeyID& hybridID) const
 {
-    return FindHybridKeyByLegacyID(keyID, hybridID);
+    // FindHybridKeyByLegacyID() now also covers the at-rest mapHybridKeyDisk
+    // records, but this entry point keeps its original loaded-only contract:
+    // callers use the returned ID to build a hybrid script or decide the key is
+    // already usable, which requires the CHybridKey to be materialised. Only
+    // return an ID whose key is resident in mapHybridKeys.
+    if (!FindHybridKeyByLegacyID(keyID, hybridID))
+        return false;
+
+    LOCK(cs_wallet);
+    return mapHybridKeys.count(hybridID) > 0;
 }
 
 bool CWallet::GetHybridKeyByLegacyID(const CKeyID& keyID,

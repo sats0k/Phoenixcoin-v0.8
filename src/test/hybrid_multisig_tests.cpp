@@ -680,23 +680,25 @@ BOOST_AUTO_TEST_CASE(hybrid_multisig_locked_ismine)
     CScript inner = GetScriptForHybridMultisig(2, pubs);
     BOOST_REQUIRE(!inner.empty());
 
-    BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
+    // A locked wallet never reports SPENDABLE; because it still owns every key
+    // it lists the output watch-only instead of hiding it.
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_WATCH_ONLY);
 }
 
 /*
  * Regression for the IsMine() hybrid gate: a key that exists at rest
  * (mapHybridKeyDisk) but is not loaded must not be reported SPENDABLE.
  *
- * Gating on CanSignHybridKeyByHash() keeps coin selection from offering an
- * output whose key is still encrypted: SignSignature() would then return false
- * and the caller would see an unexplained -4 "Transaction creation failed".
- * The hash-gated (P2HPKH) form still recognises ownership via
- * HaveHybridKeyByHash() and reports it MINE_WATCH_ONLY, so coin control and the
- * balance list the address while the wallet is locked without offering it for
- * spending. The multisig form still reports MINE_NO, because its ownership
- * check (HaveHybridKeyByLegacyID) is served by an index over the loaded keys
- * only. This walks the full lifecycle -- locked/disk-only, then materialised
- * -- and pins IsMine() at each step.
+ * Gating on CanSignHybridKeyByHash()/CanSignHybridKeyByLegacyID() keeps coin
+ * selection from offering an output whose key is still encrypted:
+ * SignSignature() would then return false and the caller would see an
+ * unexplained -4 "Transaction creation failed". The Have*() probes still
+ * recognise ownership through the at-rest records, so every hybrid form is
+ * reported MINE_WATCH_ONLY while the key is locked: coin control and the
+ * balance list it, but nothing is offered for spending. This walks the full
+ * lifecycle -- locked/disk-only, then materialised -- and pins IsMine() at each
+ * step for the hash-gated (TX_HYBRID_PUBKEYHASH) and legacy-ID-gated
+ * (TX_HYBRID_MULTISIG) forms.
  */
 BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
 {
@@ -724,11 +726,10 @@ BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
     BOOST_REQUIRE(keystore.HaveHybridKeyByHash(diskOnlyID));
 
     // ...but it cannot be signed for, so IsMine() must not claim the output is
-    // spendable. Coin selection gates on exactly this answer. The multisig
-    // form is still hidden (MINE_NO): its ownership check uses the legacy-ID
-    // index, which only covers the loaded keys.
+    // spendable. Coin selection gates on exactly this answer. Both hybrid forms
+    // still recognise ownership, so both flip to watch-only instead of MINE_NO.
     BOOST_CHECK(!keystore.CanSignHybridKeyByHash(diskOnlyID));
-    BOOST_CHECK(IsMine(keystore, inner) == MINE_NO);
+    BOOST_CHECK(IsMine(keystore, inner) == MINE_WATCH_ONLY);
 
     // The hash-gated form recognises ownership while locked and reports it
     // watch-only: listed by coin control and the balance, but never spendable.
@@ -748,6 +749,88 @@ BOOST_AUTO_TEST_CASE(hybrid_ismine_disk_only_key_not_spendable)
     BOOST_REQUIRE(keystore.CanSignHybridKeyByHash(keystore.FirstLoadedKeyID()));
     BOOST_CHECK(IsMine(keystore, inner) == MINE_SPENDABLE);
     BOOST_CHECK(IsMine(keystore, p2hphk) == MINE_SPENDABLE);
+}
+
+/*
+ * The reverse index that serves the legacy-ECDSA-ID gate must also cover the
+ * at-rest mapHybridKeyDisk records, so a locked real CWallet reports its own
+ * TX_HYBRID_PUBKEY / TX_HYBRID_MULTISIG outputs watch-only instead of hiding
+ * them. Without that, locked hybrid coins show a zero balance and an empty coin
+ * control list until the passphrase is entered.
+ *
+ * This reconstructs the state LoadHybridKeys() leaves behind in a real
+ * encrypted wallet while it is locked: secpPub survives in the clear, the
+ * CHybridKey is not materialised. Every materialised-only entry point must
+ * still answer false, so nothing reaches SelectCoinsMinConf()/SignSignature().
+ */
+BOOST_AUTO_TEST_CASE(hybrid_wallet_locked_watch_only_ismine)
+{
+    CWallet wallet;
+    BOOST_REQUIRE(wallet.EnsureHybridKeyPool(3));
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 3U);
+
+    // Snapshot the keys, their hybrid IDs and their legacy IDs while they are
+    // materialised, then pin IsMine() for every hybrid script form.
+    std::vector<CHybridPubKey> pubs;
+    std::vector<CHybridKeyID> hybridIDs;
+    std::vector<CKeyID> held;
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+             wallet.mapHybridKeys.begin();
+         it != wallet.mapHybridKeys.end(); ++it)
+    {
+        BOOST_REQUIRE(it->second.mldsaSigner);
+        pubs.push_back(CHybridPubKey(it->second.secpPub.Raw(),
+                                     it->second.mldsaSigner->GetPublicKey()));
+        hybridIDs.push_back(it->first);
+        held.push_back(it->second.GetKeyID());
+    }
+    BOOST_REQUIRE_EQUAL(pubs.size(), 3U);
+
+    CScript inner = GetScriptForHybridMultisig(2, pubs);
+    CScript p2h = GetScriptForHybridPubKey(pubs[0]);
+    CScript p2hphk = GetScriptForHybridPubKeyHash(uint160(hybridIDs[0]));
+    BOOST_REQUIRE(!inner.empty());
+    BOOST_REQUIRE(!p2h.empty());
+    BOOST_REQUIRE(!p2hphk.empty());
+
+    BOOST_CHECK(IsMine(wallet, inner) == MINE_SPENDABLE);
+    BOOST_CHECK(IsMine(wallet, p2h) == MINE_SPENDABLE);
+    BOOST_CHECK(IsMine(wallet, p2hphk) == MINE_SPENDABLE);
+
+    // Prime the index while the keys are loaded, so the clear() below has to be
+    // picked up by the size comparison, exactly as CWallet::Lock() relies on.
+    for (size_t i = 0; i < held.size(); ++i)
+        BOOST_REQUIRE(wallet.HaveHybridKeyByLegacyID(held[i]));
+
+    // Move to the at-rest state: keep the disk records (secpPub in the clear),
+    // drop the materialised CHybridKey/mldsaSigner maps.
+    for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
+             wallet.mapHybridKeys.begin();
+         it != wallet.mapHybridKeys.end(); ++it)
+    {
+        wallet.mapHybridKeyDisk[it->first] = CHybridKeyDisk::FromMemory(it->second);
+    }
+    wallet.mapHybridKeys.clear();
+    wallet.mapHybridSigners.clear();
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeyDisk.size(), 3U);
+    BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 0U);
+
+    // Ownership survives through the index, signability and the materialised
+    // ID lookup do not.
+    for (size_t i = 0; i < held.size(); ++i)
+    {
+        BOOST_CHECK(wallet.HaveHybridKeyByLegacyID(held[i]));
+        BOOST_CHECK(!wallet.CanSignHybridKeyByLegacyID(held[i]));
+        CHybridKeyID unused;
+        BOOST_CHECK(!wallet.GetHybridKeyIDByLegacyKeyID(held[i], unused));
+    }
+    CHybridKeyID stranger;
+    BOOST_CHECK(!wallet.GetHybridKeyIDByLegacyKeyID(CKeyID(uint160(0x1234)), stranger));
+
+    // Every hybrid form is now listed watch-only rather than hidden.
+    BOOST_CHECK(IsMine(wallet, inner) == MINE_WATCH_ONLY);
+    BOOST_CHECK(IsMine(wallet, p2h) == MINE_WATCH_ONLY);
+    BOOST_CHECK(IsMine(wallet, p2hphk) == MINE_WATCH_ONLY);
 }
 
 BOOST_AUTO_TEST_CASE(hybrid_multisig_combine_partial)
@@ -1500,10 +1583,13 @@ BOOST_AUTO_TEST_CASE(hybrid_legacy_id_reverse_index_invalidation)
 
     // The clear() taken by CWallet::Lock() empties the map and sets
     // fHybridLegacyIndexDirty, so a locked wallet must stop reporting ownership
-    // of every hybrid key it held. Exercised through Lock() on a separate
-    // wallet rather than by clearing mapHybridKeys directly, because the dirty
-    // flag is set by Lock() (src/wallet.cpp:195) and is the only thing that makes
-    // a shrink-then-regrow sequence safe.
+    // of every hybrid key it held. This fixture keeps no at-rest records (it is
+    // not file-backed, so mapHybridKeyDisk is empty) and therefore has nothing
+    // for the index to fall back to; the populated case is
+    // hybrid_wallet_locked_watch_only_ismine. Exercised through Lock() on a
+    // separate wallet rather than by clearing mapHybridKeys directly, because
+    // the dirty flag is set by Lock() (src/wallet.cpp:195) and is the only thing
+    // that makes a shrink-then-regrow sequence safe.
     CWallet crypted;
     CKey encKey;
     CMasterKey masterKey;
