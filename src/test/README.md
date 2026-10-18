@@ -120,14 +120,20 @@ signature, the ML-DSA signature, and the ML-DSA public key of a valid P2PH
 spend and asserts that the corrupted variant fails to verify while the
 unmodified baseline still passes (the public-key case is checked directly
 via `VerifyMLDSA` so the corruption is isolated from script re-hashing). A
-A signability-gate test (`hybrid_ismine_disk_only_key_not_spendable`)
+signability-gate test (`hybrid_ismine_disk_only_key_not_spendable`)
 covers the hybrid `IsMine()` rule that a key which exists at rest but is not
 loaded into memory must not be reported as spendable: coin selection gates on
 `IsMine()`, so a key still encrypted on disk would otherwise be offered, fail
 in `SignSignature()`, and surface as an unexplained `-4` "Transaction creation
 failed". It moves keys between the loaded and disk-only maps and pins
-`MINE_SPENDABLE` -> `MINE_NO` -> `MINE_SPENDABLE` across the lifecycle, on both
-the multisig and P2HPKH script forms and both `CanSign` predicates. A P2HPKH
+`MINE_SPENDABLE` -> `MINE_WATCH_ONLY` -> `MINE_SPENDABLE` across the lifecycle,
+on both the multisig and P2HPKH script forms and both `CanSign` predicates. A
+locked-wallet visibility test (`hybrid_wallet_locked_watch_only_ismine`) pins
+the other half of the rule on a real `CWallet`: in the at-rest state it has
+while encrypted, all three hybrid forms (multisig, P2PH and P2HPKH) still
+report `MINE_WATCH_ONLY`, so `listunspent`, the balance and coin control keep
+showing them, while the signability predicates and the loaded-only
+`GetHybridKeyIDByLegacyKeyID` answer false. A P2HPKH
 spend test (`hybrid_p2hphk_spend`) exercises the
 `OP_DUPHYBRID`/`OP_HASHHYBRID160`/`OP_CHECKHYBRIDSIG` output used by hybrid
 mining coinbases (`GetScriptForHybridPubKeyHash`): the script is detected as
@@ -353,7 +359,7 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 115 test cases...
+Running 116 test cases...
 
 *** No errors detected
 ```
@@ -413,6 +419,15 @@ drives `mapHybridKeys` 4 → 0 → 4 with no lookup in between, so the size
 comparison cannot detect the change and only `fHybridLegacyIndexDirty` — the
 flag set by `CWallet::Lock()` — can; dropping either the size comparison or
 the flag makes this test fail.
+
+The index covers the encrypted at-rest records as well (`secpPub` survives
+in the clear), so a wallet that is loaded once and then locked keeps
+answering ownership questions: it grew a second size counter for
+`mapHybridKeyDisk`, and loaded keys are indexed ahead of disk-only records
+so a materialised, spendable key always wins a tie.
+`hybrid_wallet_locked_watch_only_ismine` (above) exercises that at-rest
+path on a real `CWallet`, including the `mapHybridKeys` clear that only the
+size comparison can notice.
 
 ## Shell regression scripts
 

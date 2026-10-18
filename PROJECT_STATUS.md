@@ -32,6 +32,7 @@ Implemented components include:
 - Partial-signature combining for hybrid multisig (`CombineSignatures`), capped at the required `m` pairs
 - Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
 - Encrypted-wallet hybrid key persistence and plaintext-to-encrypted migration
+- Locked-wallet hybrid visibility: hybrid addresses, labels, balances and every fully owned hybrid output form (`TX_HYBRID_PUBKEYHASH`, `TX_HYBRID_PUBKEY`, `TX_HYBRID_MULTISIG`) are reported as watch-only while the wallet is encrypted, so they stay visible (coin control, `listunspent`, `listhybridaddresses`) but can never be selected for spending
 - `addhybridmultisigaddress` RPC for creating N-of-M hybrid multisig P2SH addresses
 - Hybrid message signatures for `signmessage`/`verifymessage` (self-describing ECDSA + ML-DSA-65 container with both public keys embedded)
 - Hybrid address support in `encryptmessage`/`decryptmessage` (ECIES over the key's secp256k1 component)
@@ -65,16 +66,16 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (31 test cases) inside the full Boost suite, which reports **130 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (33 test cases) inside the full Boost suite, which reports **116 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
 - Encrypted ML-DSA serialization round-trip (standalone `test_encrypted_keys` check)
 - Hybrid multisig IsMine and spend generation
 - Hybrid multisig P2SH spends
-- Hybrid `IsMine()` signability gate: a key that exists at rest but is not loaded is reported `MINE_NO` rather than `MINE_SPENDABLE`, for both `TX_HYBRID_MULTISIG` and `TX_HYBRID_PUBKEYHASH`
+- Hybrid `IsMine()` signability gate: a key that exists at rest but is not loaded is reported `MINE_WATCH_ONLY` rather than `MINE_SPENDABLE`, for `TX_HYBRID_PUBKEYHASH`, `TX_HYBRID_PUBKEY` and `TX_HYBRID_MULTISIG`; the output stays visible but `AvailableCoins()` marks it non-spendable and `SelectCoinsMinConf()` never hands it to `SignSignature()`
 - Hybrid signature-hash types
-- Encrypted-locked-wallet hybrid output recognition (`IsMine`)
+- Locked-wallet hybrid recognition (`hybrid_wallet_locked_watch_only_ismine`): a wallet moved from the loaded to the at-rest state reports every fully owned hybrid form as `MINE_WATCH_ONLY` while the ownership probe answers true and the signability probe and loaded-only materialised-ID lookup answer false
 - Disjoint partial-signature combining into a redeemable script
 - Combined signatures capped at the required `m`
 - m-of-n signature combination matrix (1/2/3-of-3, plus under-signed negative cases)
@@ -88,7 +89,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - P2HPKH (hybrid mining coinbase) spend path
 - `OP_CHECKHYBRIDSIGVERIFY`
 - Hybrid-key pool invariants (`EnsureHybridKeyPool`/`GetUnusedHybridKey`, uniqueness, locked-wallet refusal)
-- Legacy-key-ID reverse index invalidation (`hybrid_legacy_id_reverse_index_invalidation`): the `mapHybridKeyByLegacyID` index is compared against the original linear scan (reproduced verbatim) on a cold build, across keypool growth, at the `Lock()`/unlock boundary and on negative lookups, so a stale index — which would make `IsMine()` miss a hybrid key the wallet actually holds — cannot pass silently; both halves of the rebuild trigger (the `mapHybridKeys` size comparison and the `fHybridLegacyIndexDirty` flag set by `Lock()`) are mutation-checked, each failing the test if dropped
+- Legacy-key-ID reverse index invalidation (`hybrid_legacy_id_reverse_index_invalidation`): the `mapHybridKeyByLegacyID` index is compared against the original linear scan (reproduced verbatim) on a cold build, across keypool growth, at the `Lock()`/unlock boundary and on negative lookups, so a stale index — which would make `IsMine()` miss a hybrid key the wallet actually holds — cannot pass silently; both halves of the rebuild trigger (the `mapHybridKeys` size comparison and the `fHybridLegacyIndexDirty` flag set by `Lock()`) are mutation-checked, each failing the test if dropped. The index also covers the encrypted `mapHybridKeyDisk` records (their `secpPub` is stored in the clear) and is invalidated when that map changes size; `hybrid_wallet_locked_watch_only_ismine` exercises that at-rest path, and loaded keys are indexed ahead of disk-only records so a materialised, spendable key always wins. `GetHybridKeyIDByLegacyKeyID()` keeps its loaded-only contract, so mining and key materialisation are unaffected
 - Hybrid address round trip and Base58 corruption
 - `ValidateHybridKey` negatives
 - `VerifyHybridSignature` in isolation
@@ -108,7 +109,7 @@ Build and run with:
 
 ```bash
 cd src
-make -j$(nproc) STATIC=1 -f Makefile.linux test_phoenixcoin
+make -j$(nproc) DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 ./test_phoenixcoin
 ```
 
@@ -166,7 +167,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 130 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 116 test cases with no errors, the daemon-level regression scripts (export/import, atomicity, malformed input) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 

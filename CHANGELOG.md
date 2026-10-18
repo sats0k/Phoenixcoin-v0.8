@@ -6,7 +6,139 @@ Phoenixcoin Quantum is a development/pre-release line that adds hybrid ECDSA + M
 
 ---
 
-## [0.8.3] - in development
+## [0.8.4] - in development
+
+Changes since v0.8.3.
+
+### Added
+
+- A locked (encrypted) wallet keeps showing its hybrid holdings instead of
+  hiding them.
+  `listhybridaddresses` now walks the at-rest `mapHybridKeyDisk` records
+  as well as the decrypted keys, so addresses, labels and creation times
+  survive the lock, and `IsMine()` reports every hybrid script form the
+  wallet owns as `MINE_WATCH_ONLY` while the key material is still
+  encrypted: `TX_HYBRID_PUBKEYHASH`, `TX_HYBRID_PUBKEY`, and a
+  `TX_HYBRID_MULTISIG` whose keys the wallet holds in full (a partially
+  owned multisig stays `MINE_NO`). Coin control, the balance and
+  `listunspent` list these outputs again, while coin selection still skips
+  them: `AvailableCoins()` marks watch-only outputs non-spendable and
+  `SelectCoinsMinConf()` drops those, so they are never handed to
+  `SignSignature`.
+- The ownership reverse index `CWallet::mapHybridKeyByLegacyID` now also
+  covers the encrypted `mapHybridKeyDisk` records (their `secpPub` is
+  stored in the clear) and is invalidated when either map changes size,
+  on top of the `fHybridLegacyIndexDirty` flag. Loaded keys are indexed
+  first, so a materialised, spendable record still wins a tie.
+  `GetHybridKeyIDByLegacyKeyID()` keeps its loaded-only contract, so
+  mining, `sendtoaddress` and `EnsureHybridKey` are unchanged while
+  locked.
+
+### Fixed
+
+- The hybrid objects in `src/Makefile.linux` rebuilt only when their own
+  `.cpp` changed: their rules carried no `-MMD`, so editing a shared
+  header such as `wallet.h` rebuilt the rest of the binary but left
+  `rpchybrid.o`, `wallet_hybrid_address.o`, `walletdb_hybrid.o` and
+  `hybrid_consensus.o` on the previous class layout. The linked daemon
+  then contained two disagreeing `CWallet` layouts and `gethybridaddress`
+  crashed with `SIGSEGV` in `std::_Rb_tree_decrement`. The eight explicit
+  rules are replaced by one `obj/%.o: hs/%.cpp` pattern rule with the
+  same `.d` -> `.P` dependency generation as everything else, and
+  `neoscrypt.c` gained `-MMD` as well. The Qt build was never affected:
+  qmake generates header prerequisites for every object.
+- Signature-cache eviction is random again. Moving to an `unordered_set`
+  had replaced the `GetRandHash()` + `lower_bound()` selection with
+  `setValid.begin()`, which is bucket/iteration order and therefore
+  predictable to an attacker. The lookup stays O(1) and picks a uniformly
+  random position with `GetRand()` + `std::advance`, matching the orphan
+  map.
+- Coin control sorts Amount, Confirmations and Priority numerically
+  instead of comparing space-padded strings, which mis-ordered amounts
+  past their fixed pad width and truncated priority to `int64`. The real
+  value now rides in a `Qt::UserRole` role (`qlonglong` for amount and
+  confirmations, `double` for priority) and a
+  `CoinControlTreeWidgetItem::operator<` compares it.
+- The Qt GUI embeds the DejaVu font family in its resource file, registers
+  it at startup and routes the generic family names to it, so a static
+  build with no fontconfig still renders text when the binary is copied to
+  a host that has no fonts in the compile-time prefix directory;
+  `QT_QPA_FONTDIR` points at a system font directory when the caller has
+  not chosen one.
+
+### Changed
+
+- Version bumped to 0.8.4.
+- `boost::filesystem` is replaced by `std::filesystem` across util, db,
+  init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI
+  and the tests, and `libboost_filesystem` is no longer linked.
+  `boost::filesystem::ifstream`/`ofstream` become plain `std::ifstream`/
+  `std::ofstream` (they accept a `std::filesystem::path` directly), and
+  the boost-only `fs::system_complete()` becomes `fs::absolute()`.
+- `boost::tuple`/`boost::make_tuple` become `std::tuple`/
+  `std::make_tuple` in the serialisation overloads, the `TxPriority`
+  mempool sorter, the signature-cache key and the walletdb accounting
+  keys. The wire and disk encoding is byte-identical, so existing wallet
+  databases remain readable.
+- The RPC server's `async_accept` completion handler is a plain lambda
+  instead of `boost::bind` plus an asio placeholder, and three dead
+  `boost/lexical_cast.hpp` includes are dropped (`rpcdump.cpp`,
+  `walletdb.cpp`, `rpcmain.cpp`). The Qt model `connect`/`disconnect`
+  pairs stay on `boost::bind` deliberately: Boost.Signals2 compares slots
+  for equality, which a lambda or `std::bind` cannot satisfy.
+- C++20 is pinned as `-std=gnu++20` in `Makefile.linux` and
+  `phoenixcoin-qt.pro`, matching `CMakeLists.txt`, instead of silently
+  following the compiler default. Release builds get
+  `-fstack-protector-strong` and `_FORTIFY_SOURCE=2` again; the daemon
+  and tests had been built with `-fno-stack-protector`.
+- Qt4 support is dropped and Qt5 or newer is required;
+  `phoenixcoin-qt.pro` now errors out on Qt4 instead of building it.
+- `-march=native` is opt-in: release binaries are portable by default and
+  `make NATIVE=1` enables native CPU tuning, matching the Qt build.
+
+### Performance
+
+- Release builds link with `-flto=auto -ffunction-sections
+  -fdata-sections` plus `-Wl,--gc-sections`, so validation, serialisation
+  and script code is inlined and specialised across translation units and
+  unreachable code is dropped (the stringop diagnostics LTO raises at link
+  time are silenced). Override with `make LTO=`; the Qt build uses the
+  same flags on ELF only.
+- `CTxMemPool::mapTx`, `mapNextTx`, `mapOrphanTransactions`,
+  `mapOrphanTransactionsByPrev`, `mapOrphanBlocks` and
+  `CNode::mapRequests` become `unordered_map`s, taking the hot
+  transaction-relay and block-reassembly lookups from O(log n) to O(1)
+  with a shared `uint256Hasher` (replacing `BlockHasher`) and a
+  `COutPointHasher`. Reference stability is preserved — `unordered_map`
+  is node-based — so `CInPoint`'s pointer into `mapTx` survives a rehash,
+  and the orphan eviction path now advances to a random position with
+  `std::advance` instead of using `std::map::lower_bound`.
+- `mapBlockIndex` becomes an `unordered_map` and the signature cache an
+  `unordered_set`, release builds are `-O3 -DNDEBUG`, and
+  `CKey::Verify()` no longer copies the public key on every call.
+  Serialisation and `json_spirit` stay NDEBUG- and warning-clean.
+
+### Testing
+
+The Boost suite is at 116 test cases. New coverage:
+
+- `hybrid_wallet_locked_watch_only_ismine`: moves a real `CWallet` from
+  the loaded state into the at-rest state it has while locked (keys
+  copied to `mapHybridKeyDisk`, `mapHybridKeys` and `mapHybridSigners`
+  cleared) and pins every hybrid script form at `MINE_WATCH_ONLY`, with
+  the ownership probe answering true while the signability probe and the
+  materialised-ID lookup answer false, so nothing can reach
+  `SelectCoinsMinConf()`/`SignSignature()`.
+- The two fixtures that pinned `MINE_NO` for a locked hybrid output now
+  expect `MINE_WATCH_ONLY`, and their comments follow the new
+  all-three-forms behaviour.
+- The DoS test measures elapsed time with `std::chrono::steady_clock`
+  instead of `boost::posix_time::microsec_clock`, which is monotonic and
+  the right clock for elapsed-time comparisons.
+
+---
+
+## [0.8.3]
 
 Changes since v0.8.2.
 

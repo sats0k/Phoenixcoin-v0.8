@@ -151,11 +151,18 @@ misordered signature data into a transaction that is then relayed.
   fsynced, and renamed into place only once complete
 - Wallet ownership lookups are never served from a stale cache: the
   `mapHybridKeyByLegacyID` reverse index (legacy ECDSA key ID → hybrid key
-  ID) behind `IsMine()` is rebuilt whenever `mapHybridKeys` grows and is
-  explicitly invalidated by `CWallet::Lock()`, and both halves of that
-  trigger are mutation-tested against the original linear scan, so a stale
-  mapping cannot silently make the wallet under-report its own hybrid
-  outputs
+  ID) behind `IsMine()` is rebuilt whenever `mapHybridKeys` or the
+  encrypted `mapHybridKeyDisk` records change size and is explicitly
+  invalidated by `CWallet::Lock()`, and the `mapHybridKeys` size
+  comparison and the dirty flag are mutation-tested against the original
+  linear scan, so a stale mapping cannot silently make the wallet
+  under-report its own hybrid outputs
+- A locked (encrypted) wallet never over-reports what it can spend: the
+  index covers the at-rest records (whose `secpPub` is stored in the
+  clear) so hybrid addresses and balances stay visible, but a key whose
+  private half is still encrypted is reported `MINE_WATCH_ONLY`, never
+  `MINE_SPENDABLE`, and watch-only outputs are dropped by coin selection
+  before they can reach `SignSignature()`
 
 ---
 

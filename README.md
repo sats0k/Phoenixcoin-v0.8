@@ -314,7 +314,8 @@ Implemented functionality includes:
 * Hybrid transaction creation
 * Hybrid coin selection
 * Hybrid change addresses
-* Hybrid key lookup (indexed by legacy ECDSA key ID, so hybrid ownership checks are constant-time)
+* Hybrid key lookup (indexed by legacy ECDSA key ID, so hybrid ownership checks are constant-time, and covering the encrypted at-rest records as well as the decrypted keys)
+* Hybrid holdings visible while the wallet is locked (addresses, labels and balances are listed as watch-only and are never spent)
 * Hybrid key import compatibility
 * Hybrid private-key serialization
 * Encrypted hybrid private-key serialization
@@ -325,7 +326,9 @@ Hybrid keys are persisted in `wallet.dat`.
 
 The wallet maintains the classical secp256k1 component together with the corresponding ML-DSA private key.
 
-Hybrid ownership checks (`IsMine()`, and therefore coin selection) resolve through a reverse index from a legacy ECDSA key ID to its `CHybridKeyID`, instead of re-hashing the public key of every hybrid key in the wallet. On a wallet holding 3,462 hybrid keys this brought `listunspent` from 8.5-31.4s down to 0.14-0.20s (1,374 UTXOs).
+Hybrid ownership checks (`IsMine()`, and therefore coin selection) resolve through a reverse index from a legacy ECDSA key ID to its `CHybridKeyID`, instead of re-hashing the public key of every hybrid key in the wallet. The index covers the encrypted `wallet.dat` records too (`secpPub` is stored in the clear), so a locked wallet still answers ownership questions, and it is rebuilt whenever either key map changes size or the wallet is locked. On a wallet holding 3,462 hybrid keys this brought `listunspent` from 8.5-31.4s down to 0.14-0.20s (1,374 UTXOs).
+
+While locked, every hybrid script form the wallet fully owns — `P2PKH`-style `TX_HYBRID_PUBKEYHASH`, direct `TX_HYBRID_PUBKEY` and `TX_HYBRID_MULTISIG` — is reported as watch-only: visible in `listhybridaddresses`, `listunspent`, the balance and coin control, but marked non-spendable by `AvailableCoins()` so it can never reach `SignSignature()`. Keys are never decrypted to answer these queries; unlocking restores full spendability.
 
 ---
 
@@ -435,7 +438,11 @@ Minimum versions used by this development branch include:
 
 * **OpenSSL 3.5 or newer**
 * **Boost 1.89 or newer**
-* C++20-capable compiler
+* C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
+  `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
+  the compiler default)
+* **Qt 5 or newer** for the GUI (Qt4 reached end of life in 2015 and is no
+  longer supported; `qmake` refuses a Qt4 kit)
 
 ---
 
@@ -452,6 +459,22 @@ make -f Makefile.linux -j$(nproc)
 ```
 
 The complete Phoenixcoin daemon/wallet build may additionally require the project's normal platform dependencies and build configuration.
+
+Release builds are optimised (`-O3 -DNDEBUG`) and, in `src/Makefile.linux`,
+link with link-time optimisation and section garbage collection
+(`-flto=auto -ffunction-sections -fdata-sections`, `-Wl,--gc-sections`),
+which inlines across translation units and drops unreachable code. Two
+knobs tune that:
+
+```bash
+make LTO=        # build without LTO/section GC (faster link, easier debugging)
+make NATIVE=1    # tune for the build machine with -march=native
+```
+
+`NATIVE=1` is off by default so release binaries stay portable across
+machines, and works for the Qt build as well (`qmake NATIVE=1`); the Qt
+project applies LTO to ELF targets. Release builds also enable
+`-fstack-protector-strong` and `_FORTIFY_SOURCE=2`.
 
 Before attempting to build or run Quantum, verify the installed OpenSSL version:
 
@@ -514,6 +537,8 @@ signmessage / verifymessage (hybrid addresses)
 encryptmessage / decryptmessage (hybrid addresses)
 ```
 
+`listhybridaddresses` also works on a locked (encrypted) wallet: it lists the addresses from the encrypted at-rest records as well as the decrypted keys, with their labels and creation times. `gethybridaddress` still requires an unlocked wallet, because it must derive a fresh address from key material the master key protects.
+
 `addhybridmultisigaddress <n-required> <'["hybridpubkey",...]'> [account]` creates an N-of-M hybrid multisignature P2SH address from hybrid public keys and adds it to the wallet.
 
 Each `hybridpubkey` is the hex-encoded serialized hybrid public key (`pubkey_serialized_hex`) returned by `gethybridkey` — a 33-byte compressed secp256k1 public key followed by the 1,952-byte ML-DSA-65 public key. The hybrid private key must be present (and the wallet unlocked, if encrypted) to sign for such an address.
@@ -561,6 +586,10 @@ Testing has covered:
 * Hybrid-key pool invariants (top-ups, uniqueness, locked-wallet refusal)
 * Legacy-key-ID reverse index invalidation (index cross-checked against the
   original linear scan across growth, `Lock()`/unlock and negative lookups)
+* Locked-wallet hybrid visibility: at-rest `wallet.dat` records are
+  indexed, every fully owned hybrid script form reports `MINE_WATCH_ONLY`
+  while the keys are encrypted, and the signability probe and
+  materialised-ID lookup still refuse
 * Hybrid address round trip and Base58 corruption
 * `ValidateHybridKey` negatives
 * `VerifyHybridSignature` in isolation (size guards, sighash-type mismatch, `nHashType` enforcement)
@@ -587,7 +616,7 @@ Testing has covered:
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (30 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **115 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (33 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **116 test cases** and passes with no errors:
 
 ```bash
 cd src
@@ -636,6 +665,9 @@ The hybrid post-quantum transaction layer is substantially implemented.
       atomic writes
 * [x] Hybrid key export / import in the Qt GUI (Wallet > Export/Import
       hybrid keys)
+* [x] Locked-wallet hybrid visibility: hybrid addresses, balances and all
+      fully owned hybrid output forms are listed as watch-only while the
+      wallet is encrypted, and stay non-spendable until unlocked
 
 ### Remaining deployment work
 
