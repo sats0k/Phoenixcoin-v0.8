@@ -294,14 +294,12 @@ static std::string ImportHybridKeyFromComponents(CWallet* pwallet,
 
     // ---- Build and validate the hybrid key ----
     CHybridKey hk;
-    std::unique_ptr<MLDSASigner> signerCopy;
     try {
         hk.secpPriv    = key.GetPrivKey();
         hk.secpPub     = key.GetPubKey();
         hk.nCreateTime = nCreateTime;
         hk.mldsaAlg    = "p384_mldsa65";
         hk.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
-        signerCopy     = std::make_unique<MLDSASigner>(pkey_guard.get());
 
         if (!ValidateHybridKey(hk))
             throw std::runtime_error("Hybrid key validation failed");
@@ -406,7 +404,6 @@ static std::string ImportHybridKeyFromComponents(CWallet* pwallet,
             pwallet->mapKeyMetadata[keyID] = keyMeta;
         }
         pwallet->mapHybridKeys.emplace(hybridID, std::move(hk));
-        pwallet->mapHybridSigners.emplace(hybridID, std::move(signerCopy));
 
         // Mirrors SetHybridAddressBookName, but skips its own disk write
         // (already in the transaction above) and its mapHybridKeys check.

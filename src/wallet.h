@@ -105,7 +105,6 @@ public:
     CHybridKeyDisk MakeHybridKeyDisk(const CHybridKey& hk);
 
     std::map<CHybridKeyID, CHybridKey> mapHybridKeys;
-    std::map<CHybridKeyID, std::unique_ptr<MLDSASigner>> mapHybridSigners;
     std::set<CHybridKeyID> setUnusedHybridKeys;
 
     // Hybrid key IDs that have been allocated as receive/change addresses in
@@ -115,7 +114,7 @@ public:
 
     // Encrypted-at-rest hybrid key records for encrypted wallets.
     // Populated at startup while the wallet is locked; decrypted into
-    // mapHybridKeys/mapHybridSigners on first unlock.
+    // mapHybridKeys on first unlock.
     std::map<CHybridKeyID, CHybridKeyDisk> mapHybridKeyDisk;
 
     // Reverse index over the wallet's hybrid keys: legacy ECDSA key ID ->

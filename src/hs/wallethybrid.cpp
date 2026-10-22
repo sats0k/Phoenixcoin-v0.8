@@ -438,7 +438,6 @@ bool LoadHybridKey(CWallet* wallet, const CHybridKeyDisk& disk,
                    const CKeyingMaterial& vMasterKey)
 {
     CHybridKey mem;
-    std::unique_ptr<MLDSASigner> signer;
 
     // ---- Validate disk ----
     if (disk.nVersion != HYBRIDKEY_DISK_VERSION &&
@@ -498,7 +497,6 @@ bool LoadHybridKey(CWallet* wallet, const CHybridKeyDisk& disk,
 
         // Construct MLDSASigner
         mem.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
-        signer = std::make_unique<MLDSASigner>(pkey_guard.get());
 
         if (!ValidateHybridKey(mem))
             throw std::runtime_error("Hybrid key validation failed");
@@ -519,7 +517,6 @@ bool LoadHybridKey(CWallet* wallet, const CHybridKeyDisk& disk,
     }
 
     wallet->mapHybridKeys.emplace(hybridID, std::move(mem));
-    wallet->mapHybridSigners.emplace(hybridID, std::move(signer));
 
     printf("Hybrid key %s loaded successfully\n", hybridID.ToString().c_str());
     return true;
@@ -536,7 +533,6 @@ bool CWallet::EnsureHybridKey(const CKeyID& keyID)
 
     // ---- Stage 1: Build locally ----
     CHybridKey hk;
-    std::unique_ptr<MLDSASigner> signer;
 
     try {
         hk.secpPriv = key.GetPrivKey();
@@ -549,11 +545,6 @@ bool CWallet::EnsureHybridKey(const CKeyID& keyID)
 
         if (!ValidateHybridKey(hk))
             return false;
-
-        EVP_PKEY* pkey = hk.mldsaSigner->GetKey();
-        if (!pkey) return false;
-
-        signer = std::make_unique<MLDSASigner>(pkey);
 
     } catch (const std::exception& e) {
         printf("EnsureHybridKey(%s) failed: %s\n", keyID.ToString().c_str(), e.what());
@@ -589,7 +580,6 @@ bool CWallet::EnsureHybridKey(const CKeyID& keyID)
     LOCK(cs_wallet);
 
     mapHybridKeys.emplace(hybridID, std::move(hk));
-    mapHybridSigners.emplace(hybridID, std::move(signer));
 
     if (fDiskPersisted && IsCrypted())
         mapHybridKeyDisk[hybridID] = disk;
@@ -758,7 +748,6 @@ bool CWallet::DecryptHybridKeys(const CKeyingMaterial& vMasterKey)
         }
 
         CHybridKey mem;
-        std::unique_ptr<MLDSASigner> signer;
 
         try {
             CPrivKey secpPriv;
@@ -784,7 +773,6 @@ bool CWallet::DecryptHybridKeys(const CKeyingMaterial& vMasterKey)
                 throw std::runtime_error("MLDSA private key decode failed");
 
             mem.mldsaSigner = std::make_unique<MLDSASigner>(pkey);
-            signer = std::make_unique<MLDSASigner>(pkey);
 
             if (!ValidateHybridKey(mem))
                 throw std::runtime_error("hybrid key validation failed");
@@ -804,7 +792,6 @@ bool CWallet::DecryptHybridKeys(const CKeyingMaterial& vMasterKey)
         }
 
         mapHybridKeys.emplace(hybridID, std::move(mem));
-        mapHybridSigners.emplace(hybridID, std::move(signer));
         if (!setUsedHybridKeys.count(hybridID))
             setUnusedHybridKeys.insert(hybridID);
 
@@ -930,13 +917,9 @@ bool CWallet::EnsureHybridKeyPool(unsigned int nTarget)
 
         auto it = mapHybridKeys.find(hybridID);
 
-        std::unique_ptr<MLDSASigner> signer =
-            GetSignerFromKey(it->second);
-
-        if (!signer)
+        // The key carries its own signer; there is no separate copy.
+        if (!it->second.mldsaSigner)
             return false;
-
-        mapHybridSigners.emplace(hybridID, std::move(signer));
 
         try {
             CHybridKeyDisk disk = MakeHybridKeyDisk(it->second);

@@ -803,7 +803,7 @@ BOOST_AUTO_TEST_CASE(hybrid_wallet_locked_watch_only_ismine)
         BOOST_REQUIRE(wallet.HaveHybridKeyByLegacyID(held[i]));
 
     // Move to the at-rest state: keep the disk records (secpPub in the clear),
-    // drop the materialised CHybridKey/mldsaSigner maps.
+    // drop the materialised CHybridKey map.
     for (std::map<CHybridKeyID, CHybridKey>::const_iterator it =
              wallet.mapHybridKeys.begin();
          it != wallet.mapHybridKeys.end(); ++it)
@@ -811,7 +811,6 @@ BOOST_AUTO_TEST_CASE(hybrid_wallet_locked_watch_only_ismine)
         wallet.mapHybridKeyDisk[it->first] = CHybridKeyDisk::FromMemory(it->second);
     }
     wallet.mapHybridKeys.clear();
-    wallet.mapHybridSigners.clear();
     BOOST_REQUIRE_EQUAL(wallet.mapHybridKeyDisk.size(), 3U);
     BOOST_REQUIRE_EQUAL(wallet.mapHybridKeys.size(), 0U);
 

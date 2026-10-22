@@ -113,6 +113,11 @@ Changes since v0.8.3.
   line whose option name is empty (`=value`) counts as malformed; the old
   iterator turned it into an option with an empty name.
   `libboost_program_options` is no longer linked.
+- The write-only `CWallet::mapHybridSigners` map is gone. Every signing
+  path uses the `MLDSASigner` that the hybrid key itself holds
+  (`CHybridKey::mldsaSigner`), so the parallel map was never read; the
+  signers it held were duplicate handles on the same keys, built and
+  kept alive for nothing.
 
 ### Performance
 
@@ -149,8 +154,8 @@ The Boost suite is at 117 test cases. New coverage:
 
 - `hybrid_wallet_locked_watch_only_ismine`: moves a real `CWallet` from
   the loaded state into the at-rest state it has while locked (keys
-  copied to `mapHybridKeyDisk`, `mapHybridKeys` and `mapHybridSigners`
-  cleared) and pins every hybrid script form at `MINE_WATCH_ONLY`, with
+  copied to `mapHybridKeyDisk`, `mapHybridKeys` cleared) and pins every
+  hybrid script form at `MINE_WATCH_ONLY`, with
   the ownership probe answering true while the signability probe and the
   materialised-ID lookup answer false, so nothing can reach
   `SelectCoinsMinConf()`/`SignSignature()`.
