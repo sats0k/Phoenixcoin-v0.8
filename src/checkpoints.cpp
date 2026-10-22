@@ -4,7 +4,6 @@
 // Distributed under the MIT/X11 software licence, see the accompanying
 // file LICENCE or http://opensource.org/license/mit
 
-#include <boost/foreach.hpp>
 
 #if 0
 #include "txdb.h"
@@ -95,7 +94,8 @@ namespace Checkpoints {
     CBlockIndex *GetLastCheckpoint(const BlockMap &mapBlockIndex) {
         MapCheckpoints &checkpoints = (fTestNet ? mapCheckpointsTestnet : mapCheckpoints);
 
-        BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type &i, checkpoints) {
+        for (auto it = checkpoints.rbegin(); it != checkpoints.rend(); ++it) {
+            const MapCheckpoints::value_type &i = *it;
             const uint256 &hash = i.second.first;
             BlockMap::const_iterator t = mapBlockIndex.find(hash);
             if(t != mapBlockIndex.end()) return(t->second);
@@ -243,7 +243,7 @@ namespace Checkpoints {
 
             /* Relay the checkpoint */
             if(!checkpointMessage.IsNull()) {
-                BOOST_FOREACH(CNode *pnode, vNodes) checkpointMessage.RelayTo(pnode);
+                for (CNode *pnode : vNodes) checkpointMessage.RelayTo(pnode);
             }
 
             return(true);
@@ -303,7 +303,8 @@ namespace Checkpoints {
         /* Reset sync checkpoint to the last hardened checkpoint
          * by walking from the youngest hardened checkpoint to the oldest until
          * there is a match with the block index */
-        BOOST_REVERSE_FOREACH(const MapCheckpoints::value_type &i, mapCheckpoints) {
+        for (auto it = mapCheckpoints.rbegin(); it != mapCheckpoints.rend(); ++it) {
+            const MapCheckpoints::value_type &i = *it;
             const uint256 &hash = i.second.first;
             const int &time = i.second.second;
             const int &height = i.first;
@@ -386,7 +387,7 @@ namespace Checkpoints {
 
         {
             LOCK(cs_vNodes);
-            BOOST_FOREACH(CNode *pnode, vNodes) checkpoint.RelayTo(pnode);
+            for (CNode *pnode : vNodes) checkpoint.RelayTo(pnode);
         }
 
         return(true);

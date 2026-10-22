@@ -1,6 +1,5 @@
 #include <cassert>
 #include <boost/test/unit_test.hpp>
-#include <boost/foreach.hpp>
 
 #include <openssl/ec.h>
 #include <openssl/err.h>

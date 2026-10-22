@@ -503,7 +503,7 @@ public:
             nBlockTime = GetAdjustedTime();
         if ((int64)nLockTime < ((int64)nLockTime < LOCKTIME_THRESHOLD ? (int64)nBlockHeight : nBlockTime))
             return true;
-        BOOST_FOREACH(const CTxIn& txin, vin)
+        for (const CTxIn& txin : vin)
             if (!txin.IsFinal())
                 return false;
         return true;
@@ -575,7 +575,7 @@ public:
     int64 GetValueOut() const
     {
         int64 nValueOut = 0;
-        BOOST_FOREACH(const CTxOut& txout, vout)
+        for (const CTxOut& txout : vout)
         {
             nValueOut += txout.nValue;
             if (!MoneyRange(txout.nValue) || !MoneyRange(nValueOut))
@@ -987,7 +987,7 @@ public:
         // allocate once instead of repeatedly growing the tree vector.
         vMerkleTree.reserve(vTxHashes.size() * 2 + 1);
 
-        BOOST_FOREACH(const uint256& hash, vTxHashes)
+        for (const uint256& hash : vTxHashes)
             vMerkleTree.push_back(hash);
 
         int j = 0;
@@ -1009,7 +1009,7 @@ public:
     {
         vMerkleTree.clear();
         vMerkleTree.reserve(vtx.size() * 2 + 1);
-        BOOST_FOREACH(const CTransaction& tx, vtx)
+        for (const CTransaction& tx : vtx)
             vMerkleTree.push_back(tx.GetHash());
         int j = 0;
         for (int nSize = vtx.size(); nSize > 1; nSize = (nSize + 1) / 2)
@@ -1045,7 +1045,7 @@ public:
     {
         if (nIndex == -1)
             return 0;
-        BOOST_FOREACH(const uint256& otherside, vMerkleBranch)
+        for (const uint256& otherside : vMerkleBranch)
         {
             if (nIndex & 1)
                 hash = Hash(BEGIN(otherside), END(otherside), BEGIN(hash), END(hash));
@@ -1498,7 +1498,7 @@ public:
         // Retrace how far back it was in the sender's branch
         int nDistance = 0;
         int nStep = 1;
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             BlockMap::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1517,7 +1517,7 @@ public:
     CBlockIndex* GetBlockIndex()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             BlockMap::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())
@@ -1533,7 +1533,7 @@ public:
     uint256 GetBlockHash()
     {
         // Find the first block the caller has in the main chain
-        BOOST_FOREACH(const uint256& hash, vHave)
+        for (const uint256& hash : vHave)
         {
             BlockMap::iterator mi = mapBlockIndex.find(hash);
             if (mi != mapBlockIndex.end())

@@ -1,7 +1,6 @@
 #include <iostream>
 #include <fstream>
 #include <vector>
-#include <boost/foreach.hpp>
 #include <boost/preprocessor/stringize.hpp>
 #include <boost/test/unit_test.hpp>
 #include "json/json_spirit_reader_template.h"
@@ -31,7 +30,7 @@ BOOST_AUTO_TEST_CASE(script_valid)
     // scripts.
     Array tests = read_json("script_valid.json");
 
-    BOOST_FOREACH(Value& tv, tests)
+    for (Value& tv : tests)
     {
         Array test = tv.get_array();
         string strTest = write_string(tv, false);
@@ -55,7 +54,7 @@ BOOST_AUTO_TEST_CASE(script_invalid)
     // Scripts that should evaluate as invalid
     Array tests = read_json("script_invalid.json");
 
-    BOOST_FOREACH(Value& tv, tests)
+    for (Value& tv : tests)
     {
         Array test = tv.get_array();
         string strTest = write_string(tv, false);

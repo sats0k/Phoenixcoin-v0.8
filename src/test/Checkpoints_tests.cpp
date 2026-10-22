@@ -2,7 +2,6 @@
 // Unit tests for block-chain checkpoints
 //
 #include <boost/test/unit_test.hpp>
-#include <boost/foreach.hpp>
 
 #include "../checkpoints.h"
 #include "../util.h"

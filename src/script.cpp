@@ -10,7 +10,6 @@
 #include <unordered_set>
 #include <tuple>
 
-#include <boost/foreach.hpp>
 #include <boost/functional/hash.hpp>
 
 #include <openssl/evp.h>
@@ -1565,7 +1564,7 @@ bool Solver(const CScript& scriptPubKey, txnouttype& typeRet, vector<vector<unsi
     }
     // Scan templates
     const CScript& script1 = scriptPubKey;
-    BOOST_FOREACH(const PAIRTYPE(txnouttype, CScript)& tplate, mTemplates) {
+    for (const PAIRTYPE(const txnouttype, CScript)& tplate : mTemplates) {
         const CScript& script2 = tplate.second;
         vSolutionsRet.clear();
         opcodetype opcode1, opcode2;
@@ -1759,7 +1758,7 @@ bool IsStandard(const CScript& scriptPubKey) {
 
 unsigned int HaveKeys(const vector<valtype>& pubkeys, const CKeyStore& keystore) {
     unsigned int nResult = 0;
-    BOOST_FOREACH(const valtype& pubkey, pubkeys) {
+    for (const valtype& pubkey : pubkeys) {
         CKeyID keyID = CPubKey(pubkey).GetID();
         if(keystore.HaveKey(keyID))
             ++nResult;
@@ -1943,7 +1942,7 @@ public:
         std::vector<CTxDestination> vDest;
         int nRequired;
         if(ExtractDestinations(script, type, vDest, nRequired)) {
-            BOOST_FOREACH(const CTxDestination &dest, vDest)
+            for (const CTxDestination &dest : vDest)
               boost::apply_visitor(*this, dest);
         }
     }
@@ -2374,7 +2373,7 @@ bool VerifySignature(const CTransaction& txFrom, const CTransaction& txTo, unsig
 
 static CScript PushAll(const vector<valtype>& values) {
     CScript result;
-    BOOST_FOREACH(const valtype& v, values)
+    for (const valtype& v : values)
     result << v;
     return result;
 }
@@ -2675,7 +2674,7 @@ void CScript::SetDestination(const CTxDestination& dest) {
 void CScript::SetMultisig(int nRequired, const std::vector<CKey>& keys) {
     this->clear();
     *this << EncodeOP_N(nRequired);
-    BOOST_FOREACH(const CKey& key, keys)
+    for (const CKey& key : keys)
     *this << key.GetPubKey();
     *this << EncodeOP_N(keys.size()) << OP_CHECKMULTISIG;
 }

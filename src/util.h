@@ -36,7 +36,7 @@ static const int64 CENT = 1000000;
 #define UEND(a)             ((unsigned char*)&((&(a))[1]))
 #define ARRAYLEN(array)     (sizeof(array)/sizeof((array)[0]))
 
-// This is needed because the foreach macro can't get over the comma in pair<t1, t2>
+// Shorthand for std::pair, which is spelled out in many declarations
 #define PAIRTYPE(t1, t2)    std::pair<t1, t2>
 
 // Align by increasing pointer, must have extra space at end of buffer

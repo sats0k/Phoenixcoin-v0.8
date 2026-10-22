@@ -6,7 +6,6 @@
 
 #include <boost/test/unit_test.hpp>
 #include <filesystem>
-#include <boost/foreach.hpp>
 #include <boost/preprocessor/stringize.hpp>
 
 #include "json/json_spirit_writer_template.h"
@@ -63,7 +62,7 @@ ParseScript(string s)
             words.push_back(strToken);
     }
 
-    BOOST_FOREACH(string w, words)
+    for (string w : words)
     {
         if (std::all_of(w.begin(), w.end(), IsDigit) ||
             (w.starts_with("-") && std::all_of(w.begin() + 1, w.end(), IsDigit)))

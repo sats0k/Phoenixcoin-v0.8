@@ -64,7 +64,7 @@ Object blockToJSON(const CBlock& block, const CBlockIndex* blockindex, int verbo
     result.push_back(Pair("version", block.nVersion));
     result.push_back(Pair("merkleroot", block.hashMerkleRoot.GetHex()));
     Array txs;
-    BOOST_FOREACH(const CTransaction&tx, block.vtx)
+    for (const CTransaction&tx : block.vtx)
     {
         if (verbosity >= 2)
         {
@@ -152,7 +152,7 @@ Value getrawmempool(const Array &params, bool fHelp) {
     mempool.queryHashes(vtxid);
 
     Array a;
-    BOOST_FOREACH(const uint256& hash, vtxid)
+    for (const uint256& hash : vtxid)
         a.push_back(hash.ToString());
 
     return a;

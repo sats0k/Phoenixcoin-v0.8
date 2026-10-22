@@ -126,6 +126,14 @@ Changes since v0.8.3.
   `ToLowerCase()`, and `<boost/assert.hpp>` becomes `<cassert>`. The
   `boost::algorithm` headers were the last ones of that kind in the tree,
   so the string algorithms no longer come from Boost at all.
+- `boost::foreach` is replaced by the range-based `for` loops: 270 loops
+  in 36 files of the daemon, the wallet, the RPC modules, the Qt GUI and
+  the tests. The loop variable keeps its declared type, and the loops over
+  a `std::map` keep the `const` of the key (as in `PAIRTYPE(const uint256,
+  CWalletTx)`), so the reference binds to the stored pair instead of
+  copying every element into a temporary. The three
+  `BOOST_REVERSE_FOREACH` loops became explicit reverse-iterator loops,
+  and `<boost/foreach.hpp>` is no longer included anywhere.
 
 ### Performance
 

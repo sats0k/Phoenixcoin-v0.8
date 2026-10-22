@@ -68,7 +68,7 @@ int64 CWalletDB::GetAccountCreditDebit(const string& strAccount)
     ListAccountCreditDebit(strAccount, entries);
 
     int64 nCreditDebit = 0;
-    BOOST_FOREACH (const CAccountingEntry& entry, entries)
+    for (const CAccountingEntry& entry : entries)
         nCreditDebit += entry.nCreditDebit;
 
     return nCreditDebit;
@@ -136,7 +136,7 @@ CWalletDB::ReorderTransactions(CWallet* pwallet)
     }
     list<CAccountingEntry> acentries;
     ListAccountCreditDebit("", acentries);
-    BOOST_FOREACH(CAccountingEntry& entry, acentries)
+    for (CAccountingEntry& entry : acentries)
     {
         txByTime.insert(make_pair(entry.nTime, TxPair((CWalletTx*)0, &entry)));
     }
@@ -163,7 +163,7 @@ CWalletDB::ReorderTransactions(CWallet* pwallet)
         else
         {
             int64 nOrderPosOff = 0;
-            BOOST_FOREACH(const int64& nOffsetStart, nOrderPosOffsets)
+            for (const int64& nOffsetStart : nOrderPosOffsets)
             {
                 if (nOrderPos >= nOffsetStart)
                     ++nOrderPosOff;
@@ -505,7 +505,7 @@ DBErrors CWalletDB::LoadWallet(CWallet *pwallet) {
     // Load hybrid address book
     pwallet->LoadHybridAddressBook();
 
-    BOOST_FOREACH(uint256 hash, wss.vWalletUpgrade)
+    for (uint256 hash : wss.vWalletUpgrade)
       WriteTx(hash, pwallet->mapWallet[hash]);
 
     /* Version update */
@@ -667,7 +667,7 @@ bool CWalletDB::Recover(CDBEnv& dbenv, std::string filename, bool fOnlyKeys)
     CWalletScanState wss;
 
     DbTxn* ptxn = dbenv.TxnBegin();
-    BOOST_FOREACH(CDBEnv::KeyValPair& row, salvagedData)
+    for (CDBEnv::KeyValPair& row : salvagedData)
     {
         if (fOnlyKeys)
         {
@@ -748,7 +748,7 @@ std::string static EncodeDumpTime(int64 nTime) {
 std::string static EncodeDumpString(const std::string &str) {
     std::stringstream ret;
 
-    BOOST_FOREACH(uchar c, str) {
+    for (uchar c : str) {
         if((c <= 32) || (c >= 128) || (c == '%')) {
             ret << '%' << HexStr(&c, &c + 1);
         } else {

@@ -410,7 +410,7 @@ void RPCConsole::updatePeerList()
     {
         LOCK(cs_vNodes);
         vstats.reserve(vNodes.size());
-        BOOST_FOREACH(CNode* pnode, vNodes) {
+        for (CNode* pnode : vNodes) {
             CNodeStats stats;
             pnode->copyStats(stats);
             vstats.push_back(stats);
@@ -420,7 +420,7 @@ void RPCConsole::updatePeerList()
     ui->peerTableWidget->setRowCount(vstats.size());
 
     int row = 0;
-    BOOST_FOREACH(const CNodeStats& stats, vstats)
+    for (const CNodeStats& stats : vstats)
     {
         QString direction = stats.fInbound ? tr("Inbound") : tr("Outbound");
         QString height = (stats.nStartingHeight == -1)

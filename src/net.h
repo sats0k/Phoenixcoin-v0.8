@@ -20,7 +20,6 @@
 #endif
 
 #include <boost/array.hpp>
-#include <boost/foreach.hpp>
 
 #include "mruset.h"
 #include "netbase.h"
@@ -694,7 +693,7 @@ inline void RelayInventory(const CInv& inv)
     // Put on lists to offer to the other nodes
     {
         LOCK(cs_vNodes);
-        BOOST_FOREACH(CNode* pnode, vNodes)
+        for (CNode* pnode : vNodes)
             pnode->PushInventory(inv);
     }
 }
