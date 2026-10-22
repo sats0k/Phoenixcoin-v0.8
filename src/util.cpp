@@ -6,10 +6,10 @@
 #include <limits>
 #include <set>
 
+#include <cctype>
 #include <stdarg.h>
 #include <stdexcept>
 
-#include <boost/algorithm/string/join.hpp>
 #include <filesystem>
 #include <fstream>
 #include <boost/foreach.hpp>
@@ -394,6 +394,34 @@ bool IsHex(const string& str)
             return false;
     }
     return (str.size() > 0) && (str.size()%2 == 0);
+}
+
+bool StartsWithNoCase(const std::string& str, const std::string& prefix)
+{
+    if (str.size() < prefix.size())
+        return false;
+    for (size_t i = 0; i < prefix.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(str[i])) !=
+            std::tolower(static_cast<unsigned char>(prefix[i])))
+            return false;
+    }
+    return true;
+}
+
+std::string TrimWhitespace(const std::string& str)
+{
+    const std::string strWhitespace = " \t\r\n\v\f";
+    size_t nStart = str.find_first_not_of(strWhitespace);
+    if (nStart == std::string::npos)
+        return std::string();
+    size_t nEnd = str.find_last_not_of(strWhitespace);
+    return str.substr(nStart, nEnd - nStart + 1);
+}
+
+void ToLowerCase(std::string& str)
+{
+    std::transform(str.begin(), str.end(), str.begin(),
+                   [](unsigned char ch) { return std::tolower(ch); });
 }
 
 vector<unsigned char> ParseHex(const char* psz)
@@ -1309,8 +1337,15 @@ std::string FormatSubVersion(const std::string& name, int nClientVersion, const 
     std::ostringstream ss;
     ss << "/";
     ss << name << ":" << FormatVersion(nClientVersion);
-    if (!comments.empty())
-        ss << "(" << boost::algorithm::join(comments, "; ") << ")";
+    if (!comments.empty()) {
+        ss << "(";
+        for (size_t i = 0; i < comments.size(); ++i) {
+            if (i)
+                ss << "; ";
+            ss << comments[i];
+        }
+        ss << ")";
+    }
     ss << "/";
     return ss.str();
 }

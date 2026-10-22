@@ -1,4 +1,4 @@
-#include <boost/algorithm/string.hpp>
+#include <cctype>
 #include <boost/foreach.hpp>
 #include <boost/test/unit_test.hpp>
 
@@ -10,7 +10,21 @@ static void
 ResetArgs(const std::string& strArg)
 {
     std::vector<std::string> vecArg;
-    boost::split(vecArg, strArg, boost::is_space(), boost::token_compress_on);
+    {
+        std::string strToken;
+        for (char ch : strArg) {
+            if (std::isspace(static_cast<unsigned char>(ch))) {
+                if (!strToken.empty()) {
+                    vecArg.push_back(strToken);
+                    strToken.clear();
+                }
+            } else {
+                strToken += ch;
+            }
+        }
+        if (!strToken.empty())
+            vecArg.push_back(strToken);
+    }
 
     // Insert dummy executable name:
     vecArg.insert(vecArg.begin(), "testbitcoin");

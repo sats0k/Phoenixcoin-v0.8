@@ -8,7 +8,6 @@
 #include <vector>
 #include <set>
 
-#include <boost/assign/list_of.hpp>
 
 #include "base58.h"
 #include "db.h"
@@ -20,7 +19,6 @@ extern CWallet *pwalletMain;
 
 using namespace std;
 using namespace boost;
-using namespace boost::assign;
 using namespace json_spirit;
 
 void ScriptPubKeyToJSON(const CScript &scriptPubKey, Object &out) {
@@ -152,7 +150,7 @@ Value listunspent(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    RPCTypeCheck(params, list_of(int_type)(int_type)(array_type));
+    RPCTypeCheck(params, {int_type, int_type, array_type});
 
     int nMinDepth = 1;
     if (params.size() > 0)
@@ -224,7 +222,7 @@ Value createrawtransaction(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    RPCTypeCheck(params, list_of(array_type)(obj_type));
+    RPCTypeCheck(params, {array_type, obj_type});
 
     Array inputs = params[0].get_array();
     Object sendTo = params[1].get_obj();
@@ -290,7 +288,7 @@ Value decoderawtransaction(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    RPCTypeCheck(params, list_of(str_type));
+    RPCTypeCheck(params, {str_type});
 
     vector<unsigned char> txData(ParseHex(params[0].get_str()));
     CDataStream ssData(txData, SER_NETWORK, PROTOCOL_VERSION);
@@ -344,7 +342,7 @@ Value signrawtransaction(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    RPCTypeCheck(params, list_of(str_type)(array_type)(array_type)(str_type), true);
+    RPCTypeCheck(params, {str_type, array_type, array_type, str_type}, true);
 
     vector<unsigned char> txData(ParseHex(params[0].get_str()));
     CDataStream ssData(txData, SER_NETWORK, PROTOCOL_VERSION);
@@ -403,7 +401,7 @@ Value signrawtransaction(const Array &params, bool fHelp) {
 
             Object prevOut = p.get_obj();
 
-            RPCTypeCheck(prevOut, map_list_of("txid", str_type)("vout", int_type)("scriptPubKey", str_type));
+            RPCTypeCheck(prevOut, {{"txid", str_type}, {"vout", int_type}, {"scriptPubKey", str_type}});
 
             string txidHex = find_value(prevOut, "txid").get_str();
             if (!IsHex(txidHex))
@@ -466,15 +464,14 @@ Value signrawtransaction(const Array &params, bool fHelp) {
     int nHashType = SIGHASH_ALL;
     if (params.size() > 3 && params[3].type() != null_type)
     {
-        static map<string, int> mapSigHashValues =
-            boost::assign::map_list_of
-            (string("ALL"), int(SIGHASH_ALL))
-            (string("ALL|ANYONECANPAY"), int(SIGHASH_ALL|SIGHASH_ANYONECANPAY))
-            (string("NONE"), int(SIGHASH_NONE))
-            (string("NONE|ANYONECANPAY"), int(SIGHASH_NONE|SIGHASH_ANYONECANPAY))
-            (string("SINGLE"), int(SIGHASH_SINGLE))
-            (string("SINGLE|ANYONECANPAY"), int(SIGHASH_SINGLE|SIGHASH_ANYONECANPAY))
-            ;
+        static map<string, int> mapSigHashValues = {
+            {string("ALL"), int(SIGHASH_ALL)},
+            {string("ALL|ANYONECANPAY"), int(SIGHASH_ALL|SIGHASH_ANYONECANPAY)},
+            {string("NONE"), int(SIGHASH_NONE)},
+            {string("NONE|ANYONECANPAY"), int(SIGHASH_NONE|SIGHASH_ANYONECANPAY)},
+            {string("SINGLE"), int(SIGHASH_SINGLE)},
+            {string("SINGLE|ANYONECANPAY"), int(SIGHASH_SINGLE|SIGHASH_ANYONECANPAY)}
+        };
         string strHashType = params[3].get_str();
         if (mapSigHashValues.count(strHashType))
             nHashType = mapSigHashValues[strHashType];
@@ -585,7 +582,7 @@ Value sendrawtransaction(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    RPCTypeCheck(params, list_of(str_type));
+    RPCTypeCheck(params, {str_type});
 
     // parse hex string from parameter
     vector<unsigned char> txData(ParseHex(params[0].get_str()));

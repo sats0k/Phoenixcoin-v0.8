@@ -15,7 +15,6 @@
 #include <boost/foreach.hpp>
 #include <boost/iostreams/concepts.hpp>
 #include <boost/iostreams/stream.hpp>
-#include <boost/algorithm/string.hpp>
 #include <boost/asio/ssl.hpp>
 #include <fstream>
 #include <boost/shared_ptr.hpp>
@@ -424,10 +423,10 @@ int ReadHTTPHeader(std::basic_istream<char>& stream, map<string, string>& mapHea
         if (nColon != string::npos)
         {
             string strHeader = str.substr(0, nColon);
-            boost::trim(strHeader);
-            boost::to_lower(strHeader);
+            strHeader = TrimWhitespace(strHeader);
+            ToLowerCase(strHeader);
             string strValue = str.substr(nColon+1);
-            boost::trim(strValue);
+            strValue = TrimWhitespace(strValue);
             mapHeadersRet[strHeader] = strValue;
             if (strHeader == "content-length")
                 nLen = atoi(strValue.c_str());
@@ -476,7 +475,7 @@ bool HTTPAuthorized(map<string, string>& mapHeaders)
     string strAuth = mapHeaders["authorization"];
     if (strAuth.substr(0,6) != "Basic ")
         return false;
-    string strUserPass64 = strAuth.substr(6); boost::trim(strUserPass64);
+    string strUserPass64 = TrimWhitespace(strAuth.substr(6));
     string strUserPass = DecodeBase64(strUserPass64);
     return strUserPass == strRPCUserColonPass;
 }

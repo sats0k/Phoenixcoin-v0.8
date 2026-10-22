@@ -15,7 +15,6 @@
 #include <limits>
 #include <tuple>
 
-#include <boost/algorithm/string/replace.hpp>
 #include <filesystem>
 #include <fstream>
 
@@ -1973,7 +1972,13 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
 
     if (!fIsInitialDownload && !strCmd.empty())
     {
-        boost::replace_all(strCmd, "%s", hashBestChain.GetHex());
+        // Replace every "%s" placeholder with the block hash.
+        std::string strHash = hashBestChain.GetHex();
+        size_t nPos = 0;
+        while ((nPos = strCmd.find("%s", nPos)) != std::string::npos) {
+            strCmd.replace(nPos, 2, strHash);
+            nPos += strHash.size();
+        }
         boost::thread t(runCommand, strCmd); // thread runs free
     }
 

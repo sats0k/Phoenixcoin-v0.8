@@ -2,7 +2,6 @@
 // Distributed under the MIT/X11 software licence, see the accompanying
 // file LICENCE or http://opensource.org/license/mit
 
-#include <boost/algorithm/string/predicate.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/interprocess/ipc/message_queue.hpp>
 #include <boost/version.hpp>
@@ -42,7 +41,7 @@ static bool ipcScanCmd(int argc, char *argv[], bool fRelay) {
     // Check for URI in argv
     bool fSent = false;
     for(i = 1; i < argc; i++) {
-        if(boost::algorithm::istarts_with(argv[i], "phoenixcoin:")) {
+        if(StartsWithNoCase(argv[i], "phoenixcoin:")) {
             const char *strURI = argv[i];
             try {
                 boost::interprocess::message_queue mq(boost::interprocess::open_only, URI_QUEUE_NAME);

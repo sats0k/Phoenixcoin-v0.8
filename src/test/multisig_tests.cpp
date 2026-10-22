@@ -1,7 +1,4 @@
-#include <boost/assert.hpp>
-#include <boost/assign/list_of.hpp>
-#include <boost/assign/list_inserter.hpp>
-#include <boost/assign/std/vector.hpp>
+#include <cassert>
 #include <boost/test/unit_test.hpp>
 #include <boost/foreach.hpp>
 
@@ -14,7 +11,6 @@
 #include "wallet.h"
 
 using namespace std;
-using namespace boost::assign;
 
 typedef vector<unsigned char> valtype;
 

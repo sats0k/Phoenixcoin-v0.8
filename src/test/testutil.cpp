@@ -1,12 +1,10 @@
+#include <algorithm>
+#include <cctype>
 #include <fstream>
 #include <map>
 #include <string>
 
 #include <boost/test/unit_test.hpp>
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/predicate.hpp>
-#include <boost/algorithm/string/replace.hpp>
-#include <boost/algorithm/string/split.hpp>
 #include <filesystem>
 #include <boost/foreach.hpp>
 #include <boost/preprocessor/stringize.hpp>
@@ -18,7 +16,11 @@
 
 using namespace std;
 using namespace json_spirit;
-using namespace boost::algorithm;
+
+static bool IsDigit(char ch)
+{
+    return std::isdigit(static_cast<unsigned char>(ch)) != 0;
+}
 
 CScript
 ParseScript(string s)
@@ -37,30 +39,46 @@ ParseScript(string s)
             string strName(name);
             mapOpNames[strName] = (opcodetype)op;
             // Convenience: OP_ADD and just ADD are both recognized:
-            replace_first(strName, "OP_", "");
+            size_t nPos = strName.find("OP_");
+            if (nPos != std::string::npos)
+                strName.erase(nPos, 3);
             mapOpNames[strName] = (opcodetype)op;
         }
     }
 
     vector<string> words;
-    split(words, s, is_any_of(" \t\n"), token_compress_on);
+    {
+        string strToken;
+        for (char ch : s) {
+            if (ch == ' ' || ch == '\t' || ch == '\n') {
+                if (!strToken.empty()) {
+                    words.push_back(strToken);
+                    strToken.clear();
+                }
+            } else {
+                strToken += ch;
+            }
+        }
+        if (!strToken.empty())
+            words.push_back(strToken);
+    }
 
     BOOST_FOREACH(string w, words)
     {
-        if (all(w, is_digit()) ||
-            (starts_with(w, "-") && all(string(w.begin()+1, w.end()), is_digit())))
+        if (std::all_of(w.begin(), w.end(), IsDigit) ||
+            (w.starts_with("-") && std::all_of(w.begin() + 1, w.end(), IsDigit)))
         {
             // Number
             int64 n = atoi64(w);
             result << n;
         }
-        else if (starts_with(w, "0x") && IsHex(string(w.begin()+2, w.end())))
+        else if (w.starts_with("0x") && IsHex(string(w.begin()+2, w.end())))
         {
             // Raw hex data, inserted NOT pushed onto stack:
             std::vector<unsigned char> raw = ParseHex(string(w.begin()+2, w.end()));
             result.insert(result.end(), raw.begin(), raw.end());
         }
-        else if (w.size() >= 2 && starts_with(w, "'") && ends_with(w, "'"))
+        else if (w.size() >= 2 && w.starts_with("'") && w.ends_with("'"))
         {
             // Single-quoted string, pushed as data. NOTE: this is poor-man's
             // parsing, spaces/tabs/newlines in single-quoted strings won't work.

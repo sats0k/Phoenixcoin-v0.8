@@ -8,7 +8,6 @@
 #include <map>
 #include <tuple>
 
-#include <boost/algorithm/string.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <filesystem>
 #include <boost/variant/get.hpp>
@@ -886,13 +885,13 @@ bool ImportWallet(CWallet *pwallet, const string &strSrc) {
         bool fLabel = true;
         uint nStr;
         for(nStr = 2; nStr < vstr.size(); nStr++) {
-            if(boost::algorithm::starts_with(vstr[nStr], "#"))
+            if(vstr[nStr].starts_with("#"))
               break;
             if(vstr[nStr] == "change=1")
               fLabel = false;
             if(vstr[nStr] == "reserve=1")
               fLabel = false;
-            if(boost::algorithm::starts_with(vstr[nStr], "label=")) {
+            if(vstr[nStr].starts_with("label=")) {
                 strLabel = DecodeDumpString(vstr[nStr].substr(6));
                 fLabel = true;
             }

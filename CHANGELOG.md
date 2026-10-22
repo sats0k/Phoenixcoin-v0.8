@@ -118,6 +118,14 @@ Changes since v0.8.3.
   (`CHybridKey::mldsaSigner`), so the parallel map was never read; the
   signers it held were duplicate handles on the same keys, built and
   kept alive for nothing.
+- The obsolete Boost string, assign and assert helpers are gone.
+  `boost::assign::list_of()`/`map_list_of()` become initialiser lists,
+  `boost::algorithm::starts_with()`/`istarts_with()` become
+  `std::string::starts_with()` and the new `StartsWithNoCase()`,
+  `boost::trim()` and `boost::to_lower()` become `TrimWhitespace()` and
+  `ToLowerCase()`, and `<boost/assert.hpp>` becomes `<cassert>`. The
+  `boost::algorithm` headers were the last ones of that kind in the tree,
+  so the string algorithms no longer come from Boost at all.
 
 ### Performance
 
