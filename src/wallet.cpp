@@ -10,6 +10,7 @@
 #include "base58.h"
 #include "crypter.h"
 #include "main.h"
+#include "util.h"
 #include "walletdb.h"
 #include "wallet.h"
 #include "hs/wallethybrid.h"
@@ -1211,7 +1212,7 @@ static void ApproximateBestSubset(vector<pair<int64, pair<const CWalletTx*,unsig
         {
             for (unsigned int i = 0; i < vValue.size(); i++)
             {
-                if (nPass == 0 ? rand() % 2 : !vfIncluded[i])
+                if (nPass == 0 ? GetRand(2) : !vfIncluded[i])
                 {
                     nTotal += vValue[i].first;
                     vfIncluded[i] = true;

@@ -36,6 +36,12 @@ Changes since v0.8.3.
 
 ### Fixed
 
+- The randomisation in the coin selection (`ApproximateBestSubset()`) used
+  `rand()` from the C library, whose sequence is predictable; it now uses
+  the `GetRand()` cryptographic source, like the rest of the code. The two
+  `sprintf()` calls that formatted the hex representation of a `uint256`
+  and the Boost version string became `snprintf()` calls with the size of
+  the target buffer, so neither can write past it.
 - The hybrid objects in `src/Makefile.linux` rebuilt only when their own
   `.cpp` changed: their rules carried no `-MMD`, so editing a shared
   header such as `wallet.h` rebuilt the rest of the binary but left

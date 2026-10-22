@@ -8,6 +8,8 @@
 
 #include <QUrl>
 
+#include <cstdio>
+
 #include <openssl/crypto.h>  /* for SSLEAY_VERSION */
 #include <boost/version.hpp>  /* for BOOST_VERSION */
 #include <db_cxx.h>  /* for DbEnv::version() */
@@ -239,7 +241,7 @@ RPCConsole::RPCConsole(QWidget *parent) :
 
     /* Display Boost version */
     char chVersionBoost[64];
-    sprintf(chVersionBoost, "Boost v%d.%d.%d",
+    snprintf(chVersionBoost, sizeof(chVersionBoost), "Boost v%d.%d.%d",
       BOOST_VERSION / 100000, (BOOST_VERSION / 100) % 1000, BOOST_VERSION % 100);
     ui->versionBoost->setText(chVersionBoost);
 
