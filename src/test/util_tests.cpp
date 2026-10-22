@@ -1,3 +1,6 @@
+#include <sstream>
+#include <string>
+#include <utility>
 #include <vector>
 #include <boost/test/unit_test.hpp>
 #include <boost/foreach.hpp>
@@ -259,6 +262,111 @@ BOOST_AUTO_TEST_CASE(util_IsHex)
     BOOST_CHECK(!IsHex("eleven"));
     BOOST_CHECK(!IsHex("00xx00"));
     BOOST_CHECK(!IsHex("0x0000"));
+}
+
+BOOST_AUTO_TEST_CASE(util_ParseConfigStream)
+{
+    std::vector<std::pair<std::string, std::string> > vecSettings;
+    std::string strError;
+
+    /* Plain option/value pairs, with the surrounding whitespace trimmed */
+    {
+        std::istringstream stream("key1=value1\nkey2 = value2 \n\tkey3\t=\tvalue3\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 3U);
+        BOOST_CHECK_EQUAL(vecSettings[0].first, "key1");
+        BOOST_CHECK_EQUAL(vecSettings[0].second, "value1");
+        BOOST_CHECK_EQUAL(vecSettings[1].first, "key2");
+        BOOST_CHECK_EQUAL(vecSettings[1].second, "value2");
+        BOOST_CHECK_EQUAL(vecSettings[2].first, "key3");
+        BOOST_CHECK_EQUAL(vecSettings[2].second, "value3");
+    }
+
+    /* Comments, blank lines and an empty value */
+    {
+        std::istringstream stream("# a comment\n\n; another comment\nkey=value # trailing comment\nempty=\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 2U);
+        BOOST_CHECK_EQUAL(vecSettings[0].first, "key");
+        BOOST_CHECK_EQUAL(vecSettings[0].second, "value");
+        BOOST_CHECK_EQUAL(vecSettings[1].first, "empty");
+        BOOST_CHECK_EQUAL(vecSettings[1].second, "");
+    }
+
+    /* A value keeps its quotes and any further '=' it contains */
+    {
+        std::istringstream stream("quoted=\"a b\"\nequals=a=b\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 2U);
+        BOOST_CHECK_EQUAL(vecSettings[0].second, "\"a b\"");
+        BOOST_CHECK_EQUAL(vecSettings[1].second, "a=b");
+    }
+
+    /* A '[section]' header prefixes the option names that follow it */
+    {
+        std::istringstream stream("[section]\nkey=value\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 1U);
+        BOOST_CHECK_EQUAL(vecSettings[0].first, "section.key");
+        BOOST_CHECK_EQUAL(vecSettings[0].second, "value");
+    }
+
+    /* A section that already ends with a dot gets no second separator, and the
+       prefix of an empty section is just the separator, as the old iterator
+       did it */
+    {
+        std::istringstream stream("[gui.]\nkey=value\n[gui..]\nkey=value\n[.]\nkey=value\n[]\nkey=value\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 4U);
+        BOOST_CHECK_EQUAL(vecSettings[0].first, "gui.key");
+        BOOST_CHECK_EQUAL(vecSettings[1].first, "gui..key");
+        BOOST_CHECK_EQUAL(vecSettings[2].first, ".key");
+        BOOST_CHECK_EQUAL(vecSettings[3].first, ".key");
+    }
+
+    /* A CRLF file parses like a LF one */
+    {
+        std::istringstream stream("key=value\r\nother=2\r\n");
+        vecSettings.clear();
+        BOOST_REQUIRE(ParseConfigStream(stream, vecSettings, strError));
+        BOOST_REQUIRE_EQUAL(vecSettings.size(), 2U);
+        BOOST_CHECK_EQUAL(vecSettings[0].first, "key");
+        BOOST_CHECK_EQUAL(vecSettings[0].second, "value");
+        BOOST_CHECK_EQUAL(vecSettings[1].first, "other");
+        BOOST_CHECK_EQUAL(vecSettings[1].second, "2");
+    }
+
+    /* A line that is not an option/value pair is an error, not a silent skip */
+    {
+        std::istringstream stream("key=value\nnotakeyvalue\n");
+        vecSettings.clear();
+        strError.clear();
+        BOOST_CHECK(!ParseConfigStream(stream, vecSettings, strError));
+        BOOST_CHECK(!strError.empty());
+    }
+
+    /* An option without a name is an error as well */
+    {
+        std::istringstream stream("=value\n");
+        vecSettings.clear();
+        strError.clear();
+        BOOST_CHECK(!ParseConfigStream(stream, vecSettings, strError));
+        BOOST_CHECK(!strError.empty());
+    }
+
+    /* An unterminated section header is an error */
+    {
+        std::istringstream stream("[section\nkey=value\n");
+        vecSettings.clear();
+        strError.clear();
+        BOOST_CHECK(!ParseConfigStream(stream, vecSettings, strError));
+        BOOST_CHECK(!strError.empty());
+    }
 }
 
 BOOST_AUTO_TEST_SUITE_END()

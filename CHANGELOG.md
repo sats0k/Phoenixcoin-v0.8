@@ -95,6 +95,18 @@ Changes since v0.8.3.
   `phoenixcoin-qt.pro` now errors out on Qt4 instead of building it.
 - `-march=native` is opt-in: release binaries are portable by default and
   `make NATIVE=1` enables native CPU tuning, matching the Qt build.
+- `phoenixcoin.conf` is parsed without the Boost `program_options`
+  internals. The wallet read the file through
+  `boost::program_options::detail::config_file_iterator`, a Boost
+  internal header, together with a `to_internal()` declaration that
+  worked around a Boost 1.46/Clang compilation problem that no longer
+  applies. A small local parser keeps the accepted syntax the same and
+  adds two fixes: a `;` in the first column is now a comment (the Boost
+  iterator rejected the whole file for it), and a malformed line is
+  reported with the offending text instead of a generic Boost error. A
+  line whose option name is empty (`=value`) counts as malformed; the old
+  iterator turned it into an option with an empty name.
+  `libboost_program_options` is no longer linked.
 
 ### Performance
 
@@ -120,7 +132,14 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 116 test cases. New coverage:
+The Boost suite is at 117 test cases. New coverage:
+
+- `util_ParseConfigStream`: covers the configuration file parser, i.e.
+  the option/value pairs with the surrounding whitespace trimmed, the `#`
+  and `;` comments, the quoted values and the values that contain an `=`,
+  the `[section]` prefixes (including a section that already ends with a
+  dot), the CRLF line endings, and the lines that are rejected as
+  malformed.
 
 - `hybrid_wallet_locked_watch_only_ismine`: moves a real `CWallet` from
   the loaded state into the at-rest state it has while locked (keys

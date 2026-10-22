@@ -11,6 +11,8 @@
 #include <algorithm>
 #include <vector>
 #include <cstring> // for memcpy
+#include <iosfwd> // for std::istream
+#include <utility> // for std::pair
 
 #include <boost/date_time/gregorian/gregorian_types.hpp>
 #include <boost/date_time/posix_time/posix_time_types.hpp>
@@ -124,6 +126,27 @@ std::filesystem::path GetConfigFile();
 std::filesystem::path GetPidFile();
 void CreatePidFile(const std::filesystem::path &path, pid_t pid);
 void ReadConfigFile(std::map<std::string, std::string>& mapSettingsRet, std::map<std::string, std::vector<std::string> >& mapMultiSettingsRet);
+/**
+ * Parse an ini-style configuration stream into option/value pairs.
+ *
+ * This replaces the boost::program_options detail iterator the wallet used
+ * to parse phoenixcoin.conf, so the configuration file no longer depends on
+ * a Boost internal header. The accepted syntax is the one that iterator
+ * accepted:
+ *  - the option name is the text before the first '=', with the surrounding
+ *    whitespace removed, and the value is the rest of the line, also trimmed
+ *  - a '#' starts a comment that runs to the end of the line
+ *  - a '[section]' header prefixes the option names that follow it with
+ *    "section.", without a second separator when the section name already
+ *    ends with a dot (as before, so "[gui.]" and "[gui]" both give "gui.x")
+ *  - quotes are kept verbatim, as they were before
+ * A ';' in the first column is treated as a comment (the boost iterator
+ * rejected the whole file for it), and any other line that is not a
+ * comment, a section header or an option/value pair is reported through
+ * strError. That includes a line whose option name is empty ("=value"),
+ * which the old iterator accepted as an option with an empty name.
+ */
+bool ParseConfigStream(std::istream& stream, std::vector<std::pair<std::string, std::string> >& vecSettings, std::string& strError);
 void ShrinkDebugFile();
 int GetRandInt(int nMax);
 uint64 GetRand(uint64 nMax);

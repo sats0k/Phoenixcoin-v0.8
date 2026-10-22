@@ -48,7 +48,6 @@ $(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
 LIBS += \
     -lboost_system$(BOOST_LIB_SUFFIX) \
     -lboost_filesystem$(BOOST_LIB_SUFFIX) \
-    -lboost_program_options$(BOOST_LIB_SUFFIX) \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
     -ldb_cxx$(BDB_LIB_SUFFIX) \

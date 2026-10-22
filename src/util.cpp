@@ -7,13 +7,12 @@
 #include <set>
 
 #include <stdarg.h>
+#include <stdexcept>
 
 #include <boost/algorithm/string/join.hpp>
 #include <filesystem>
 #include <fstream>
 #include <boost/foreach.hpp>
-#include <boost/program_options/detail/config_file.hpp>
-#include <boost/program_options/parsers.hpp>
 #include <boost/thread.hpp>
 
 #include "strlcpy.h"
@@ -25,16 +24,6 @@
 
 #include <openssl/crypto.h>
 #include <openssl/rand.h>
-
-// Work around clang compilation problem in Boost 1.46:
-// /usr/include/boost/program_options/detail/config_file.hpp:163:17: error: call to function 'to_internal' that is neither visible in the template definition nor found by argument-dependent lookup
-// See also: http://stackoverflow.com/questions/10020179/compilation-fail-in-boost-librairies-program-options
-//           http://clang.debian.net/status.php?version=3.0&key=CANNOT_FIND_FUNCTION
-namespace boost {
-    namespace program_options {
-        std::string to_internal(const std::string&);
-    }
-}
 
 
 #ifdef WINDOWS
@@ -1000,6 +989,89 @@ std::filesystem::path GetConfigFile() {
     return(pathConfigFile);
 }
 
+namespace
+{
+
+bool IsConfigSpace(char ch)
+{
+    return ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == '\v' || ch == '\f';
+}
+
+std::string TrimConfigSpace(const std::string& str)
+{
+    size_t nStart = 0;
+    size_t nEnd = str.size();
+    while (nStart < nEnd && IsConfigSpace(str[nStart]))
+        ++nStart;
+    while (nEnd > nStart && IsConfigSpace(str[nEnd - 1]))
+        --nEnd;
+    return str.substr(nStart, nEnd - nStart);
+}
+
+} // namespace
+
+bool ParseConfigStream(std::istream& stream, std::vector<std::pair<std::string, std::string> >& vecSettings, std::string& strError)
+{
+    std::string strLine;
+    std::string strSection;
+    bool fInSection = false;
+
+    while (std::getline(stream, strLine))
+    {
+        /* Strip the CR of a CRLF file, then everything from a '#' comment on */
+        if (!strLine.empty() && strLine[strLine.size() - 1] == '\r')
+            strLine.erase(strLine.size() - 1);
+        size_t nComment = strLine.find('#');
+        if (nComment != std::string::npos)
+            strLine.erase(nComment);
+
+        strLine = TrimConfigSpace(strLine);
+        if (strLine.empty())
+            continue;
+
+        /* ';' in the first column is a comment */
+        if (strLine[0] == ';')
+            continue;
+
+        /* A '[section]' header prefixes the option names that follow it */
+        if (strLine[0] == '[')
+        {
+            if (strLine[strLine.size() - 1] != ']')
+            {
+                strError = "Invalid configuration line: " + strLine;
+                return false;
+            }
+            strSection = strLine.substr(1, strLine.size() - 2);
+            /* The separator is not added twice if the section already ends with a dot */
+            if (strSection.empty() || strSection[strSection.size() - 1] != '.')
+                strSection += '.';
+            fInSection = true;
+            continue;
+        }
+
+        /* Everything else has to be an option/value pair */
+        size_t nEquals = strLine.find('=');
+        if (nEquals == std::string::npos)
+        {
+            strError = "Invalid configuration line: " + strLine;
+            return false;
+        }
+
+        std::string strKey = TrimConfigSpace(strLine.substr(0, nEquals));
+        if (strKey.empty())
+        {
+            strError = "Invalid configuration line: " + strLine;
+            return false;
+        }
+        if (fInSection)
+            strKey = strSection + strKey;
+
+        vecSettings.push_back(std::make_pair(strKey, TrimConfigSpace(strLine.substr(nEquals + 1))));
+    }
+
+    return true;
+}
+
 void ReadConfigFile(map<string, string>& mapSettingsRet,
                     map<string, vector<string> >& mapMultiSettingsRet)
 {
@@ -1008,20 +1080,22 @@ void ReadConfigFile(map<string, string>& mapSettingsRet,
     /* Absence of phoenixcoin.conf is acceptable */
     if(!streamConfig.good()) return;
 
-    set<string> setOptions;
-    setOptions.insert("*");
+    std::vector<std::pair<std::string, std::string> > vecSettings;
+    std::string strError;
+    if (!ParseConfigStream(streamConfig, vecSettings, strError))
+        throw std::runtime_error(strError);
 
-    for (boost::program_options::detail::config_file_iterator it(streamConfig, setOptions), end; it != end; ++it)
+    for (size_t i = 0; i < vecSettings.size(); ++i)
     {
         /* Don't overwrite existing settings, so command line settings override phoenixcoin.conf */
-        string strKey = string("-") + it->string_key;
+        string strKey = string("-") + vecSettings[i].first;
         if (mapSettingsRet.count(strKey) == 0)
         {
-            mapSettingsRet[strKey] = it->value[0];
+            mapSettingsRet[strKey] = vecSettings[i].second;
             // interpret nofoo=1 as foo=0 (and nofoo=0 as foo=1) as long as foo not set)
             InterpretNegativeSetting(strKey, mapSettingsRet);
         }
-        mapMultiSettingsRet[strKey].push_back(it->value[0]);
+        mapMultiSettingsRet[strKey].push_back(vecSettings[i].second);
     }
 }
 
