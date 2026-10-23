@@ -14,12 +14,16 @@ LD := $(CXX)
 OPT = -pipe -arch x86_64 -O2 -fomit-frame-pointer -pthread -mdynamic-no-pic \
 -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
 
+# C++ standard is pinned rather than relying on the compiler default: the
+# sources use C++17 std::filesystem and C++20 std::string::starts_with.
+CXXSTD = -std=gnu++20
+
 # Warnings
 WARN = -Wall -Wextra -Wformat -Wformat-security -Wno-unused-parameter
 
 # Additionals and overrides
 override CFLAGS := $(OPT) $(WARN) $(CFLAGS)
-override CXXFLAGS := $(OPT) $(WARN) $(CXXFLAGS)
+override CXXFLAGS := $(OPT) $(WARN) $(CXXSTD) $(CXXFLAGS)
 
 LDFLAGS = -dead_strip
 
@@ -33,17 +37,24 @@ BDB_LIB_SUFFIX =
 BDB_INCLUDE_PATH =
 BDB_LIB_PATH =
 
+# OpenSSL 3.5 or newer is required: key.cpp uses the provider API and
+# hs/hybrid_signer.cpp needs EVP_PKEY_ML_DSA_65.
 OPENSSL_LIB_SUFFIX =
 OPENSSL_INCLUDE_PATH =
 OPENSSL_LIB_PATH =
 
+SECP256K1_INCLUDE_PATH =
+SECP256K1_LIB_PATH =
+
 DEFS = -DMSG_NOSIGNAL=0 -DBOOST_SPIRIT_THREADSAFE
 
 INCS = $(addprefix -I,$(CURDIR) $(CURDIR)/obj $(DEPSDIR)/include \
-$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH))
+$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH) \
+$(SECP256K1_INCLUDE_PATH))
 
 LIBS = -L$(DEPSDIR)/lib \
-$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
+$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH) \
+$(SECP256K1_LIB_PATH))
 
 LIBS += \
     -lboost_system$(BOOST_LIB_SUFFIX) \
@@ -66,7 +77,7 @@ ifneq (${USE_IPV6}, -)
  DEFS += -DUSE_IPV6=$(USE_IPV6)
 endif
 
-LIBS += -lz
+LIBS += -lz -lsecp256k1
 
 OBJS = \
     obj/addrman.o \
@@ -98,6 +109,14 @@ OBJS = \
     obj/version.o \
     obj/wallet.o \
     obj/walletdb.o \
+    obj/hybrid_signer.o \
+    obj/hybrid_verify.o \
+    obj/hybrid_message.o \
+    obj/wallethybrid.o \
+    obj/wallet_hybrid_address.o \
+    obj/hybrid_consensus.o \
+    obj/walletdb_hybrid.o \
+    obj/rpchybrid.o \
     obj/neoscrypt.o \
     obj/neoscrypt_asm.o
 
@@ -114,6 +133,14 @@ version.cpp: obj/build.h
 DEFS += -DHAVE_BUILD_INFO
 
 obj/%.o: %.cpp
+	$(CXX) -c $(CXXFLAGS) $(DEFS) $(INCS) -MMD -MF $(@:%.o=%.d) -o $@ $<
+	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
+	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
+	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
+	  rm -f $(@:%.o=%.d)
+
+# Sources in hs/ live in a subdirectory, so the rule above cannot find them:
+obj/%.o: hs/%.cpp
 	$(CXX) -c $(CXXFLAGS) $(DEFS) $(INCS) -MMD -MF $(@:%.o=%.d) -o $@ $<
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
