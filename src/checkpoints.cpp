@@ -1,6 +1,6 @@
 // Copyright (c) 2009-2012 The Bitcoin developers
 // Copyright (c) 2012-2013 PPCoin developers
-// Copyright (c) 2013-2025 Phoenixcoin Developers
+// Copyright (c) 2013-2026 Phoenixcoin Developers
 // Distributed under the MIT/X11 software licence, see the accompanying
 // file LICENCE or http://opensource.org/license/mit
 
