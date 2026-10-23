@@ -328,6 +328,7 @@ int64 DoReq(SOCKET sockfd, socklen_t servlen, struct sockaddr cliaddr) {
     msg->precision = 0;
     msg->rootdelay = 0;
     msg->rootdispersion = 0;
+    msg->refid = 0;
 
     msg->ref.Ul_i.Xl_i = 0;
     msg->ref.Ul_f.Xl_f = 0;

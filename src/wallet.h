@@ -172,6 +172,7 @@ public:
         nMasterKeyMaxID = 0;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
+        nTimeFirstKey = 0;
         nHybridLegacyIndexSize = 0;
         nHybridLegacyIndexDiskSize = 0;
         fHybridLegacyIndexDirty = true;
@@ -185,6 +186,7 @@ public:
         nMasterKeyMaxID = 0;
         pwalletdbEncryption = NULL;
         nOrderPosNext = 0;
+        nTimeFirstKey = 0;
         nHybridLegacyIndexSize = 0;
         nHybridLegacyIndexDiskSize = 0;
         fHybridLegacyIndexDirty = true;

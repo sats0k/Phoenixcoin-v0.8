@@ -18,7 +18,7 @@ class TxViewDelegate : public QAbstractItemDelegate
 {
     Q_OBJECT
 public:
-    TxViewDelegate(): QAbstractItemDelegate(), unit(CoinUnits::PXC)
+    TxViewDelegate(QObject *parent = 0): QAbstractItemDelegate(parent), unit(CoinUnits::PXC)
     {
 
     }
@@ -93,7 +93,7 @@ OverviewPage::OverviewPage(QWidget *parent) :
     currentBalance(-1),
     currentUnconfirmedBalance(-1),
     currentImmatureBalance(-1),
-    txdelegate(new TxViewDelegate()),
+    txdelegate(new TxViewDelegate(this)),
     filter(0)
 {
     ui->setupUi(this);
@@ -151,7 +151,7 @@ void OverviewPage::setModel(WalletModel *model)
     if(model && model->getOptionsModel())
     {
         // Set up transaction list
-        filter = new TransactionFilterProxy();
+        filter = new TransactionFilterProxy(this);
         filter->setSourceModel(model->getTransactionTableModel());
         filter->setLimit(NUM_ITEMS);
         filter->setDynamicSortFilter(true);

@@ -120,7 +120,7 @@ TransactionView::TransactionView(QWidget *parent) :
     QAction *showDetailsAction = new QAction(tr("Show transaction details"), this);
     QAction *showBlockExplorer = new QAction(tr("Show payment in block explorer"), this);
 
-    contextMenu = new QMenu();
+    contextMenu = new QMenu(this);
     contextMenu->addAction(copyAddressAction);
     contextMenu->addAction(copyLabelAction);
     contextMenu->addAction(copyAmountAction);
