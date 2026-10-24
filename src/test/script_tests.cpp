@@ -213,7 +213,7 @@ BOOST_AUTO_TEST_CASE(script_CHECKMULTISIG23)
     CScript badsig5 = sign_multisig(scriptPubKey23, kb5, 2, txTo23);
     BOOST_CHECK(!VerifyScript(badsig5, scriptPubKey23, txTo23, 0, true, 0));
 
-    CScript badsig6 = sign_multisig(scriptPubKey23, NULL, 0, txTo23); // Must have signatures
+    CScript badsig6 = sign_multisig(scriptPubKey23, nullptr, 0, txTo23); // Must have signatures
     BOOST_CHECK(!VerifyScript(badsig6, scriptPubKey23, txTo23, 0, true, 0));
 }
 

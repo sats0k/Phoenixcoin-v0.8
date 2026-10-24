@@ -25,8 +25,8 @@ public:
     bool fSpent;
     CWalletTx *ptx;
     int nOut;
-    CTxDump(CWalletTx *ptx = NULL, int nOut = -1) {
-        pindex = NULL;
+    CTxDump(CWalletTx *ptx = nullptr, int nOut = -1) {
+        pindex = nullptr;
         nValue = 0;
         fSpent = false;
         this->ptx = ptx;

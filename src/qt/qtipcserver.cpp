@@ -82,7 +82,7 @@ static void ipcThread(void* pArg)
     catch (std::exception& e) {
         PrintExceptionContinue(&e, "ipcThread()");
     } catch (...) {
-        PrintExceptionContinue(NULL, "ipcThread()");
+        PrintExceptionContinue(nullptr, "ipcThread()");
     }
     printf("ipcThread exited\n");
 }
@@ -115,7 +115,7 @@ static void ipcThread2(void* pArg)
 }
 
 void ipcInit(int argc, char *argv[]) {
-    message_queue* mq = NULL;
+    message_queue* mq = nullptr;
     char buffer[MAX_URI_LENGTH + 1] = "";
     size_t nSize = 0;
     unsigned int nPriority = 0;

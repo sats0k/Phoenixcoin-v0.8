@@ -91,8 +91,8 @@ class CPubKey {
 
     std::vector<unsigned char> Raw() const { return vchPubKey; }
 
-    const unsigned char* begin() const { return vchPubKey.empty() ? NULL : &vchPubKey[0]; }
-    const unsigned char* end() const { return vchPubKey.empty() ? NULL : &vchPubKey[vchPubKey.size()]; }
+    const unsigned char* begin() const { return vchPubKey.empty() ? nullptr : &vchPubKey[0]; }
+    const unsigned char* end() const { return vchPubKey.empty() ? nullptr : &vchPubKey[vchPubKey.size()]; }
     unsigned int size() const { return (unsigned int)vchPubKey.size(); }
 
     void EncryptData(const std::vector<unsigned char> &plaintext,

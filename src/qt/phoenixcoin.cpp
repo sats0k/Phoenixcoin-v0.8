@@ -356,7 +356,7 @@ int main(int argc, char *argv[])
                 guiref = 0;
             }
             /* Shutdown the core and its threads, but don't exit Phoenixcoin-Qt here */
-            Shutdown(NULL);
+            Shutdown(nullptr);
         }
         else
         {
@@ -365,7 +365,7 @@ int main(int argc, char *argv[])
     } catch (std::exception& e) {
         handleRunawayException(&e);
     } catch (...) {
-        handleRunawayException(NULL);
+        handleRunawayException(nullptr);
     }
     return 0;
 }

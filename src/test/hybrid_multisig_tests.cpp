@@ -313,7 +313,7 @@ public:
         keyOut.mldsaAlg = it->second.mldsaAlg;
         keyOut.nCreateTime = it->second.nCreateTime;
         keyOut.mldsaSigner = GetSignerFromKey(it->second);
-        return keyOut.mldsaSigner != NULL;
+        return keyOut.mldsaSigner != nullptr;
     }
 
     virtual bool GetHybridKeyByHash(const uint160& keyHash,
@@ -334,7 +334,7 @@ public:
                 keyOut.mldsaAlg = entry.second.mldsaAlg;
                 keyOut.nCreateTime = entry.second.nCreateTime;
                 keyOut.mldsaSigner = GetSignerFromKey(entry.second);
-                return keyOut.mldsaSigner != NULL;
+                return keyOut.mldsaSigner != nullptr;
             }
         return false;
     }
@@ -425,7 +425,7 @@ public:
             return false;
         ChurnCKey(tmp);
         StealInto(keyOut, tmp);
-        return keyOut.mldsaSigner != NULL;
+        return keyOut.mldsaSigner != nullptr;
     }
 
     virtual bool GetHybridKey(const CHybridKeyID& address,
@@ -436,7 +436,7 @@ public:
             return false;
         ChurnCKey(tmp);
         StealInto(keyOut, tmp);
-        return keyOut.mldsaSigner != NULL;
+        return keyOut.mldsaSigner != nullptr;
     }
 
     virtual bool GetHybridKeyByHash(const uint160& keyHash,
@@ -3445,7 +3445,7 @@ BOOST_AUTO_TEST_CASE(hybrid_key_export_import_roundtrip)
 
     EVP_PKEY* pkey = hk.mldsaSigner->GetKey();
     BOOST_REQUIRE(pkey);
-    unsigned char* buf = NULL;
+    unsigned char* buf = nullptr;
     int len = i2d_PrivateKey(pkey, &buf);
     BOOST_REQUIRE(len > 0 && buf);
     std::vector<unsigned char> der(buf, buf + len);
@@ -3471,7 +3471,7 @@ BOOST_AUTO_TEST_CASE(hybrid_key_export_import_roundtrip)
         DecodeBase64(derB64.c_str(), &fInvalid);
     BOOST_REQUIRE(!fInvalid && !impDer.empty());
     const unsigned char* p = impDer.data();
-    EVP_PKEY* impPkey = d2i_AutoPrivateKey(NULL, &p, impDer.size());
+    EVP_PKEY* impPkey = d2i_AutoPrivateKey(nullptr, &p, impDer.size());
     BOOST_REQUIRE(impPkey);
     std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
         impPkey, &EVP_PKEY_free);

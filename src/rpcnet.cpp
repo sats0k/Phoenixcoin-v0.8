@@ -69,10 +69,10 @@ Value getpeerinfo(const Array &params, bool fHelp) {
         obj.push_back(Pair("version", stats.nVersion));
         obj.push_back(Pair("subver", stats.strSubVer));
         obj.push_back(Pair("inbound", stats.fInbound));
-        obj.push_back(Pair("releasetime", (boost::int64_t)stats.nReleaseTime));
+        obj.push_back(Pair("releasetime", (int64_t)stats.nReleaseTime));
         obj.push_back(Pair("startingheight", stats.nStartingHeight));
-        obj.push_back(Pair("txbytes", (boost::int64_t)stats.nTxBytes));
-        obj.push_back(Pair("rxbytes", (boost::int64_t)stats.nRxBytes));
+        obj.push_back(Pair("txbytes", (int64_t)stats.nTxBytes));
+        obj.push_back(Pair("rxbytes", (int64_t)stats.nRxBytes));
         obj.push_back(Pair("banscore", stats.nMisbehavior));
 
         ret.push_back(obj);
@@ -216,9 +216,9 @@ Value getnettotals(const Array &params, bool fHelp) {
     }
 
     Object obj;
-    obj.push_back(Pair("rxbytestotal", (boost::uint64_t)CNode::GetTotalBytesRx()));
-    obj.push_back(Pair("txbytestotal", (boost::uint64_t)CNode::GetTotalBytesTx()));
-    obj.push_back(Pair("timemillis", (boost::int64_t)GetTimeMillis()));
+    obj.push_back(Pair("rxbytestotal", (uint64_t)CNode::GetTotalBytesRx()));
+    obj.push_back(Pair("txbytestotal", (uint64_t)CNode::GetTotalBytesTx()));
+    obj.push_back(Pair("timemillis", (int64_t)GetTimeMillis()));
     return(obj);
 }
 
@@ -266,8 +266,8 @@ Value ntptime(const Array &params, bool fHelp) {
                 /* Push data into the object */
                 if(ip.IsValid()) obj.push_back(Pair("server", ip.ToStringIP().c_str()));
                 obj.push_back(Pair("time", DateTimeStrFormat(nTime)));
-                obj.push_back(Pair("sample", (boost::int64_t)nTime));
-                obj.push_back(Pair("offset", (boost::int64_t)nNtpOffset));
+                obj.push_back(Pair("sample", (int64_t)nTime));
+                obj.push_back(Pair("offset", (int64_t)nNtpOffset));
         } else throw(runtime_error("Unknown response"));
 
     }

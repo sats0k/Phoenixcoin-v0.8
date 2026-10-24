@@ -351,7 +351,7 @@ int64 DoReq(SOCKET sockfd, socklen_t servlen, struct sockaddr cliaddr) {
     FD_ZERO(&fdset);
     FD_SET(sockfd, &fdset);
 
-    ret = select(sockfd + 1, &fdset, NULL, NULL, &timeout);
+    ret = select(sockfd + 1, &fdset, nullptr, nullptr, &timeout);
     if(ret <= 0) {
         printf("select() failed: %d\n", ret);
         delete(msg);
@@ -359,7 +359,7 @@ int64 DoReq(SOCKET sockfd, socklen_t servlen, struct sockaddr cliaddr) {
         return(-4);
     }
 
-    recvfrom(sockfd, (char *) msg, len, 0, NULL, NULL);
+    recvfrom(sockfd, (char *) msg, len, 0, nullptr, nullptr);
     ntohl_fp(&msg->xmt, &prt->xmt);
     Ntp2Unix(prt->xmt.Ul_i.Xl_ui, seconds);
 

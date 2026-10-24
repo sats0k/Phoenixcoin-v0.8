@@ -98,8 +98,8 @@ bool RecvLineIRC(SOCKET hSocket, string &strLine) {
     }
 }
 
-int RecvUntil(SOCKET hSocket, const char *psz1, const char *psz2 = NULL,
-  const char *psz3 = NULL, const char *psz4 = NULL) {
+int RecvUntil(SOCKET hSocket, const char *psz1, const char *psz2 = nullptr,
+  const char *psz3 = nullptr, const char *psz4 = nullptr) {
 
     while(true) {
         string strLine;
@@ -196,7 +196,7 @@ void ThreadIRCSeed(void* parg)
     catch (std::exception& e) {
         PrintExceptionContinue(&e, "ThreadIRCSeed()");
     } catch (...) {
-        PrintExceptionContinue(NULL, "ThreadIRCSeed()");
+        PrintExceptionContinue(nullptr, "ThreadIRCSeed()");
     }
     printf("ThreadIRCSeed exited\n");
 }
@@ -392,7 +392,7 @@ int main(int argc, char *argv[])
         return false;
     }
 
-    ThreadIRCSeed(NULL);
+    ThreadIRCSeed(nullptr);
 
     WSACleanup();
     return 0;

@@ -28,7 +28,7 @@ struct TestingSetup {
     ~TestingSetup()
     {
         delete pwalletMain;
-        pwalletMain = NULL;
+        pwalletMain = nullptr;
         bitdb.Flush(true);
     }
 };

@@ -135,7 +135,7 @@ extern bool CheckSig(
     const CTransaction& txTo,
     unsigned int nIn,
     int nHashType,
-    const uint256* precomputedSighash = NULL
+    const uint256* precomputedSighash = nullptr
 );
 
 /**

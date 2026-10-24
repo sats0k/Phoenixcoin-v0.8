@@ -86,7 +86,7 @@ static void EncodeHybridPrivKey(CWallet* pwallet, const CHybridKey& hk,
     EVP_PKEY* pkey = signer->GetKey();
     if (!pkey) throw JSONRPCError(RPC_WALLET_ERROR, "MLDSA key missing");
 
-    unsigned char* buf = NULL;
+    unsigned char* buf = nullptr;
     int len = i2d_PrivateKey(pkey, &buf);
     if (len <= 0 || !buf)
         throw JSONRPCError(RPC_WALLET_ERROR, "Failed to serialize MLDSA key");
@@ -869,7 +869,7 @@ Value listhybridaddresses(const Array& params, bool fHelp) {
                 obj.push_back(Pair("label", strLabel));
                 obj.push_back(Pair("pubkey_ecdsa", HexStr(secpPub.Raw())));
                 obj.push_back(Pair("created",
-                    static_cast<boost::int64_t>(nCreateTime)));
+                    static_cast<int64_t>(nCreateTime)));
 
                 result.push_back(obj);
             };

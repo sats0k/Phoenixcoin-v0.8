@@ -119,11 +119,11 @@ std::string TrimWhitespace(const std::string& str);
  * Lowercase the string in place.
  */
 void ToLowerCase(std::string& str);
-std::vector<unsigned char> DecodeBase64(const char* p, bool* pfInvalid = NULL);
+std::vector<unsigned char> DecodeBase64(const char* p, bool* pfInvalid = nullptr);
 std::string DecodeBase64(const std::string& str);
 std::string EncodeBase64(const unsigned char* pch, size_t len);
 std::string EncodeBase64(const std::string& str);
-std::vector<unsigned char> DecodeBase32(const char* p, bool* pfInvalid = NULL);
+std::vector<unsigned char> DecodeBase32(const char* p, bool* pfInvalid = nullptr);
 std::string DecodeBase32(const std::string& str);
 std::string EncodeBase32(const unsigned char* pch, size_t len);
 std::string EncodeBase32(const std::string& str);
@@ -224,7 +224,7 @@ inline int64 atoi64(const char* psz)
 #ifdef _MSC_VER
     return _atoi64(psz);
 #else
-    return strtoll(psz, NULL, 10);
+    return strtoll(psz, nullptr, 10);
 #endif
 }
 
@@ -233,7 +233,7 @@ inline int64 atoi64(const std::string& str)
 #ifdef _MSC_VER
     return _atoi64(str.c_str());
 #else
-    return strtoll(str.c_str(), NULL, 10);
+    return strtoll(str.c_str(), nullptr, 10);
 #endif
 }
 
@@ -310,7 +310,7 @@ inline int64 GetTimeMicros() {
     nTime /= 10;
 #else
     timeval t;
-    gettimeofday(&t, NULL);
+    gettimeofday(&t, nullptr);
     nTime = (((uint64)t.tv_sec) * 1000000) + (uint64)t.tv_usec;
 #endif
 
@@ -572,7 +572,7 @@ inline uint160 Hash160(const std::vector<unsigned char>& vch)
     }
 
     // Initialize digest context for RIPEMD160
-    if (1 != EVP_DigestInit_ex(ctx, EVP_ripemd160(), NULL))
+    if (1 != EVP_DigestInit_ex(ctx, EVP_ripemd160(), nullptr))
     {
         EVP_MD_CTX_free(ctx);
         throw std::runtime_error("EVP_DigestInit_ex failed");

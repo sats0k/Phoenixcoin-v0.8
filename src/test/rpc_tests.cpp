@@ -17,7 +17,7 @@ using namespace json_spirit;
 BOOST_AUTO_TEST_SUITE(rpc_tests)
 
 static Array
-createArgs(int nRequired, const char* address1=NULL, const char* address2=NULL)
+createArgs(int nRequired, const char* address1=nullptr, const char* address2=nullptr)
 {
     Array result;
     result.push_back(nRequired);
@@ -208,25 +208,25 @@ static const Value* Member(const Object& obj, const string& name)
     for (size_t i = 0; i < obj.size(); i++)
         if (obj[i].name_ == name)
             return &obj[i].value_;
-    return NULL;
+    return nullptr;
 }
 
 static string ErrorReason(const Value& result, bool& fCompleteOut, bool& fHasErrorsOut)
 {
     const Object& res = result.get_obj();
     const Value* complete = Member(res, "complete");
-    BOOST_REQUIRE(complete != NULL);
+    BOOST_REQUIRE(complete != nullptr);
     fCompleteOut = complete->get_bool();
 
     const Value* errors = Member(res, "errors");
-    fHasErrorsOut = errors != NULL;
-    if (errors == NULL)
+    fHasErrorsOut = errors != nullptr;
+    if (errors == nullptr)
         return string();
     const Array& arr = errors->get_array();
     if (arr.empty())
         return string();
     const Value* reason = Member(arr[0].get_obj(), "error");
-    BOOST_REQUIRE(reason != NULL);
+    BOOST_REQUIRE(reason != nullptr);
     return reason->get_str();
 }
 
@@ -240,7 +240,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_missing_prevout)
     // mempool, so the prevout cannot be resolved at all.
     bool fComplete = true, fHasErrors = false;
     BOOST_CHECK_NO_THROW({
-        string reason = ErrorReason(CallSignRaw(spend, Array(), Array(), NULL),
+        string reason = ErrorReason(CallSignRaw(spend, Array(), Array(), nullptr),
                                     fComplete, fHasErrors);
         BOOST_CHECK(!fComplete);
         BOOST_CHECK(fHasErrors);
@@ -262,7 +262,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_no_signing_key)
     keys.push_back(TestPrivKey(TestKey()));
 
     bool fComplete = true, fHasErrors = false;
-    string reason = ErrorReason(CallSignRaw(spend, prevtxs, keys, NULL),
+    string reason = ErrorReason(CallSignRaw(spend, prevtxs, keys, nullptr),
                                 fComplete, fHasErrors);
     BOOST_CHECK(!fComplete);
     BOOST_CHECK(fHasErrors);
@@ -292,7 +292,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_partial_multisig)
     prevtxs.push_back(PrevOutEntry(fundingHash, 0, spk));
 
     bool fComplete = true, fHasErrors = false;
-    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), NULL),
+    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), nullptr),
                                 fComplete, fHasErrors);
     BOOST_CHECK(!fComplete);
     BOOST_CHECK(fHasErrors);
@@ -351,7 +351,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_already_fully_signed)
     prevtxs.push_back(PrevOutEntry(fundingHash, 0, spk));
 
     bool fComplete = false, fHasErrors = false;
-    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), NULL),
+    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), nullptr),
                                 fComplete, fHasErrors);
     BOOST_CHECK(fComplete);
     BOOST_CHECK(!fHasErrors);
@@ -382,7 +382,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_two_of_three_signing_sequence)
 
     // --- Signer A: wallet holds key 1 only, so it can contribute one of two. ---
     AddHybridKeysToWallet(*pwalletMain, set, 1, 1);
-    Value resA = CallSignRaw(spend, prevtxs, Array(), NULL);
+    Value resA = CallSignRaw(spend, prevtxs, Array(), nullptr);
     bool fComplete = true, fHasErrors = false;
     string reasonA = ErrorReason(resA, fComplete, fHasErrors);
     BOOST_CHECK(!fComplete);
@@ -398,7 +398,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_two_of_three_signing_sequence)
 
     // --- Signer B: a second key joins, and A's transaction is re-submitted. ---
     AddHybridKeysToWallet(*pwalletMain, set, 1, 0);
-    Value resB = CallSignRawHex(hexA, prevtxs, Array(), NULL);
+    Value resB = CallSignRawHex(hexA, prevtxs, Array(), nullptr);
     string reasonB = ErrorReason(resB, fComplete, fHasErrors);
     BOOST_CHECK(fComplete);
     BOOST_CHECK(!fHasErrors);
@@ -426,7 +426,7 @@ BOOST_AUTO_TEST_CASE(rpc_signrawtransaction_two_of_three_with_no_key)
     BOOST_REQUIRE(pwalletMain->AddCScript(inner));
 
     bool fComplete = true, fHasErrors = false;
-    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), NULL),
+    string reason = ErrorReason(CallSignRaw(spend, prevtxs, Array(), nullptr),
                                 fComplete, fHasErrors);
     BOOST_CHECK(!fComplete);
     BOOST_CHECK(fHasErrors);

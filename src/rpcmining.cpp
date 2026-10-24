@@ -67,8 +67,8 @@ Value gethashespersec(const Array &params, bool fHelp) {
     }
 
     if (GetTimeMillis() - nHPSTimerStart > 8000)
-        return (boost::int64_t)0;
-    return (boost::int64_t)dHashesPerSec;
+        return (int64_t)0;
+    return (int64_t)dHashesPerSec;
 }
 
 
@@ -179,7 +179,7 @@ Value getwork(const Array &params, bool fHelp) {
             }
 
             // Clear pindexPrev so future getworks make a new block, despite any failures from here on
-            pindexPrev = NULL;
+            pindexPrev = nullptr;
 
             // Store the pindexBest used before CreateNewBlock, to avoid races
             nTransactionsUpdatedLast = nTransactionsUpdated;
@@ -342,7 +342,7 @@ Value getblocktemplate(const Array &params, bool fHelp) {
         (nTransactionsUpdated != nTransactionsUpdatedLast && GetTime() - nStart > 5))
     {
         // Clear pindexPrev so future calls make a new block, despite any failures from here on
-        pindexPrev = NULL;
+        pindexPrev = nullptr;
 
         // Store the pindexBest used before CreateNewBlock, to avoid races
         nTransactionsUpdatedLast = nTransactionsUpdated;
@@ -353,7 +353,7 @@ Value getblocktemplate(const Array &params, bool fHelp) {
         if(pblock)
         {
             delete pblock;
-            pblock = NULL;
+            pblock = nullptr;
         }
         pblock = CreateNewBlock(reservekey);
         if (!pblock)
@@ -461,7 +461,7 @@ Value submitblock(const Array &params, bool fHelp) {
         throw JSONRPCError(RPC_DESERIALIZATION_ERROR, "Block decode failed");
     }
 
-    if(!ProcessBlock(NULL, &block)) {
+    if(!ProcessBlock(nullptr, &block)) {
 #if 0
         /* Dump block data received */
         uint r, size;

@@ -92,7 +92,7 @@ inline bool DecodeBase58(const char* psz, std::vector<unsigned char>& vchRet) {
     // Convert big endian string to bignum
     for(const char* p = psz; *p; p++) {
         const char* p1 = strchr(pszBase58, *p);
-        if(p1 == NULL) {
+        if(p1 == nullptr) {
             while(isspace(*p))
                 p++;
             if(*p != '\0')

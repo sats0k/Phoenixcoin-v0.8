@@ -41,7 +41,7 @@ void ThreadOpenAddedConnections2(void* parg);
 void ThreadMapPort2(void* parg);
 #endif
 void ThreadDNSAddressSeed2(void* parg);
-bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOutbound = NULL, const char *strDest = NULL, bool fOneShot = false);
+bool OpenNetworkConnection(const CAddress& addrConnect, CSemaphoreGrant *grantOutbound = nullptr, const char *strDest = nullptr, bool fOneShot = false);
 
 
 struct LocalServiceInfo {
@@ -60,7 +60,7 @@ static CCriticalSection cs_mapLocalHost;
 static map<CNetAddr, LocalServiceInfo> mapLocalHost;
 static bool vfReachable[NET_MAX] = {};
 static bool vfLimited[NET_MAX] = {};
-static CNode* pnodeLocalHost = NULL;
+static CNode* pnodeLocalHost = nullptr;
 CAddress addrSeenByPeer(CService("0.0.0.0", 0), nLocalServices);
 uint64 nLocalHostNonce = 0;
 boost::array<int, THREAD_MAX> vnThreadsRunning;
@@ -83,7 +83,7 @@ CCriticalSection cs_setservAddNodeAddresses;
 vector<std::string> vAddedNodes;
 CCriticalSection cs_vAddedNodes;
 
-static CSemaphore *semOutbound = NULL;
+static CSemaphore *semOutbound = nullptr;
 
 void AddOneShot(string strDest)
 {
@@ -492,7 +492,7 @@ CNode* FindNode(const CNetAddr& ip)
             if ((CNetAddr)pnode->addr == ip)
                 return (pnode);
     }
-    return NULL;
+    return nullptr;
 }
 
 CNode* FindNode(std::string addrName)
@@ -501,7 +501,7 @@ CNode* FindNode(std::string addrName)
     for (CNode* pnode : vNodes)
         if (pnode->addrName == addrName)
             return (pnode);
-    return NULL;
+    return nullptr;
 }
 
 CNode* FindNode(const CService& addr)
@@ -512,14 +512,14 @@ CNode* FindNode(const CService& addr)
             if ((CService)pnode->addr == addr)
                 return (pnode);
     }
-    return NULL;
+    return nullptr;
 }
 
 CNode* ConnectNode(CAddress addrConnect, const char *pszDest, int64 nTimeout)
 {
-    if (pszDest == NULL) {
+    if (pszDest == nullptr) {
         if (IsLocal(addrConnect))
-            return NULL;
+            return nullptr;
 
         // Look for an existing connection
         CNode* pnode = FindNode((CService)addrConnect);
@@ -575,7 +575,7 @@ CNode* ConnectNode(CAddress addrConnect, const char *pszDest, int64 nTimeout)
     }
     else
     {
-        return NULL;
+        return nullptr;
     }
 }
 
@@ -1068,7 +1068,7 @@ void ThreadMapPort(void* parg)
         PrintException(&e, "ThreadMapPort()");
     } catch (...) {
         vnThreadsRunning[THREAD_UPNP]--;
-        PrintException(NULL, "ThreadMapPort()");
+        PrintException(nullptr, "ThreadMapPort()");
     }
     printf("ThreadMapPort exited\n");
 }
@@ -1102,7 +1102,7 @@ void ThreadMapPort2(void* /*parg*/)
     int r;
 
 #if (MINIUPNPC_API_VERSION >= 18)
-    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), NULL, 0);
+    r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr), nullptr, 0);
 #else
     r = UPNP_GetValidIGD(devlist, &urls, &data, lanaddr, sizeof(lanaddr));
 #endif
@@ -1197,7 +1197,7 @@ void MapPort()
 {
     if (fUseUPnP && vnThreadsRunning[THREAD_UPNP] < 1)
     {
-        if (!NewThread(ThreadMapPort, NULL))
+        if (!NewThread(ThreadMapPort, nullptr))
             printf("Error: ThreadMapPort(ThreadMapPort) failed\n");
     }
 }
@@ -1336,7 +1336,7 @@ void ThreadOpenConnections(void* parg)
         PrintException(&e, "ThreadOpenConnections()");
     } catch (...) {
         vnThreadsRunning[THREAD_OPENCONNECTIONS]--;
-        PrintException(NULL, "ThreadOpenConnections()");
+        PrintException(nullptr, "ThreadOpenConnections()");
     }
     printf("ThreadOpenConnections exited\n");
 }
@@ -1372,7 +1372,7 @@ void ThreadOpenConnections2(void* /*parg*/)
             for (string strAddr : mapMultiArgs["-connect"])
             {
                 CAddress addr;
-                OpenNetworkConnection(addr, NULL, strAddr.c_str());
+                OpenNetworkConnection(addr, nullptr, strAddr.c_str());
                 for (int i = 0; i < 10 && i < nLoop; i++)
                 {
                     Sleep(500);
@@ -1474,7 +1474,7 @@ void ThreadOpenAddedConnections(void* parg)
         PrintException(&e, "ThreadOpenAddedConnections()");
     } catch (...) {
         vnThreadsRunning[THREAD_ADDEDCONNECTIONS]--;
-        PrintException(NULL, "ThreadOpenAddedConnections()");
+        PrintException(nullptr, "ThreadOpenAddedConnections()");
     }
     printf("ThreadOpenAddedConnections exited\n");
 }
@@ -1623,7 +1623,7 @@ void ThreadMessageHandler(void* parg)
         PrintException(&e, "ThreadMessageHandler()");
     } catch (...) {
         vnThreadsRunning[THREAD_MESSAGEHANDLER]--;
-        PrintException(NULL, "ThreadMessageHandler()");
+        PrintException(nullptr, "ThreadMessageHandler()");
     }
     printf("ThreadMessageHandler exited\n");
 }
@@ -1643,7 +1643,7 @@ void ThreadMessageHandler2(void* /*parg*/)
         }
 
         /* Random peer */
-        CNode *pnodeTrickle = NULL;
+        CNode *pnodeTrickle = nullptr;
         if(!vNodesCopy.empty())
           pnodeTrickle = vNodesCopy[GetRand(vNodesCopy.size())];
 
@@ -1821,9 +1821,9 @@ static void Discover()
     struct ifaddrs* myaddrs;
     if (getifaddrs(&myaddrs) == 0)
     {
-        for (struct ifaddrs* ifa = myaddrs; ifa != NULL; ifa = ifa->ifa_next)
+        for (struct ifaddrs* ifa = myaddrs; ifa != nullptr; ifa = ifa->ifa_next)
         {
-            if (ifa->ifa_addr == NULL) continue;
+            if (ifa->ifa_addr == nullptr) continue;
             if ((ifa->ifa_flags & IFF_UP) == 0) continue;
             if (strcmp(ifa->ifa_name, "lo") == 0) continue;
             if (strcmp(ifa->ifa_name, "lo0") == 0) continue;
@@ -1851,7 +1851,7 @@ static void Discover()
     /* External HTTP service to report our IPv4 address;
      * no need to call if operating in IPv6 only mode */
     if(!IsLimited(NET_IPV4))
-      NewThread(ThreadGetMyExternalIP, NULL);
+      NewThread(ThreadGetMyExternalIP, nullptr);
 }
 
 void StartNode(void* /*parg*/)
@@ -1859,13 +1859,13 @@ void StartNode(void* /*parg*/)
     // Make this thread recognisable as the startup thread
     RenameThread("pxc-start");
 
-    if (semOutbound == NULL) {
+    if (semOutbound == nullptr) {
         // initialize semaphore
         int nMaxOutbound = min(MAX_OUTBOUND_CONNECTIONS, (int)GetArg("-maxconnections", 125));
         semOutbound = new CSemaphore(nMaxOutbound);
     }
 
-    if (pnodeLocalHost == NULL)
+    if (pnodeLocalHost == nullptr)
         pnodeLocalHost = new CNode(INVALID_SOCKET, CAddress(CService("127.0.0.1", 0), nLocalServices));
 
     Discover();
@@ -1877,7 +1877,7 @@ void StartNode(void* /*parg*/)
     if (!GetBoolArg("-dnsseed", true))
         printf("DNS seeding disabled\n");
     else
-        if (!NewThread(ThreadDNSAddressSeed, NULL))
+        if (!NewThread(ThreadDNSAddressSeed, nullptr))
             printf("Error: NewThread(ThreadDNSAddressSeed) failed\n");
 
     // Map ports with UPnP
@@ -1885,27 +1885,27 @@ void StartNode(void* /*parg*/)
         MapPort();
 
     // Get addresses from IRC and advertise ours
-    if (!NewThread(ThreadIRCSeed, NULL))
+    if (!NewThread(ThreadIRCSeed, nullptr))
         printf("Error: NewThread(ThreadIRCSeed) failed\n");
 
     // Send and receive from sockets, accept connections
-    if (!NewThread(ThreadSocketHandler, NULL))
+    if (!NewThread(ThreadSocketHandler, nullptr))
         printf("Error: NewThread(ThreadSocketHandler) failed\n");
 
     // Initiate outbound connections from -addnode
-    if (!NewThread(ThreadOpenAddedConnections, NULL))
+    if (!NewThread(ThreadOpenAddedConnections, nullptr))
         printf("Error: NewThread(ThreadOpenAddedConnections) failed\n");
 
     // Initiate outbound connections
-    if (!NewThread(ThreadOpenConnections, NULL))
+    if (!NewThread(ThreadOpenConnections, nullptr))
         printf("Error: NewThread(ThreadOpenConnections) failed\n");
 
     // Process messages
-    if (!NewThread(ThreadMessageHandler, NULL))
+    if (!NewThread(ThreadMessageHandler, nullptr))
         printf("Error: NewThread(ThreadMessageHandler) failed\n");
 
     // Dump network addresses
-    if (!NewThread(ThreadDumpAddress, NULL))
+    if (!NewThread(ThreadDumpAddress, nullptr))
         printf("Error; NewThread(ThreadDumpAddress) failed\n");
 
     // Generate coins in the background
@@ -1915,7 +1915,7 @@ void StartNode(void* /*parg*/)
     strTrustedNTP = GetArg("-ntp", "localhost");
 
     /* NTP polling */
-    if(!NewThread(ThreadNtpPoller, NULL))
+    if(!NewThread(ThreadNtpPoller, nullptr))
       printf("Error: NewThread(ThreadNtpPoller) failed\n");
 }
 

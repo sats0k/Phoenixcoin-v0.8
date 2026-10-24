@@ -76,7 +76,7 @@ public:
 class CWallet : public CCryptoKeyStore {
 private:
     bool SelectCoins(int64 nTargetValue, std::set<std::pair<const CWalletTx *, uint> > &setCoinsRet,
-      int64 &nValueRet, const CCoinControl *coinControl = NULL) const;
+      int64 &nValueRet, const CCoinControl *coinControl = nullptr) const;
 
     CWalletDB *pwalletdbEncryption;
 
@@ -170,7 +170,7 @@ public:
         nWalletMaxVersion = FEATURE_BASE;
         fFileBacked = false;
         nMasterKeyMaxID = 0;
-        pwalletdbEncryption = NULL;
+        pwalletdbEncryption = nullptr;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
         nHybridLegacyIndexSize = 0;
@@ -184,7 +184,7 @@ public:
         strWalletFile = strWalletFileIn;
         fFileBacked = true;
         nMasterKeyMaxID = 0;
-        pwalletdbEncryption = NULL;
+        pwalletdbEncryption = nullptr;
         nOrderPosNext = 0;
         nTimeFirstKey = 0;
         nHybridLegacyIndexSize = 0;
@@ -214,7 +214,7 @@ public:
     bool CanSupportFeature(enum WalletFeature wf) { return nWalletMaxVersion >= wf; }
 
     void AvailableCoins(std::vector<COutput> &vCoins, bool fOnlyConfirmed = true,
-      const CCoinControl *coinControl = NULL) const;
+      const CCoinControl *coinControl = nullptr) const;
     bool SelectCoinsMinConf(int64 nTargetValue, int nConfMine, int nConfTheirs, std::vector<COutput> vCoins,
       std::set<std::pair<const CWalletTx *, uint> > &setCoinsRet, int64 &nValueRet) const;
     bool IsLockedCoin(uint256 hash, uint n) const;
@@ -273,7 +273,7 @@ public:
     /** Increment the next transaction order id
         @return next transaction order id
      */
-    int64 IncOrderPosNext(CWalletDB *pwalletdb = NULL);
+    int64 IncOrderPosNext(CWalletDB *pwalletdb = nullptr);
 
     typedef std::pair<CWalletTx*, CAccountingEntry*> TxPair;
     typedef std::multimap<int64, TxPair > TxItems;
@@ -295,16 +295,16 @@ public:
     int64 GetBalance() const;
     int64 GetUnconfirmed() const;
     int64 GetImmature() const;
-    // strFailReason, when non-NULL, receives a specific reason whenever
+    // strFailReason, when non-nullptr, receives a specific reason whenever
     // CreateTransaction() returns false. SendMoney() folds it into the RPC
     // error so a failure is attributable instead of a bare -4, which is what
     // made an unsignable-input abort indistinguishable from every other cause.
     bool CreateTransaction(const std::vector<std::pair<CScript, int64> > &vecSend, CWalletTx &wtxNew,
-      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL,
-      std::string *strFailReason = NULL);
+      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = nullptr,
+      std::string *strFailReason = nullptr);
     bool CreateTransaction(CScript scriptPubKey, int64 nValue, CWalletTx &wtxNew,
-      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = NULL,
-      std::string *strFailReason = NULL);
+      CReserveKey &reservekey, int64 &nFeeRet, const CCoinControl *coinControl = nullptr,
+      std::string *strFailReason = nullptr);
     bool CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey);
     std::string SendMoney(CScript scriptPubKey, int64 nValue, CWalletTx& wtxNew, bool fAskFee=false);
     std::string SendMoneyToDestination(const CTxDestination &address, int64 nValue, CWalletTx& wtxNew, bool fAskFee=false);
@@ -415,7 +415,7 @@ public:
     bool SetDefaultKey(const CPubKey &vchPubKey);
 
     // signify that a particular wallet feature is now used. this may change nWalletVersion and nWalletMaxVersion if those are lower
-    bool SetMinVersion(enum WalletFeature, CWalletDB* pwalletdbIn = NULL, bool fExplicit = false);
+    bool SetMinVersion(enum WalletFeature, CWalletDB* pwalletdbIn = nullptr, bool fExplicit = false);
 
     // change which version we're allowed to upgrade to (note that this does not immediately imply upgrading to that format)
     bool SetMaxVersion(int nVersion);
@@ -514,7 +514,7 @@ public:
 
     CWalletTx()
     {
-        Init(NULL);
+        Init(nullptr);
     }
 
     CWalletTx(const CWallet* pwalletIn)
@@ -560,7 +560,7 @@ public:
     (
         CWalletTx* pthis = const_cast<CWalletTx*>(this);
         if (fRead)
-            pthis->Init(NULL);
+            pthis->Init(nullptr);
         char fSpent = false;
 
         if (!fRead)

@@ -152,7 +152,7 @@ class CTxIndex;
 
 void RegisterWallet(CWallet* pwalletIn);
 void UnregisterWallet(CWallet* pwalletIn);
-void SyncWithWallets(const CTransaction& tx, const CBlock* pblock = NULL, bool fUpdate = false);
+void SyncWithWallets(const CTransaction& tx, const CBlock* pblock = nullptr, bool fUpdate = false);
 bool ProcessBlock(CNode* pfrom, CBlock* pblock);
 bool CheckDiskSpace(uint64 nAdditionalBytes=0);
 FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode="rb");
@@ -237,7 +237,7 @@ public:
 
     CInPoint() { SetNull(); }
     CInPoint(CTransaction *ptxIn, uint nIn) { ptx = ptxIn; n = nIn; }
-    void SetNull() { ptx = NULL; n = std::numeric_limits<uint32_t>::max(); }
+    void SetNull() { ptx = nullptr; n = std::numeric_limits<uint32_t>::max(); }
     bool IsNull() const {
         return(!ptx && (n == std::numeric_limits<uint32_t>::max()));
     }
@@ -602,7 +602,7 @@ public:
 
     int64 GetMinFee(uint nBytes = 0, bool fAllowFree = false, enum GetMinFee_mode mode = GMF_BLOCK) const;
 
-    bool ReadFromDisk(CDiskTxPos pos, FILE** pfileRet=NULL)
+    bool ReadFromDisk(CDiskTxPos pos, FILE** pfileRet=nullptr)
     {
         CAutoFile filein = CAutoFile(OpenBlockFile(pos.nFile, 0, pfileRet ? "rb+" : "rb"), SER_DISK, CLIENT_VERSION);
         if (!filein)
@@ -697,7 +697,7 @@ public:
                        const CBlockIndex* pindexBlock, bool fBlock, bool fMiner, bool fStrictPayToScriptHash=true);
     bool ClientConnectInputs();
     bool CheckTransaction() const;
-    bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=NULL);
+    bool AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs=true, bool* pfMissingInputs=nullptr);
 
 protected:
     const CTxOut& GetOutputFor(const CTxIn& input, const MapPrevTx& inputs) const;
@@ -747,7 +747,7 @@ public:
     )
 
 
-    int SetMerkleBranch(const CBlock* pblock=NULL);
+    int SetMerkleBranch(const CBlock* pblock=nullptr);
     int GetDepthInMainChain(CBlockIndex* &pindexRet) const;
     int GetDepthInMainChain() const { CBlockIndex *pindexRet; return GetDepthInMainChain(pindexRet); }
     bool IsInMainChain() const { return GetDepthInMainChain() > 0; }
@@ -1173,9 +1173,9 @@ public:
 
     CBlockIndex()
     {
-        phashBlock = NULL;
-        pprev = NULL;
-        pnext = NULL;
+        phashBlock = nullptr;
+        pprev = nullptr;
+        pnext = nullptr;
         nFile = 0;
         nBlockPos = 0;
         nHeight = 0;
@@ -1190,9 +1190,9 @@ public:
 
     CBlockIndex(unsigned int nFileIn, unsigned int nBlockPosIn, CBlock& block)
     {
-        phashBlock = NULL;
-        pprev = NULL;
-        pnext = NULL;
+        phashBlock = nullptr;
+        pprev = nullptr;
+        pnext = nullptr;
         nFile = nFileIn;
         nBlockPos = nBlockPosIn;
         nHeight = 0;
@@ -1239,8 +1239,8 @@ public:
         // serialized, so no locking is required.  The cache is intentionally
         // leaked so it is never torn down concurrently with the shutdown
         // thread's exit() call.
-        static std::map<unsigned int, CBigNum>* pMapWorkCache = NULL;
-        if (pMapWorkCache == NULL)
+        static std::map<unsigned int, CBigNum>* pMapWorkCache = nullptr;
+        if (pMapWorkCache == nullptr)
             pMapWorkCache = new std::map<unsigned int, CBigNum>();
 
         std::map<unsigned int, CBigNum>::const_iterator mi = pMapWorkCache->find(nBits);

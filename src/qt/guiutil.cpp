@@ -322,7 +322,7 @@ bool ToolTipToRichTextFilter::eventFilter(QObject *obj, QEvent *evt)
 #ifdef WINDOWS
 std::filesystem::path static StartupShortcutPath() {
     TCHAR szPath[MAX_PATH];
-    SHGetFolderPath(NULL, CSIDL_STARTUP, NULL, 0, szPath);
+    SHGetFolderPath(nullptr, CSIDL_STARTUP, nullptr, 0, szPath);
     PathAppend(szPath, TEXT("Phoenixcoin.lnk"));
     return((std::filesystem::path)szPath);
 }
@@ -338,11 +338,11 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 
     if (fAutoStart)
     {
-        CoInitialize(NULL);
+        CoInitialize(nullptr);
 
         // Get a pointer to the IShellLink interface.
-        IShellLink* psl = NULL;
-        HRESULT hres = CoCreateInstance(CLSID_ShellLink, NULL,
+        IShellLink* psl = nullptr;
+        HRESULT hres = CoCreateInstance(CLSID_ShellLink, nullptr,
                                 CLSCTX_INPROC_SERVER, IID_IShellLink,
                                 reinterpret_cast<void**>(&psl));
 
@@ -350,7 +350,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
         {
             // Get the current executable path
             TCHAR pszExePath[MAX_PATH];
-            GetModuleFileName(NULL, pszExePath, sizeof(pszExePath));
+            GetModuleFileName(nullptr, pszExePath, sizeof(pszExePath));
 
             TCHAR pszArgs[5] = TEXT("-min");
 
@@ -363,7 +363,7 @@ bool SetStartOnSystemStartup(bool fAutoStart)
 
             // Query IShellLink for the IPersistFile interface for
             // saving the shortcut in persistent storage.
-            IPersistFile* ppf = NULL;
+            IPersistFile* ppf = nullptr;
             hres = psl->QueryInterface(IID_IPersistFile,
                                        reinterpret_cast<void**>(&ppf));
             if (SUCCEEDED(hres))

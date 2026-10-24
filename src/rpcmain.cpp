@@ -309,7 +309,7 @@ const CRPCCommand *CRPCTable::operator[](string name) const
 {
     map<string, const CRPCCommand*>::const_iterator it = mapCommands.find(name);
     if (it == mapCommands.end())
-        return NULL;
+        return nullptr;
     return (*it).second;
 }
 
@@ -343,7 +343,7 @@ string rfc1123Time()
     time_t now;
     time(&now);
     struct tm* now_gmt = gmtime(&now);
-    string locale(setlocale(LC_TIME, NULL));
+    string locale(setlocale(LC_TIME, nullptr));
     setlocale(LC_TIME, "C"); // we want POSIX (aka "C") weekday/month strings
     strftime(buffer, sizeof(buffer), "%a, %d %b %Y %H:%M:%S +0000", now_gmt);
     setlocale(LC_TIME, locale.c_str());
@@ -405,7 +405,7 @@ int ReadHTTPStatus(std::basic_istream<char>& stream, int &proto)
         return HTTP_INTERNAL_SERVER_ERROR;
     proto = 0;
     const char *ver = strstr(str.c_str(), "HTTP/1.");
-    if (ver != NULL)
+    if (ver != nullptr)
         proto = atoi(ver+7);
     return atoi(vWords[1].c_str());
 }
@@ -682,7 +682,7 @@ void ThreadRPCServer(void* parg)
         PrintException(&e, "ThreadRPCServer()");
     } catch (...) {
         vnThreadsRunning[THREAD_RPCLISTENER]--;
-        PrintException(NULL, "ThreadRPCServer()");
+        PrintException(nullptr, "ThreadRPCServer()");
     }
     printf("ThreadRPCServer exited\n");
 }
@@ -1182,43 +1182,43 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
-    if (strMethod == "setgenerate"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);
     if (strMethod == "settxfee"               && n > 0) ConvertTo<double>(params[0]);
-    if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listreceivedbyaddress"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "getreceivedbyaddress"   && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "getreceivedbyaccount"   && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "listreceivedbyaddress"  && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "listreceivedbyaddress"  && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "listreceivedbyaccount"  && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "listreceivedbyaccount"  && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "listreceivedbyaccount"  && n > 1) ConvertTo<bool>(params[1]);
-    if (strMethod == "getbalance"             && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "getblockhash"           && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "getblock"               && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "getbalance"             && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "getblockhash"           && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "getblock"               && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "move"                   && n > 2) ConvertTo<double>(params[2]);
-    if (strMethod == "move"                   && n > 3) ConvertTo<boost::int64_t>(params[3]);
+    if (strMethod == "move"                   && n > 3) ConvertTo<int64_t>(params[3]);
     if (strMethod == "sendfrom"               && n > 2) ConvertTo<double>(params[2]);
-    if (strMethod == "sendfrom"               && n > 3) ConvertTo<boost::int64_t>(params[3]);
-    if (strMethod == "listtransactions"       && n > 1) ConvertTo<boost::int64_t>(params[1]);
-    if (strMethod == "listtransactions"       && n > 2) ConvertTo<boost::int64_t>(params[2]);
-    if (strMethod == "listaccounts"           && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "walletpassphrase"       && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "sendfrom"               && n > 3) ConvertTo<int64_t>(params[3]);
+    if (strMethod == "listtransactions"       && n > 1) ConvertTo<int64_t>(params[1]);
+    if (strMethod == "listtransactions"       && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "listaccounts"           && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "walletpassphrase"       && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "getblocktemplate"       && n > 0) ConvertTo<Object>(params[0]);
-    if (strMethod == "listsinceblock"         && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "listsinceblock"         && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "sendmany"               && n > 1) ConvertTo<Object>(params[1]);
-    if (strMethod == "sendmany"               && n > 2) ConvertTo<boost::int64_t>(params[2]);
-    if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "sendmany"               && n > 2) ConvertTo<int64_t>(params[2]);
+    if (strMethod == "addmultisigaddress"     && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addmultisigaddress"     && n > 1) ConvertTo<Array>(params[1]);
-    if (strMethod == "addhybridmultisigaddress" && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "addhybridmultisigaddress" && n > 0) ConvertTo<int64_t>(params[0]);
     if (strMethod == "addhybridmultisigaddress" && n > 1) ConvertTo<Array>(params[1]);
-    if (strMethod == "listunspent"            && n > 0) ConvertTo<boost::int64_t>(params[0]);
-    if (strMethod == "listunspent"            && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "listunspent"            && n > 0) ConvertTo<int64_t>(params[0]);
+    if (strMethod == "listunspent"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "listunspent"            && n > 2) ConvertTo<Array>(params[2]);
-    if (strMethod == "getrawtransaction"      && n > 1) ConvertTo<boost::int64_t>(params[1]);
+    if (strMethod == "getrawtransaction"      && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "createrawtransaction"   && n > 0) ConvertTo<Array>(params[0]);
     if (strMethod == "createrawtransaction"   && n > 1) ConvertTo<Object>(params[1]);
     if (strMethod == "signrawtransaction"     && n > 1) ConvertTo<Array>(params[1], true);
     if (strMethod == "signrawtransaction"     && n > 2) ConvertTo<Array>(params[2], true);
-    if (strMethod == "getnetworkhashps"       && n > 0) ConvertTo<boost::int64_t>(params[0]);
+    if (strMethod == "getnetworkhashps"       && n > 0) ConvertTo<int64_t>(params[0]);
     if((strMethod == "getaddednodeinfo")      && (n > 0)) ConvertTo<bool>(params[0]);
     if((strMethod == "importprivkey")         && (n > 2)) ConvertTo<bool>(params[2]);
     if((strMethod == "importaddress")         && (n > 2)) ConvertTo<bool>(params[2]);
@@ -1284,7 +1284,7 @@ int CommandLineRPC(int argc, char *argv[])
     }
     catch (...)
     {
-        PrintException(NULL, "CommandLineRPC()");
+        PrintException(nullptr, "CommandLineRPC()");
     }
 
     if(!strPrint.empty()) {
@@ -1303,18 +1303,18 @@ int main(int argc, char *argv[])
 #ifdef _MSC_VER
     // Turn off Microsoft heap dump noise
     _CrtSetReportMode(_CRT_WARN, _CRTDBG_MODE_FILE);
-    _CrtSetReportFile(_CRT_WARN, CreateFile("NUL", GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, 0));
+    _CrtSetReportFile(_CRT_WARN, CreateFile("NUL", GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, 0));
 #endif
-    setbuf(stdin, NULL);
-    setbuf(stdout, NULL);
-    setbuf(stderr, NULL);
+    setbuf(stdin, nullptr);
+    setbuf(stdout, nullptr);
+    setbuf(stderr, nullptr);
 
     try
     {
         if (argc >= 2 && string(argv[1]) == "-server")
         {
             printf("server ready\n");
-            ThreadRPCServer(NULL);
+            ThreadRPCServer(nullptr);
         }
         else
         {
@@ -1324,7 +1324,7 @@ int main(int argc, char *argv[])
     catch (std::exception& e) {
         PrintException(&e, "main()");
     } catch (...) {
-        PrintException(NULL, "main()");
+        PrintException(nullptr, "main()");
     }
     return 0;
 }

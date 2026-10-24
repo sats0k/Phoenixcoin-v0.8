@@ -51,12 +51,12 @@ uint256 hashGenesisBlockTestNet("0xecd47eee16536f7d03d64643cfc8c61b22093f8bf2c93
 static CBigNum bnProofOfWorkLimit(~uint256(0) >> 20);
 /* The difficulty after switching to NeoScrypt (0.015625) */
 static CBigNum bnNeoScryptSwitch(~uint256(0) >> 26);
-CBlockIndex* pindexGenesisBlock = NULL;
+CBlockIndex* pindexGenesisBlock = nullptr;
 int nBestHeight = -1;
 CBigNum bnBestChainWork = 0;
 CBigNum bnBestInvalidWork = 0;
 uint256 hashBestChain = 0;
-CBlockIndex* pindexBest = NULL;
+CBlockIndex* pindexBest = nullptr;
 int64 nTimeBestReceived = 0;
 
 CMedianFilter<int> cPeerBlockCounts(5, 0); // Amount of blocks that other nodes claim to have
@@ -413,7 +413,7 @@ int CMerkleTx::SetMerkleBranch(const CBlock* pblock)
     else
     {
         CBlock blockTmp;
-        if (pblock == NULL)
+        if (pblock == nullptr)
         {
             // Load the block this tx is in
             CTxIndex txindex;
@@ -586,7 +586,7 @@ bool CTxMemPool::accept(CTxDB& txdb, CTransaction &tx, bool fCheckInputs,
             return false;
 
     // Check for conflicts with in-memory transactions
-    CTransaction* ptxOld = NULL;
+    CTransaction* ptxOld = nullptr;
     for (unsigned int i = 0; i < tx.vin.size(); i++)
     {
         COutPoint outpoint = tx.vin[i].prevout;
@@ -1211,7 +1211,7 @@ int GetNumBlocksOfPeers()
 
 bool IsInitialBlockDownload()
 {
-    if (pindexBest == NULL || nBestHeight < Checkpoints::GetTotalBlocksEstimate())
+    if (pindexBest == nullptr || nBestHeight < Checkpoints::GetTotalBlocksEstimate())
         return true;
     static int64 nLastUpdate;
     static CBlockIndex* pindexLastBest;
@@ -1816,7 +1816,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
     // Disconnect shorter branch
     for (CBlockIndex* pindex : vDisconnect)
         if (pindex->pprev)
-            pindex->pprev->pnext = NULL;
+            pindex->pprev->pnext = nullptr;
 
     // Connect longer branch
     for (CBlockIndex* pindex : vConnect)
@@ -1869,7 +1869,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     if (!txdb.TxnBegin())
         return error("SetBestChain() : TxnBegin failed");
 
-    if (pindexGenesisBlock == NULL && hash == hashGenesisBlock)
+    if (pindexGenesisBlock == nullptr && hash == hashGenesisBlock)
     {
         txdb.WriteHashBestChain(hash);
         if (!txdb.TxnCommit())
@@ -1939,7 +1939,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     // New best block
     hashBestChain = hash;
     pindexBest = pindexNew;
-    pblockindexFBBHLast = NULL;
+    pblockindexFBBHLast = nullptr;
     nBestHeight = pindexBest->nHeight;
     bnBestChainWork = pindexNew->bnChainWork;
     nTimeBestReceived = GetTime();
@@ -1955,7 +1955,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
     {
         int nUpgraded = 0;
         const CBlockIndex* pindex = pindexBest;
-        for (int i = 0; i < 100 && pindex != NULL; i++)
+        for (int i = 0; i < 100 && pindex != nullptr; i++)
         {
             if (pindex->nVersion > CBlock::CURRENT_VERSION)
                 ++nUpgraded;
@@ -2253,7 +2253,7 @@ bool CBlock::AcceptBlock()
 bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, unsigned int nRequired, unsigned int nToCheck)
 {
     unsigned int nFound = 0;
-    for (unsigned int i = 0; i < nToCheck && nFound < nRequired && pstart != NULL; i++)
+    for (unsigned int i = 0; i < nToCheck && nFound < nRequired && pstart != nullptr; i++)
     {
         if (pstart->nVersion >= minVersion)
             ++nFound;
@@ -2381,16 +2381,16 @@ static std::filesystem::path BlockFilePath(unsigned int nFile) {
 FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode)
 {
     if ((nFile < 1) || (nFile == std::numeric_limits<uint32_t>::max()))
-        return NULL;
+        return nullptr;
     FILE* file = fopen(BlockFilePath(nFile).string().c_str(), pszMode);
     if (!file)
-        return NULL;
+        return nullptr;
     if (nBlockPos != 0 && !strchr(pszMode, 'a') && !strchr(pszMode, 'w'))
     {
         if (fseek(file, nBlockPos, SEEK_SET) != 0)
         {
             fclose(file);
-            return NULL;
+            return nullptr;
         }
     }
     return file;
@@ -2404,9 +2404,9 @@ FILE* AppendBlockFile(unsigned int& nFileRet)
     while(true) {
         FILE* file = OpenBlockFile(nCurrentBlockFile, 0, "ab");
         if (!file)
-            return NULL;
+            return nullptr;
         if (fseek(file, 0, SEEK_END) != 0)
-            return NULL;
+            return nullptr;
         // FAT32 file size max 4GB, fseek and ftell max 2GB, so we must stay under 2GB
         if(ftell(file) < (int)(0x7F000000 - MAX_SIZE)) {
             nFileRet = nCurrentBlockFile;
@@ -2716,7 +2716,7 @@ bool LoadExternalBlockFile(FILE* fileIn)
                 {
                     CBlock block;
                     blkdat >> block;
-                    if (ProcessBlock(NULL,&block))
+                    if (ProcessBlock(nullptr,&block))
                     {
                         nLoaded++;
                         nPos += 4 + nSize;
@@ -3244,7 +3244,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
             pfrom->nGetheadersReceiveTime = nCurrentTime;
         }
 
-        CBlockIndex* pindex = NULL;
+        CBlockIndex* pindex = nullptr;
         if (locator.IsNull())
         {
             // If locator is null, return the hashStop block
@@ -3304,7 +3304,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
         bool fMissingInputs = false;
         if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs))
         {
-            SyncWithWallets(tx, NULL, true);
+            SyncWithWallets(tx, nullptr, true);
             RelayMessage(inv, vMsg);
             mapAlreadyAskedFor.erase(inv);
             // The orphan transactions that depend on this one will be re-processed
@@ -3336,7 +3336,7 @@ bool static ProcessMessage(CNode* pfrom, string strCommand, CDataStream& vRecv)
                     if (tx.AcceptToMemoryPool(txdb, true, &fMissingInputs2))
                     {
                         printf("   accepted orphan tx %s\n", inv.hash.ToString().substr(0,10).c_str());
-                        SyncWithWallets(tx, NULL, true);
+                        SyncWithWallets(tx, nullptr, true);
                         RelayMessage(inv, vMsg);
                         mapAlreadyAskedFor.erase(inv);
                         vWorkQueue.push_back(inv.hash);
@@ -3621,7 +3621,7 @@ bool ProcessMessages(CNode *pfrom) {
         } catch(std::exception &e) {
             PrintExceptionContinue(&e, "ProcessMessages()");
         } catch (...) {
-            PrintExceptionContinue(NULL, "ProcessMessages()");
+            PrintExceptionContinue(nullptr, "ProcessMessages()");
         }
 
         if(!fRet)
@@ -3890,7 +3890,7 @@ public:
 CBlock *CreateNewBlock(CReserveKey &reservekey) {
 
     CBlock *pblock = new CBlock();
-    if(!pblock) return(NULL);
+    if(!pblock) return(nullptr);
 
     // Create coinbase tx
     CTransaction txNew;
@@ -3966,7 +3966,7 @@ CBlock *CreateNewBlock(CReserveKey &reservekey) {
             if (tx.IsCoinBase() || !tx.IsFinal())
                 continue;
 
-            COrphan* porphan = NULL;
+            COrphan* porphan = nullptr;
             double dPriority = 0;
             int64 nTotalIn = 0;
             bool fMissingInputs = false;
@@ -4244,7 +4244,7 @@ bool CheckWork(CBlock *pblock, CWallet &wallet, CReserveKey &reservekey, bool fG
         }
 
         // Process this block the same as if we had received it from another node
-        if(!ProcessBlock(NULL, pblock))
+        if(!ProcessBlock(nullptr, pblock))
           return(error("CoinMiner : ProcessBlock, block not accepted"));
     }
 
@@ -4392,7 +4392,7 @@ static void ThreadCoinMiner(void *parg) {
         PrintException(&e, "ThreadCoinMiner()");
     } catch (...) {
         vnThreadsRunning[THREAD_MINER]--;
-        PrintException(NULL, "ThreadCoinMiner()");
+        PrintException(nullptr, "ThreadCoinMiner()");
     }
     nHPSTimerStart = 0;
     if(vnThreadsRunning[THREAD_MINER] == 0)

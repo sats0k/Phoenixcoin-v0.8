@@ -64,7 +64,7 @@ public:
     AddressTableModel *getAddressTableModel();
     TransactionTableModel *getTransactionTableModel();
 
-    qint64 getBalance(const CCoinControl *coinControl = NULL) const;
+    qint64 getBalance(const CCoinControl *coinControl = nullptr) const;
     qint64 getUnconfirmed() const;
     qint64 getImmature() const;
     int getNumTransactions() const;
@@ -81,7 +81,7 @@ public:
 
     /* Prepare a transaction to get a fee estimate */
     SendCoinsReturn prepareTransaction(WalletModelTransaction &transaction,
-      const CCoinControl *coinControl = NULL);
+      const CCoinControl *coinControl = nullptr);
 
     /* Send coins to a list of recipients */
     SendCoinsReturn sendCoins(WalletModelTransaction &transaction);

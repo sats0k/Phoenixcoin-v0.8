@@ -100,7 +100,7 @@ namespace Checkpoints {
             BlockMap::const_iterator t = mapBlockIndex.find(hash);
             if(t != mapBlockIndex.end()) return(t->second);
         }
-        return(NULL);
+        return(nullptr);
     }
 
     /* Advanced (broadcast centrally and synchronised automatically) checkpoints */
@@ -380,7 +380,7 @@ namespace Checkpoints {
             return(error("SendSyncCheckpoint(): unable to sign an advanced checkpoint, check the private key"));
         }
 
-        if(!checkpoint.ProcessSyncCheckpoint(NULL)) {
+        if(!checkpoint.ProcessSyncCheckpoint(nullptr)) {
             printf("WARNING: SendSyncCheckpoint(): failed to process\n");
             return(false);
         }

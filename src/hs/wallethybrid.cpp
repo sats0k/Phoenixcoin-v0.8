@@ -325,7 +325,7 @@ bool CWallet::GetHybridKey(const CHybridKeyID& hybridID,
     keyOut.nCreateTime = it->second.nCreateTime;
     keyOut.mldsaSigner = GetSignerFromKey(it->second);
 
-    return keyOut.mldsaSigner != NULL;
+    return keyOut.mldsaSigner != nullptr;
 }
 
 bool CWallet::GetHybridKeyByHash(const uint160& keyHash,
@@ -347,7 +347,7 @@ bool CWallet::GetHybridKeyByHash(const uint160& keyHash,
     keyOut.nCreateTime  = it->second.nCreateTime;
     keyOut.mldsaSigner  = GetSignerFromKey(it->second);
 
-    return keyOut.mldsaSigner != NULL;
+    return keyOut.mldsaSigner != nullptr;
 }
 
 // Spendability gate used by IsMine(). Mirrors exactly what GetHybridKeyByHash()

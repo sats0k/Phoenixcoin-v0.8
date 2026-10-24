@@ -90,15 +90,15 @@ Value getinfo(const Array &params, bool fHelp) {
     obj.push_back(Pair("proxy",         (proxy.first.IsValid() ? proxy.first.ToStringIPPort() : string())));
     obj.push_back(Pair("systemtime",    (int64_t)GetTime()));
     obj.push_back(Pair("adjustedtime",  (int64_t)GetAdjustedTime()));
-    obj.push_back(Pair("ntpoffset",     (int64_t)nNtpOffset != INT64_MAX ? (boost::int64_t)nNtpOffset : Value::null));
-    obj.push_back(Pair("p2poffset",     (int64_t)nPeersOffset != INT64_MAX ? (boost::int64_t)nPeersOffset : Value::null));
+    obj.push_back(Pair("ntpoffset",     (int64_t)nNtpOffset != INT64_MAX ? (int64_t)nNtpOffset : Value::null));
+    obj.push_back(Pair("p2poffset",     (int64_t)nPeersOffset != INT64_MAX ? (int64_t)nPeersOffset : Value::null));
     obj.push_back(Pair("testnet",       fTestNet));
     obj.push_back(Pair("keypoololdest", (int64_t)pwalletMain->GetOldestKeyPoolTime()));
     obj.push_back(Pair("keypoolsize",   pwalletMain->GetKeyPoolSize()));
     obj.push_back(Pair("paytxfee",      ValueFromAmount(nTransactionFee)));
     obj.push_back(Pair("mininput",      ValueFromAmount(nMinimumInputValue)));
     if (pwalletMain->IsCrypted())
-        obj.push_back(Pair("unlocked_until", (boost::int64_t)nWalletUnlockTime / 1000));
+        obj.push_back(Pair("unlocked_until", (int64_t)nWalletUnlockTime / 1000));
     obj.push_back(Pair("errors",        GetWarnings("statusbar")));
     return obj;
 }
@@ -1040,7 +1040,7 @@ void AcentryToJSON(const CAccountingEntry& acentry, const string& strAccount, Ar
         Object entry;
         entry.push_back(Pair("account", acentry.strAccount));
         entry.push_back(Pair("category", "move"));
-        entry.push_back(Pair("time", (boost::int64_t)acentry.nTime));
+        entry.push_back(Pair("time", (int64_t)acentry.nTime));
         entry.push_back(Pair("amount", ValueFromAmount(acentry.nCreditDebit)));
         entry.push_back(Pair("otheraccount", acentry.strOtherAccount));
         entry.push_back(Pair("comment", acentry.strComment));
@@ -1176,7 +1176,7 @@ Value listsinceblock(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    CBlockIndex *pindex = NULL;
+    CBlockIndex *pindex = nullptr;
     int target_confirms = 1;
 
     if (params.size() > 0)
@@ -1424,7 +1424,7 @@ Value walletpassphrase(const Array &params, bool fHelp) {
         throw(runtime_error(msg));
     }
 
-    NewThread(ThreadTopUpKeyPool, NULL);
+    NewThread(ThreadTopUpKeyPool, nullptr);
     int64* pnSleepTime = new int64(params[1].get_int64());
     NewThread(ThreadCleanWalletPassphrase, pnSleepTime);
 

@@ -156,7 +156,7 @@ const char* GetTxnOutputType(txnouttype t) {
     case TX_HYBRID_MULTISIG:
         return "hybrid_multisig";
     }
-    return NULL;
+    return nullptr;
 }
 
 const char* GetOpName(opcodetype opcode) {
@@ -942,7 +942,7 @@ bool EvalScript(vector<vector<unsigned char> >& stack, const CScript& script, co
                             return false;
                         const EVP_MD* md = EVP_ripemd160();
 
-                        if(1 != EVP_DigestInit_ex(ctx, md, NULL)) {
+                        if(1 != EVP_DigestInit_ex(ctx, md, nullptr)) {
                             EVP_MD_CTX_free(ctx);
                             return false;
                         }

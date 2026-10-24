@@ -101,7 +101,7 @@ void RandAddSeedPerfmon()
     unsigned long nSize = sizeof(pdata);
     OPENSSL_cleanse(pdata, nSize);
     long ret = RegQueryValueExA(HKEY_PERFORMANCE_DATA, "Global",
-      NULL, NULL, pdata, &nSize);
+      nullptr, nullptr, pdata, &nSize);
     RegCloseKey(HKEY_PERFORMANCE_DATA);
     if(ret == ERROR_SUCCESS) {
         RAND_add(pdata, nSize, nSize / 100.0);
@@ -149,12 +149,12 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
         ret = vprintf(pszFormat, arg_ptr);
         va_end(arg_ptr);
     } else if(!fPrintToDebugger) {
-        static FILE *fileout = NULL;
+        static FILE *fileout = nullptr;
 
         if(!fileout) {
             std::filesystem::path pathDebug = GetDataDir() / "debug.log";
             fileout = fopen(pathDebug.string().c_str(), "a");
-            if(fileout) setbuf(fileout, NULL); // unbuffered
+            if(fileout) setbuf(fileout, nullptr); // unbuffered
         }
 
         if(fileout) {
@@ -164,7 +164,7 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
             // Since the order of destruction of static/global objects is undefined,
             // allocate mutexDebugLog on the heap the first time this routine
             // is called to avoid crashes during shutdown.
-            static boost::mutex *mutexDebugLog = NULL;
+            static boost::mutex *mutexDebugLog = nullptr;
             if(!mutexDebugLog) mutexDebugLog = new boost::mutex();
             boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
 
@@ -173,7 +173,7 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
                 fReopenDebugLog = false;
                 std::filesystem::path pathDebug = GetDataDir() / "debug.log";
                 if(freopen(pathDebug.string().c_str(),"a",fileout))
-                  setbuf(fileout, NULL); // unbuffered
+                  setbuf(fileout, nullptr); // unbuffered
             }
 
             /* Debug print useful for profiling */
@@ -240,7 +240,7 @@ string vstrprintf(const char *format, va_list ap)
             delete[] p;
         limit *= 2;
         p = new char[limit];
-        if (p == NULL)
+        if (p == nullptr)
             throw std::bad_alloc();
     }
     string str(p, p+ret);
@@ -911,7 +911,7 @@ static std::string FormatException(std::exception *pex, const char *pszThread) {
 #ifdef WINDOWS
     char pszModule[MAX_PATH];
     memset(pszModule, 0x00, MAX_PATH);
-    GetModuleFileNameA(NULL, pszModule, sizeof(pszModule));
+    GetModuleFileNameA(nullptr, pszModule, sizeof(pszModule));
 #else
     const char *pszModule = "phoenixcoin";
 #endif
@@ -1224,7 +1224,7 @@ int64 GetTime()
 {
     if (nMockTime) return nMockTime;
 
-    return time(NULL);
+    return time(nullptr);
 }
 
 void SetMockTime(int64 nMockTimeIn)
@@ -1357,7 +1357,7 @@ void runCommand(std::string strCommand)
 }
 
 void RenameThread(const char *name) {
-    /* Thread name can be up to 16 bytes (characters) including NULL terminator */
+    /* Thread name can be up to 16 bytes (characters) including nullptr terminator */
 #if defined(__linux__) && defined(PR_SET_NAME)
     /* Available since kernel 2.6.9; pthread_setname_np() also uses prctl() in GLIBC */
     prctl(PR_SET_NAME, name, 0, 0, 0);

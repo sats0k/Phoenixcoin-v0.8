@@ -33,12 +33,12 @@ class CAutoBN_CTX {
   public:
     CAutoBN_CTX() {
         pctx = BN_CTX_new();
-        if(pctx == NULL)
-            throw bignum_error("CAutoBN_CTX : BN_CTX_new() returned NULL");
+        if(pctx == nullptr)
+            throw bignum_error("CAutoBN_CTX : BN_CTX_new() returned nullptr");
     }
 
     ~CAutoBN_CTX() {
-        if(pctx != NULL)
+        if(pctx != nullptr)
             BN_CTX_free(pctx);
     }
 
@@ -52,7 +52,7 @@ class CAutoBN_CTX {
         return &pctx;
     }
     bool operator!() {
-        return (pctx == NULL);
+        return (pctx == nullptr);
     }
 };
 
@@ -65,14 +65,14 @@ private:
 
     void init() {
 #else
-    BIGNUM *self = NULL;
+    BIGNUM *self = nullptr;
 
     void init() {
         if(self) BN_clear_free(self);
 #endif
         self = BN_new();
         if(!self)
-          throw(bignum_error("CBigNum::init() : BN_new() returned NULL"));
+          throw(bignum_error("CBigNum::init() : BN_new() returned nullptr"));
     }
 
 public:
@@ -252,7 +252,7 @@ public:
     }
 
     uint256 getuint256() {
-        uint nSize = BN_bn2mpi(self, NULL);
+        uint nSize = BN_bn2mpi(self, nullptr);
         if(nSize < 4) return(0);
         std::vector<uchar> vch(nSize);
         BN_bn2mpi(self, &vch[0]);
@@ -279,7 +279,7 @@ public:
     }
 
     std::vector<uchar> getvch() const {
-        uint nSize = BN_bn2mpi(self, NULL);
+        uint nSize = BN_bn2mpi(self, nullptr);
         if(nSize <= 4)
             return std::vector<unsigned char>();
         std::vector<unsigned char> vch(nSize);
@@ -301,7 +301,7 @@ public:
     }
 
     uint GetCompact() const {
-        uint nSize = BN_bn2mpi(self, NULL);
+        uint nSize = BN_bn2mpi(self, nullptr);
         std::vector<uchar> vch(nSize);
         nSize -= 4;
         BN_bn2mpi(self, &vch[0]);
@@ -498,7 +498,7 @@ inline const CBigNum operator*(const CBigNum &a, const CBigNum &b) {
 inline const CBigNum operator/(const CBigNum &a, const CBigNum &b) {
     CAutoBN_CTX pctx;
     CBigNum r;
-    if(!BN_div(r.get(), NULL, a.cget(), b.cget(), pctx))
+    if(!BN_div(r.get(), nullptr, a.cget(), b.cget(), pctx))
       throw(bignum_error("CBigNum::operator/ : BN_div failed"));
     return(r);
 }
