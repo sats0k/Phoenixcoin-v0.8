@@ -10,6 +10,7 @@
 
 #include <boost/signals2/signal.hpp>
 #include <boost/signals2/last_value.hpp>
+#include <optional>
 
 #include "datatypes.h"
 
@@ -101,7 +102,7 @@ extern CClientUIInterface uiInterface;
  */
 inline std::string _(const char* psz)
 {
-    boost::optional<std::string> rv = uiInterface.Translate(psz);
+    boost::optional<std::string> rv = uiInterface.Translate(psz); if (rv) return *rv; return std::string(psz);
     return rv ? (*rv) : psz;
 }
 
