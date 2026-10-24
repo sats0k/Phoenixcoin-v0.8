@@ -102,10 +102,10 @@ class CPubKey {
 /* ---------- Private key types ---------- */
 
 // Serialized private key
-typedef std::vector<unsigned char, secure_allocator<unsigned char> > CPrivKey;
+using CPrivKey = std::vector<unsigned char, secure_allocator<unsigned char> >;
 
 // Raw 32-byte secret
-typedef std::vector<unsigned char, secure_allocator<unsigned char> > CSecret;
+using CSecret = std::vector<unsigned char, secure_allocator<unsigned char> >;
 
 /* ---------- Private key ---------- */
 

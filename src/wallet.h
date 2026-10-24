@@ -460,8 +460,7 @@ public:
 };
 
 
-typedef std::map<std::string, std::string> mapValue_t;
-
+using mapValue_t = std::map<std::string, std::string>;
 
 static void ReadOrderPos(int64& nOrderPos, mapValue_t& mapValue)
 {

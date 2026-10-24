@@ -391,10 +391,9 @@ public:
     friend inline int Testuint256AdHoc(std::vector<std::string> vArg);
 };
 
-typedef base_uint<160> base_uint160;
-typedef base_uint<256> base_uint256;
+using base_uint160 = base_uint<160>;
 
-
+using base_uint256 = base_uint<256>;
 
 //
 // uint160 and uint256 could be implemented as templates, but to keep

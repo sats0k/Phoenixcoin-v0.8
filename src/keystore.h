@@ -28,7 +28,7 @@ public:
     friend bool operator<(const CNoDestination &/*a*/, const CNoDestination &/*b*/) { return true; }
 };
 
-typedef boost::variant<CNoDestination, CKeyID, CScriptID, CHybridKeyID> CTxDestination;
+using CTxDestination = boost::variant<CNoDestination, CKeyID, CScriptID, CHybridKeyID>;
 
 /** A virtual base class for key stores */
 class CKeyStore
@@ -140,9 +140,11 @@ public:
     }
 };
 
-typedef std::map<CKeyID, std::pair<CSecret, bool> > KeyMap;
-typedef std::map<CScriptID, CScript > ScriptMap;
-typedef std::set<CScript> WatchOnlySet;
+using KeyMap = std::map<CKeyID, std::pair<CSecret, bool> >;
+
+using ScriptMap = std::map<CScriptID, CScript >;
+
+using WatchOnlySet = std::set<CScript>;
 
 /** Basic key store, that keeps keys in an address->secret map */
 class CBasicKeyStore : public CKeyStore
@@ -200,7 +202,7 @@ public:
     virtual bool HaveWatchOnly() const;
 };
 
-typedef std::map<CKeyID, std::pair<CPubKey, std::vector<unsigned char> > > CryptedKeyMap;
+using CryptedKeyMap = std::map<CKeyID, std::pair<CPubKey, std::vector<unsigned char> > >;
 
 /** Keystore which keeps the private keys encrypted.
  * It derives from the basic key store, which is used if no encryption is active.

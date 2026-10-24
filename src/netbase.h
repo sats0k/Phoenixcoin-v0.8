@@ -132,7 +132,7 @@ class CService : public CNetAddr
             )
 };
 
-typedef std::pair<CService, int> proxyType;
+using proxyType = std::pair<CService, int>;
 
 enum Network ParseNetwork(std::string net);
 void SplitHostPort(std::string in, int &portOut, std::string &hostOut);

@@ -47,13 +47,15 @@
 #endif
 
 #ifndef WIN64
-typedef u_int SOCKET;
+using SOCKET = u_int;
+
 #endif
 
 #ifdef WINDOWS
 #define MSG_NOSIGNAL        0
 #define MSG_DONTWAIT        0
-typedef int socklen_t;
+using socklen_t = int;
+
 #else
 #include "errno.h"
 #define WSAGetLastError()   errno
@@ -67,7 +69,8 @@ typedef int socklen_t;
 #define WSAENOTSOCK         EBADF
 #define INVALID_SOCKET      (SOCKET)(~0)
 #define SOCKET_ERROR        -1
-typedef int pid_t;
+using pid_t = int;
+
 #endif
 
 inline int myclosesocket(SOCKET& hSocket)

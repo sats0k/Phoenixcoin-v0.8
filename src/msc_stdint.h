@@ -71,57 +71,87 @@ extern "C" {
 /* Visual Studio 6 and Embedded Visual C++ 4 don't know that
  * e.g. char is the same size to __int8, so we give up on __intX there */
 #if (_MSC_VER < 1300)
-typedef signed char       int8_t;
-typedef signed short      int16_t;
-typedef signed int        int32_t;
-typedef unsigned char     uint8_t;
-typedef unsigned short    uint16_t;
-typedef unsigned int      uint32_t;
-#else
-typedef signed __int8     int8_t;
-typedef signed __int16    int16_t;
-typedef signed __int32    int32_t;
-typedef unsigned __int8   uint8_t;
-typedef unsigned __int16  uint16_t;
-typedef unsigned __int32  uint32_t;
-#endif
-typedef signed __int64    int64_t;
-typedef unsigned __int64  uint64_t;
+using int8_t = signed char;
 
+using int16_t = signed short;
+
+using int32_t = signed int;
+
+using uint8_t = unsigned char;
+
+using uint16_t = unsigned short;
+
+using uint32_t = unsigned int;
+
+#else
+using int8_t = signed __int8;
+
+using int16_t = signed __int16;
+
+using int32_t = signed __int32;
+
+using uint8_t = unsigned __int8;
+
+using uint16_t = unsigned __int16;
+
+using uint32_t = unsigned __int32;
+
+#endif
+using int64_t = signed __int64;
+
+using uint64_t = unsigned __int64;
 
 // 7.18.1.2 Minimum-width integer types
-typedef int8_t    int_least8_t;
-typedef int16_t   int_least16_t;
-typedef int32_t   int_least32_t;
-typedef int64_t   int_least64_t;
-typedef uint8_t   uint_least8_t;
-typedef uint16_t  uint_least16_t;
-typedef uint32_t  uint_least32_t;
-typedef uint64_t  uint_least64_t;
+using int_least8_t = int8_t;
+
+using int_least16_t = int16_t;
+
+using int_least32_t = int32_t;
+
+using int_least64_t = int64_t;
+
+using uint_least8_t = uint8_t;
+
+using uint_least16_t = uint16_t;
+
+using uint_least32_t = uint32_t;
+
+using uint_least64_t = uint64_t;
 
 // 7.18.1.3 Fastest minimum-width integer types
-typedef int8_t    int_fast8_t;
-typedef int16_t   int_fast16_t;
-typedef int32_t   int_fast32_t;
-typedef int64_t   int_fast64_t;
-typedef uint8_t   uint_fast8_t;
-typedef uint16_t  uint_fast16_t;
-typedef uint32_t  uint_fast32_t;
-typedef uint64_t  uint_fast64_t;
+using int_fast8_t = int8_t;
+
+using int_fast16_t = int16_t;
+
+using int_fast32_t = int32_t;
+
+using int_fast64_t = int64_t;
+
+using uint_fast8_t = uint8_t;
+
+using uint_fast16_t = uint16_t;
+
+using uint_fast32_t = uint32_t;
+
+using uint_fast64_t = uint64_t;
 
 // 7.18.1.4 Integer types capable of holding object pointers
 #ifdef _WIN64
-typedef signed __int64    intptr_t;
-typedef unsigned __int64  uintptr_t;
+using intptr_t = signed __int64;
+
+using uintptr_t = unsigned __int64;
+
 #else
-typedef _W64 signed int   intptr_t;
-typedef _W64 unsigned int uintptr_t;
+using intptr_t = _W64 signed int;
+
+using uintptr_t = _W64 unsigned int;
+
 #endif /* _WIN64 */
 
 // 7.18.1.5 Greatest-width integer types
-typedef int64_t   intmax_t;
-typedef uint64_t  uintmax_t;
+using intmax_t = int64_t;
 
+using uintmax_t = uint64_t;
 
 // 7.18.2 Limits of specified-width integer types
 

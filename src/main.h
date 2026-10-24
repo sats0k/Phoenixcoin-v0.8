@@ -117,7 +117,8 @@ extern CCriticalSection cs_main;
 
 // The block index is looked up on nearly every block/transaction path, so use
 // an O(1) hash map instead of the original O(log n) std::map.
-typedef std::unordered_map<uint256, CBlockIndex*, uint256Hasher> BlockMap;
+using BlockMap = std::unordered_map<uint256, CBlockIndex*, uint256Hasher>;
+
 extern BlockMap mapBlockIndex;
 extern uint256 hashGenesisBlock;
 extern CBlockIndex* pindexGenesisBlock;
@@ -441,7 +442,7 @@ enum GetMinFee_mode
     GMF_SEND,
 };
 
-typedef std::map<uint256, std::pair<CTxIndex, CTransaction> > MapPrevTx;
+using MapPrevTx = std::map<uint256, std::pair<CTxIndex, CTransaction> >;
 
 /** The basic transaction that is broadcasted on the network and contained in
  * blocks.  A transaction can contain multiple inputs and outputs.

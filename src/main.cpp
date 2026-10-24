@@ -3863,7 +3863,8 @@ uint64 nLastBlockSize = 0;
 
 // We want to sort transactions by priority and fee, so:
 // (priority, feePerKb, tx, serialized size, value out)
-typedef std::tuple<double, double, CTransaction*, unsigned int, int64> TxPriority;
+using TxPriority = std::tuple<double, double, CTransaction*, unsigned int, int64>;
+
 class TxPriorityCompare
 {
     bool byFee;

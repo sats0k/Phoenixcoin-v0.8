@@ -97,7 +97,8 @@ bool CheckSig(const std::vector<unsigned char>& vchSig,
               int nHashType,
               const uint256* precomputedSighash);
 
-typedef vector<uchar> valtype;
+using valtype = vector<uchar>;
+
 static const valtype vchFalse(0);
 static const valtype vchZero(0);
 static const valtype vchTrue(1, 1);

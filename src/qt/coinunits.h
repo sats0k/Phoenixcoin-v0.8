@@ -61,6 +61,6 @@ public:
 private:
     QList<CoinUnits::Unit> unitlist;
 };
-typedef CoinUnits::Unit CoinUnit;
+using CoinUnit = CoinUnits::Unit;
 
 #endif /* COINUNITS_H */

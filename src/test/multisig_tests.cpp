@@ -11,7 +11,7 @@
 
 using namespace std;
 
-typedef vector<unsigned char> valtype;
+using valtype = vector<unsigned char>;
 
 extern uint256 SignatureHash(CScript scriptCode, const CTransaction& txTo, unsigned int nIn, int nHashType);
 extern bool VerifyScript(const CScript& scriptSig, const CScript& scriptPubKey, const CTransaction& txTo, unsigned int nIn,

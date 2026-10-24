@@ -178,7 +178,7 @@ obj/%.o: hs/%.cpp
 	  rm -f $(@:%.o=%.d)
 
 obj/neoscrypt.o: neoscrypt.c
-	$(CC) $(CFLAGS) -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -MMD -MF $(@:%.o=%.d) -c -o $@ $^
+	$(CC) $(CFLAGS) -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT -MMD -MF $(@:%.o=%.d) -c -o $@ neoscrypt.c
 	@cp $(@:%.o=%.d) $(@:%.o=%.P); \
 	  sed -e 's/#.*//' -e 's/^[^:]*: *//' -e 's/ *\\$$//' \
 	      -e '/^$$/ d' -e 's/$$/ :/' < $(@:%.o=%.d) >> $(@:%.o=%.P); \
