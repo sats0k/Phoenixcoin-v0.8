@@ -8,18 +8,16 @@
 #include <map>
 #include <tuple>
 
-#include <boost/date_time/posix_time/posix_time.hpp>
 #include <filesystem>
-#include <boost/variant/get.hpp>
-#include <boost/version.hpp>
 
 #include "base58.h"
 #include "walletdb.h"
+#include <ctime>
+#include <cstdlib>
 #include "wallet.h"
 #include "hs/wallethybrid.h"
 
 using namespace std;
-using namespace boost;
 
 static uint64 nAccountingEntryNumber = 0;
 
@@ -705,39 +703,34 @@ bool CWalletDB::Recover(CDBEnv& dbenv, std::string filename)
 
 /* Wallet keys export / import */
 
-namespace bt = boost::posix_time;
-
-/* Extended DecodeDumpTime implementation, see this page for details:
- * http://stackoverflow.com/questions/3786201/parsing-of-date-time-from-string-boost */
-const std::locale formats[] = {
-    std::locale(std::locale::classic(), new bt::time_input_facet("%Y-%m-%dT%H:%M:%SZ")),
-    std::locale(std::locale::classic(), new bt::time_input_facet("%Y-%m-%d~%H:%M:%S")),
-    std::locale(std::locale::classic(), new bt::time_input_facet("%Y-%m-%d %H:%M:%S")),
-    std::locale(std::locale::classic(), new bt::time_input_facet("%Y/%m/%d %H:%M:%S")),
-    std::locale(std::locale::classic(), new bt::time_input_facet("%d.%m.%Y %H:%M:%S")),
-    std::locale(std::locale::classic(), new bt::time_input_facet("%Y-%m-%d"))
-};
-
-const size_t formats_n = sizeof(formats) / sizeof(formats[0]);
-
-std::time_t pt_to_time_t(const bt::ptime &pt) {
-    bt::ptime timet_start(boost::gregorian::date(1970, 1, 1));
-    bt::time_duration diff = pt - timet_start;
-    return(diff.ticks() / bt::time_duration::rep_type::ticks_per_second);
-}
-
 int64 DecodeDumpTime(const std::string &s) {
-    bt::ptime pt;
-    size_t i;
+    if (s.empty())
+        return 0;
 
-    for(i = 0; i < formats_n; ++i) {
-        std::istringstream is(s);
-        is.imbue(formats[i]);
-        is >> pt;
-        if(pt != bt::ptime()) break;
+    const char* formats[] = {
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%d~%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%Y-%m-%d",
+    };
+
+    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i) {
+        struct tm tm = {};
+        const char* p = strptime(s.c_str(), formats[i], &tm);
+        if (!p)
+            continue;
+        if (*p != '\0')
+            continue;
+        tm.tm_isdst = 0;
+        time_t t = timegm(&tm);
+        if (t == -1)
+            continue;
+        return (int64)t;
     }
 
-    return(pt_to_time_t(pt));
+    return 0;
 }
 
 std::string static EncodeDumpTime(int64 nTime) {

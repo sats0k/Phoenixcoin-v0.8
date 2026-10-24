@@ -12,13 +12,16 @@
 #include <string>
 #include <vector>
 
-#include <boost/date_time/posix_time/posix_time.hpp>
-#include <boost/variant/get.hpp>
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 
 #include "base58.h"
+#include <ctime>
+#include <cstdlib>
+#include <clocale>
+#include <iomanip>
+#include <variant>
 #include "wallet.h"
 #include "walletdb.h"
 #include "rpcmain.h"
@@ -97,59 +100,41 @@ static void EncodeHybridPrivKey(CWallet* pwallet, const CHybridKey& hk,
 // The one-line dump/parse helpers mirror the classic dumpwallet file grammar so
 // hybrid dumps and classic dumps stay interchangeable in spirit.
 
-const std::locale dumpTimeFormats[] = {
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet(
-                    "%Y-%m-%dT%H:%M:%SZ")),
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet("%Y-%m-%d~%H:%M:%S")),
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet("%Y-%m-%d %H:%M:%S")),
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet("%Y/%m/%d %H:%M:%S")),
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet("%d.%m.%Y %H:%M:%S")),
-    std::locale(std::locale::classic(),
-                new boost::posix_time::time_input_facet("%Y-%m-%d")),
-};
-
 // Parses a dump-file timestamp into nTimeOut. Returns false (and leaves
 // nTimeOut untouched) when the field is not a valid timestamp, so a malformed
 // line can be rejected explicitly instead of being silently treated as epoch
 // time. Trailing garbage is also rejected, so "2020-01-01junk" fails.
 static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
 {
-    bool fParsed = false;
-    boost::posix_time::ptime pt;
-    size_t i;
-
-    for (i = 0; i < sizeof(dumpTimeFormats) / sizeof(dumpTimeFormats[0]); ++i) {
-        std::istringstream is(s);
-        is.imbue(dumpTimeFormats[i]);
-        // Reset the candidate: a failed extraction leaves pt untouched, which
-        // could otherwise carry a stale value from an earlier attempt.
-        pt = boost::posix_time::ptime();
-        is >> pt;
-        if (pt == boost::posix_time::ptime())
-            continue;
-        // Reject trailing garbage: the whole field must be one timestamp.
-        // Only a format that matched completely sets fParsed; otherwise the
-        // last (e.g. date-only) format could match a prefix of a longer
-        // string and leave a stale pt behind after the loop.
-        char cTrailing;
-        if (is >> cTrailing)
-            continue;
-        fParsed = true;
-        break;
-    }
-
-    if (!fParsed)
+    if (s.empty())
         return false;
 
-    nTimeOut = (pt - boost::posix_time::ptime(
-                            boost::gregorian::date(1970, 1, 1)))
-                   .total_seconds();
-    return true;
+    const char* formats[] = {
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%Y-%m-%d~%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%d.%m.%Y %H:%M:%S",
+        "%Y-%m-%d",
+    };
+
+    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i) {
+        struct tm tm = {};
+        const char* p = strptime(s.c_str(), formats[i], &tm);
+        if (!p)
+            continue;
+        // Reject trailing garbage - must consume entire string
+        if (*p != '\0')
+            continue;
+        tm.tm_isdst = 0;
+        time_t t = timegm(&tm);
+        if (t == -1)
+            continue;
+        nTimeOut = (int64)t;
+        return true;
+    }
+
+    return false;
 }
 
 static std::string EncodeDumpTimeHybrid(int64 nTime)
