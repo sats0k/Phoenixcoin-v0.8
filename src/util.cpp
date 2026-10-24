@@ -12,7 +12,7 @@
 
 #include <filesystem>
 #include <fstream>
-#include <boost/thread.hpp>
+#include <thread>
 
 #include "strlcpy.h"
 #include "version.h"
@@ -1380,8 +1380,8 @@ bool NewThread(void(*pfn)(void*), void* parg)
 {
     try
     {
-        boost::thread(pfn, parg); // thread detaches when out of scope
-    } catch(boost::thread_resource_error &e) {
+        std::thread(pfn, parg).detach(); // thread runs free
+    } catch(const std::system_error &e) {
         printf("Error creating thread: %s\n", e.what());
         return false;
     }

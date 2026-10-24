@@ -1980,7 +1980,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
             strCmd.replace(nPos, 2, strHash);
             nPos += strHash.size();
         }
-        boost::thread t(runCommand, strCmd); // thread runs free
+        std::thread t(runCommand, strCmd); t.detach(); // thread runs free
     }
 
     return true;
@@ -4413,7 +4413,7 @@ void GenerateCoins(bool fGenerate, CWallet *pwallet) {
 
     if (fGenerate)
     {
-        int nProcessors = boost::thread::hardware_concurrency();
+        int nProcessors = std::thread::hardware_concurrency();
         printf("%d processors\n", nProcessors);
         if (nProcessors < 1)
             nProcessors = 1;
