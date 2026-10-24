@@ -6,6 +6,7 @@
 #include <map>
 #include <string>
 #include <vector>
+#include <mutex>
 
 
 #include "sync.h"
@@ -53,9 +54,9 @@ private:
 
 using LockStack = std::vector< std::pair<void*, CLockLocation> >;
 
-static boost::mutex dd_mutex;
+static std::mutex dd_mutex;
 static std::map<std::pair<void*, void*>, LockStack> lockorders;
-static boost::thread_specific_ptr<LockStack> lockstack;
+static thread_local LockStack* lockstack_ptr = nullptr;
 
 
 static void potential_deadlock_detected(const std::pair<void*, void*>& mismatch, const LockStack& s1, const LockStack& s2)
@@ -79,22 +80,22 @@ static void potential_deadlock_detected(const std::pair<void*, void*>& mismatch,
 
 static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
 {
-    if (lockstack.get() == nullptr)
-        lockstack.reset(new LockStack);
+    if (lockstack_ptr == nullptr)
+        lockstack_ptr = new LockStack();
 
     if (fDebug) printf("Locking: %s\n", locklocation.ToString().c_str());
     dd_mutex.lock();
 
-    (*lockstack).push_back(std::make_pair(c, locklocation));
+    lockstack_ptr->push_back(std::make_pair(c, locklocation));
 
     if (!fTry) {
-        for (const PAIRTYPE(void*, CLockLocation)& i : (*lockstack)) {
+        for (const PAIRTYPE(void*, CLockLocation)& i : (*lockstack_ptr)) {
             if (i.first == c) break;
 
             std::pair<void*, void*> p1 = std::make_pair(i.first, c);
             if (lockorders.count(p1))
                 continue;
-            lockorders[p1] = (*lockstack);
+            lockorders[p1] = (*lockstack_ptr);
 
             std::pair<void*, void*> p2 = std::make_pair(c, i.first);
             if (lockorders.count(p2))
@@ -109,13 +110,15 @@ static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
 
 static void pop_lock()
 {
+    if (lockstack_ptr == nullptr)
+        return;
     if (fDebug)
     {
-        const CLockLocation& locklocation = (*lockstack).rbegin()->second;
+        const CLockLocation& locklocation = lockstack_ptr->rbegin()->second;
         printf("Unlocked: %s\n", locklocation.ToString().c_str());
     }
     dd_mutex.lock();
-    (*lockstack).pop_back();
+    lockstack_ptr->pop_back();
     dd_mutex.unlock();
 }
 
