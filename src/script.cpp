@@ -1333,9 +1333,24 @@ class CSignatureCache {
     // semantics of the original std::set while giving O(1) average lookups.
     struct Hasher {
         size_t operator()(const sigdata_type& v) const {
-            size_t seed = boost::hash_range(std::get<0>(v).begin(), std::get<0>(v).end());
-            boost::hash_combine(seed, std::get<1>(v));
-            boost::hash_combine(seed, std::get<2>(v));
+            size_t seed = 0;
+            const uint256 &h = std::get<0>(v);
+            seed ^= ((const uint32_t*)&h)[0] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= ((const uint32_t*)&h)[1] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= ((const uint32_t*)&h)[2] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            seed ^= ((const uint32_t*)&h)[3] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            {
+                const std::vector<unsigned char> &vv = std::get<1>(v);
+                for (size_t i = 0; i < vv.size(); ++i) {
+                    seed ^= (size_t)vv[i] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                }
+            }
+            {
+                const std::vector<unsigned char> &vv = std::get<2>(v);
+                for (size_t i = 0; i < vv.size(); ++i) {
+                    seed ^= (size_t)vv[i] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+                }
+            }
             return seed;
         }
     };

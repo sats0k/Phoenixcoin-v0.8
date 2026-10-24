@@ -164,7 +164,7 @@ void BlockExplorer::updateExplorer(bool block) {
 
                 strTx.append(CCoinAddress(address).ToString());
                 strTx.append("  ");
-                strTx.append(boost::to_string((double)txout.nValue / (double)COIN));
+                strTx.append(QString::number((double)txout.nValue / (double)COIN));
                 strTx.append(" PXC\n");
             }
             strTx.append("\n");
@@ -228,11 +228,11 @@ void BlockExplorer::updateExplorer(bool block) {
 
             strIn.append(hash_in.ToString());
             strIn.append("-");
-            strIn.append(boost::to_string(vin.prevout.n));
+            strIn.append(QString::number(vin.prevout.n));
             strIn.append("\n");
             strIn.append(CCoinAddress(address).ToString());
             strIn.append("  ");
-            strIn.append(boost::to_string((double)nCurrentValueIn / (double)COIN));
+            strIn.append(QString::number((double)nCurrentValueIn / (double)COIN));
             strIn.append(" PXC\n\n");
         }
         if(!strIn.size()) strIn.append("N/A");
@@ -253,7 +253,7 @@ void BlockExplorer::updateExplorer(bool block) {
 
             strOut.append(CCoinAddress(address).ToString());
             strOut.append("  ");
-            strOut.append(boost::to_string((double)nCurrentValueOut / (double)COIN));
+            strOut.append(QString::number((double)nCurrentValueOut / (double)COIN));
             strOut.append(" PXC\n");
         }
         ui->outputData->setText(QString::fromUtf8(strOut.c_str()));
