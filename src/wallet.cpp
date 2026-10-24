@@ -1465,7 +1465,7 @@ bool CWallet::CreateTransaction(const vector<pair<CScript, int64> > &vecSend, CW
                     CScript scriptChange;
 
                     /* The Coin Control: send the change to a custom address */
-                    if(coinControl && !boost::get<CNoDestination>(&coinControl->destChange)) {
+                    if(coinControl && !std::get_if<CNoDestination>(&coinControl->destChange)) {
 
                        /* Select the Coin Control destination address */
                        scriptChange.SetDestination(coinControl->destChange);
@@ -1709,7 +1709,7 @@ string CWallet::SendMoneyToDestination(const CTxDestination& address, int64 nVal
     // -----------------------------------------------------------------
     if (IsHybridConsensusActive())
     {
-        const CKeyID* pKeyID = boost::get<CKeyID>(&address);
+        const CKeyID* pKeyID = std::get_if<CKeyID>(&address);
 
         if (pKeyID)
         {

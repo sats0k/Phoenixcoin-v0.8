@@ -1697,7 +1697,7 @@ BOOST_AUTO_TEST_CASE(hybrid_address_roundtrip)
     CHybridKeyID round;
     BOOST_CHECK(back.GetHybridKeyID(round));
     BOOST_CHECK(round == id);
-    BOOST_CHECK(boost::get<CHybridKeyID>(back.Get()) == id);
+    BOOST_CHECK(std::get<CHybridKeyID>(back.Get()) == id);
     BOOST_CHECK(back.ToString() == enc);
 
     // CTxDestination round trip through the same code path.

@@ -1015,12 +1015,12 @@ void CWallet::BackfillHybridUsedKeys()
             CHybridKeyID hybridID;
             bool fFound = false;
 
-            if (const CHybridKeyID* pHybridID = boost::get<CHybridKeyID>(&dest))
+            if (const CHybridKeyID* pHybridID = std::get_if<CHybridKeyID>(&dest))
             {
                 hybridID = *pHybridID;
                 fFound = true;
             }
-            else if (const CKeyID* pKeyID = boost::get<CKeyID>(&dest))
+            else if (const CKeyID* pKeyID = std::get_if<CKeyID>(&dest))
             {
                 // A payment made to the legacy (secp) address of a hybrid key.
                 // Match by the embedded public key via the index built above.

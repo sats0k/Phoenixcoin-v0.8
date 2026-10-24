@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <thread>
+#include <mutex>
 
 #include "strlcpy.h"
 #include "version.h"
@@ -164,9 +165,9 @@ inline int OutputDebugStringF(const char *pszFormat, ...) {
             // Since the order of destruction of static/global objects is undefined,
             // allocate mutexDebugLog on the heap the first time this routine
             // is called to avoid crashes during shutdown.
-            static boost::mutex *mutexDebugLog = nullptr;
-            if(!mutexDebugLog) mutexDebugLog = new boost::mutex();
-            boost::mutex::scoped_lock scoped_lock(*mutexDebugLog);
+            static std::mutex *mutexDebugLog = nullptr;
+            if(!mutexDebugLog) mutexDebugLog = new std::mutex();
+            std::unique_lock<std::mutex> scoped_lock(*mutexDebugLog);
 
             /* Reopen the log file if requested */
             if(fReopenDebugLog) {

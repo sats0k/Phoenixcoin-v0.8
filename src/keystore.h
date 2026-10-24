@@ -7,7 +7,7 @@
 #define KEYSTORE_H
 
 #include <boost/signals2/signal.hpp>
-#include <boost/variant.hpp>
+#include <variant>
 
 #include <map>
 #include <utility>
@@ -28,7 +28,7 @@ public:
     friend bool operator<(const CNoDestination &/*a*/, const CNoDestination &/*b*/) { return true; }
 };
 
-using CTxDestination = boost::variant<CNoDestination, CKeyID, CScriptID, CHybridKeyID>;
+using CTxDestination = std::variant<CNoDestination, CKeyID, CScriptID, CHybridKeyID>;
 
 /** A virtual base class for key stores */
 class CKeyStore

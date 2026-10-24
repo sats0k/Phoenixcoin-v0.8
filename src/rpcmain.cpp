@@ -7,6 +7,8 @@
 #include <list>
 #include <vector>
 #include <string>
+#include <functional>
+#include <memory>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ip/v6_only.hpp>
@@ -821,7 +823,7 @@ void ThreadRPCServer2(void* /*parg*/)
     boost::system::error_code v6_only_error;
     boost::shared_ptr<ip::tcp::acceptor> acceptor(new ip::tcp::acceptor(io_context));
 
-    boost::signals2::signal<void ()> StopRequests;
+    std::function<void()> StopRequestsHandler;
 
     bool fListening = false;
     std::string strerr;
@@ -838,9 +840,10 @@ void ThreadRPCServer2(void* /*parg*/)
 
         RPCListen(acceptor, context, fUseSSL);
         // Cancel outstanding listen-requests for this acceptor when shutting down
-        StopRequests.connect(signals2::slot<void ()>(
-                    static_cast<void (ip::tcp::acceptor::*)()>(&ip::tcp::acceptor::close), acceptor.get())
-                .track(acceptor));
+        {
+            boost::shared_ptr<ip::tcp::acceptor> acc = acceptor;
+            StopRequestsHandler = [acc](){ if (acc) acc->close(); };
+        }
 
         fListening = true;
     }
@@ -864,9 +867,10 @@ void ThreadRPCServer2(void* /*parg*/)
 
             RPCListen(acceptor, context, fUseSSL);
             // Cancel outstanding listen-requests for this acceptor when shutting down
-            StopRequests.connect(signals2::slot<void ()>(
-                        static_cast<void (ip::tcp::acceptor::*)()>(&ip::tcp::acceptor::close), acceptor.get())
-                    .track(acceptor));
+            {
+                boost::shared_ptr<ip::tcp::acceptor> acc = acceptor;
+                StopRequestsHandler = [acc](){ if (acc) acc->close(); };
+            }
 
             fListening = true;
         }
@@ -886,7 +890,7 @@ void ThreadRPCServer2(void* /*parg*/)
     while (!fShutdown)
         io_context.run_one();
     vnThreadsRunning[THREAD_RPCLISTENER]++;
-    StopRequests();
+    if (StopRequestsHandler) StopRequestsHandler();
 }
 
 class JSONRequest

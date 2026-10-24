@@ -19,7 +19,7 @@
 #include <cstdio>
 #include <tuple>
 
-#include <boost/type_traits/is_fundamental.hpp>
+#include <type_traits>
 
 #include "datatypes.h"
 #include "allocators.h"
@@ -283,21 +283,21 @@ template<typename Stream, typename C>
 
 // vector
 template<typename T, typename A>
-  uint GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nVersion, const boost::true_type&);
+  uint GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nVersion, const std::true_type&);
 template<typename T, typename A>
-  uint GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nVersion, const boost::false_type&);
+  uint GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nVersion, const std::false_type&);
 template<typename T, typename A>
   inline uint GetSerializeSize(const std::vector<T, A> &v, int nType, int nVersion);
 template<typename Stream, typename T, typename A>
-  void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVersion, const boost::true_type&);
+  void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVersion, const std::true_type&);
 template<typename Stream, typename T, typename A>
-  void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVersion, const boost::false_type&);
+  void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVersion, const std::false_type&);
 template<typename Stream, typename T, typename A>
   inline void Serialize(Stream &os, const std::vector<T, A>& v, int nType, int nVersion);
 template<typename Stream, typename T, typename A>
-  void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion, const boost::true_type&);
+  void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion, const std::true_type&);
 template<typename Stream, typename T, typename A>
-  void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion, const boost::false_type&);
+  void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion, const std::false_type&);
 template<typename Stream, typename T, typename A>
   inline void Unserialize(Stream &is, std::vector<T, A> &v, int nType, int nVersion);
 
@@ -400,13 +400,13 @@ void Unserialize(Stream &is, std::basic_string<C> &str, int, int) {
 //
 template<typename T, typename A>
 uint GetSerializeSize_impl(const std::vector<T, A> &v, int /*nType*/, int /*nVersion*/,
-  const boost::true_type&) {
+  const std::true_type&) {
     return(GetSizeOfCompactSize(v.size()) + v.size() * sizeof(T));
 }
 
 template<typename T, typename A>
 unsigned int GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nVersion,
-  const boost::false_type&) {
+  const std::false_type&) {
     uint nSize = GetSizeOfCompactSize(v.size());
     for(typename std::vector<T, A>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
       nSize += GetSerializeSize((*vi), nType, nVersion);
@@ -415,13 +415,13 @@ unsigned int GetSerializeSize_impl(const std::vector<T, A> &v, int nType, int nV
 
 template<typename T, typename A>
 inline uint GetSerializeSize(const std::vector<T, A> &v, int nType, int nVersion) {
-    return(GetSerializeSize_impl(v, nType, nVersion, boost::is_fundamental<T>()));
+    return(GetSerializeSize_impl(v, nType, nVersion, std::is_fundamental<T>()));
 }
 
 
 template<typename Stream, typename T, typename A>
 void Serialize_impl(Stream &os, const std::vector<T, A> &v, int /*nType*/, int /*nVersion*/,
-  const boost::true_type&) {
+  const std::true_type&) {
     WriteCompactSize(os, v.size());
     if(!v.empty())
       os.write((char *) &v[0], v.size() * sizeof(T));
@@ -429,7 +429,7 @@ void Serialize_impl(Stream &os, const std::vector<T, A> &v, int /*nType*/, int /
 
 template<typename Stream, typename T, typename A>
 void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVersion,
-  const boost::false_type&) {
+  const std::false_type&) {
     WriteCompactSize(os, v.size());
     for(typename std::vector<T, A>::const_iterator vi = v.begin(); vi != v.end(); ++vi)
       ::Serialize(os, (*vi), nType, nVersion);
@@ -437,13 +437,13 @@ void Serialize_impl(Stream &os, const std::vector<T, A> &v, int nType, int nVers
 
 template<typename Stream, typename T, typename A>
 inline void Serialize(Stream &os, const std::vector<T, A> &v, int nType, int nVersion) {
-    Serialize_impl(os, v, nType, nVersion, boost::is_fundamental<T>());
+    Serialize_impl(os, v, nType, nVersion, std::is_fundamental<T>());
 }
 
 
 template<typename Stream, typename T, typename A>
 void Unserialize_impl(Stream &is, std::vector<T, A> &v, int /*nType*/, int /*nVersion*/,
-  const boost::true_type&) {
+  const std::true_type&) {
     // Limit size per read so bogus size value won't cause out of memory
     v.clear();
     unsigned int nSize = ReadCompactSize(is);
@@ -459,7 +459,7 @@ void Unserialize_impl(Stream &is, std::vector<T, A> &v, int /*nType*/, int /*nVe
 
 template<typename Stream, typename T, typename A>
 void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion,
-  const boost::false_type&) {
+  const std::false_type&) {
     v.clear();
     unsigned int nSize = ReadCompactSize(is);
     unsigned int i = 0;
@@ -477,7 +477,7 @@ void Unserialize_impl(Stream &is, std::vector<T, A> &v, int nType, int nVersion,
 
 template<typename Stream, typename T, typename A>
 inline void Unserialize(Stream &is, std::vector<T, A> &v, int nType, int nVersion) {
-    Unserialize_impl(is, v, nType, nVersion, boost::is_fundamental<T>());
+    Unserialize_impl(is, v, nType, nVersion, std::is_fundamental<T>());
 }
 
 

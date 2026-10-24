@@ -3,6 +3,7 @@
 #include "json/json_spirit_writer_template.h"
 #include "json/json_spirit_utils.h"
 
+#include <variant>
 #include "base58.h"
 #include "util.h"
 
@@ -58,7 +59,7 @@ BOOST_AUTO_TEST_CASE(base58_DecodeBase58)
 }
 
 // Visitor to check address type
-class TestAddrTypeVisitor : public boost::static_visitor<bool>
+class TestAddrTypeVisitor
 {
 private:
     std::string exp_addrType;
@@ -83,7 +84,7 @@ public:
 };
 
 // Visitor to check address payload
-class TestPayloadVisitor : public boost::static_visitor<bool>
+class TestPayloadVisitor
 {
 private:
     std::vector<unsigned char> exp_payload;
@@ -159,7 +160,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_parse)
             BOOST_CHECK_MESSAGE(addr.IsValid(), "!IsValid:" + strTest);
             BOOST_CHECK_MESSAGE(addr.IsScript() == (exp_addrType == "script"), "isScript mismatch" + strTest);
             CTxDestination dest = addr.Get();
-            BOOST_CHECK_MESSAGE(boost::apply_visitor(TestAddrTypeVisitor(exp_addrType), dest), "addrType mismatch" + strTest);
+            BOOST_CHECK_MESSAGE(std::visit(TestAddrTypeVisitor(exp_addrType), dest), "addrType mismatch" + strTest);
 
             // Public key must be invalid private key
             secret.SetString(exp_base58string);
@@ -222,7 +223,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
                 continue;
             }
             CCoinAddress addrOut;
-            BOOST_CHECK_MESSAGE(boost::apply_visitor(CCoinAddressVisitor(&addrOut), dest), "encode dest: " + strTest);
+            BOOST_CHECK_MESSAGE(std::visit(CCoinAddressVisitor(&addrOut), dest), "encode dest: " + strTest);
             BOOST_CHECK_MESSAGE(addrOut.ToString() == exp_base58string, "mismatch: " + strTest);
         }
     }
@@ -230,7 +231,7 @@ BOOST_AUTO_TEST_CASE(base58_keys_valid_gen)
     // Visiting a CNoDestination must fail
     CCoinAddress dummyAddr;
     CTxDestination nodest = CNoDestination();
-    BOOST_CHECK(!boost::apply_visitor(CCoinAddressVisitor(&dummyAddr), nodest));
+    BOOST_CHECK(!std::visit(CCoinAddressVisitor(&dummyAddr), nodest));
 
     // Restore global state
     fTestNet = fTestNet_stored;

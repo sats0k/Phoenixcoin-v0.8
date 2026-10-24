@@ -17,6 +17,7 @@
 
 #include <string>
 #include <vector>
+#include <variant>
 
 #include "bignum.h"
 #include "key.h"
@@ -248,7 +249,7 @@ public:
  * The data vector contains RIPEMD160(SHA256(cscript)), where cscript is the serialized redemption script.
  */
 class CCoinAddress;
-class CCoinAddressVisitor : public boost::static_visitor<bool> {
+class CCoinAddressVisitor {
 private:
     CCoinAddress *addr;
 public:
@@ -281,7 +282,7 @@ public:
     }
 
     bool Set(const CTxDestination &dest) {
-        return(boost::apply_visitor(CCoinAddressVisitor(this), dest));
+        return(std::visit(CCoinAddressVisitor(this), dest));
     }
 
     /* Hybrid address support */

@@ -22,6 +22,7 @@
 #include <clocale>
 #include <iomanip>
 #include <variant>
+#include <system_error>
 #include "wallet.h"
 #include "walletdb.h"
 #include "rpcmain.h"
@@ -194,7 +195,7 @@ Value dumphybridkey(const Array& params, bool fHelp) {
     // Parse hybrid address
     CTxDestination dest = address.Get();
 
-    const CHybridKeyID* pHybridID = boost::get<CHybridKeyID>(&dest);
+    const CHybridKeyID* pHybridID = std::get_if<CHybridKeyID>(&dest);
 
     if (!pHybridID)
         throw JSONRPCError(RPC_TYPE_ERROR, "Address is not a hybrid address");
@@ -525,7 +526,7 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
         // Never leave a partial private-key backup behind: the file may hold
         // an empty placeholder claimed earlier by the RPC wrapper. Remove it
         // so a failed export cannot be mistaken for a complete backup.
-        boost::system::error_code ec;
+        std::error_code ec;
         std::filesystem::remove(std::filesystem::path(strDst), ec);
         strError = strprintf(
             "%i hybrid key(s) could not be serialized and were skipped; no "
@@ -543,7 +544,7 @@ bool DumpHybridKeys(CWallet* pwallet, const std::string& strDst,
     // path, and the stream state is checked so a failed write is reported
     // instead of a false success.
     const std::string strTmp = strDst + ".tmp";
-    boost::system::error_code ec;
+    std::error_code ec;
 
     std::ofstream file;
     file.open(std::filesystem::path(strTmp), std::ios_base::out |
@@ -915,7 +916,7 @@ Value gethybridkey(const Array& params, bool fHelp) {
 
     CTxDestination dest = address.Get();
 
-    const CHybridKeyID* pHybridID = boost::get<CHybridKeyID>(&dest);
+    const CHybridKeyID* pHybridID = std::get_if<CHybridKeyID>(&dest);
 
     if (!pHybridID)
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY,

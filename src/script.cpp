@@ -11,6 +11,7 @@
 #include <tuple>
 
 #include <boost/functional/hash.hpp>
+#include <variant>
 
 #include <openssl/evp.h>
 
@@ -1767,7 +1768,7 @@ unsigned int HaveKeys(const vector<valtype>& pubkeys, const CKeyStore& keystore)
     return nResult;
 }
 
-class CKeyStoreIsMineVisitor : public boost::static_visitor<bool> {
+class CKeyStoreIsMineVisitor { public: using result_type = bool;
 private:
     const CKeyStore *keystore;
 
@@ -1928,13 +1929,14 @@ isminetype IsMine(const CKeyStore &keystore, const CTxDestination &dest) {
     return(IsMine(keystore, script));
 }
 
-class CAffectedKeysVisitor : public boost::static_visitor<void> {
+class CAffectedKeysVisitor {
 
 private:
     const CKeyStore &keystore;
     std::vector<CKeyID> &vKeys;
 
 public:
+    using result_type = void;
     CAffectedKeysVisitor(const CKeyStore &keystoreIn, std::vector<CKeyID> &vKeysIn) :
       keystore(keystoreIn), vKeys(vKeysIn) { }
 
@@ -1944,7 +1946,7 @@ public:
         int nRequired;
         if(ExtractDestinations(script, type, vDest, nRequired)) {
             for (const CTxDestination &dest : vDest)
-              boost::apply_visitor(*this, dest);
+              std::visit(*this, dest);
         }
     }
 
@@ -1953,7 +1955,7 @@ public:
           vKeys.push_back(keyId);
     }
 
-    void operator()(const CHybridKeyID& keyId) const
+    void operator()(const CHybridKeyID& keyId)
     {
         if (keystore.HaveHybridKey(keyId))
         {
@@ -2630,7 +2632,7 @@ bool CScript::IsPayToScriptHash() const {
             this->at(22) == OP_EQUAL);
 }
 
-class CScriptVisitor : public boost::static_visitor<bool> {
+class CScriptVisitor { public: using result_type = bool;
    private:
     CScript *script;
 
@@ -2669,7 +2671,7 @@ class CScriptVisitor : public boost::static_visitor<bool> {
 };
 
 void CScript::SetDestination(const CTxDestination& dest) {
-    boost::apply_visitor(CScriptVisitor(this), dest);
+    std::visit(CScriptVisitor(this), dest);
 }
 
 void CScript::SetMultisig(int nRequired, const std::vector<CKey>& keys) {
