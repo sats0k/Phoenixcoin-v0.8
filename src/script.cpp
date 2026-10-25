@@ -1335,10 +1335,11 @@ class CSignatureCache {
         size_t operator()(const sigdata_type& v) const {
             size_t seed = 0;
             const uint256 &h = std::get<0>(v);
-            seed ^= ((const uint32_t*)&h)[0] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= ((const uint32_t*)&h)[1] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= ((const uint32_t*)&h)[2] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-            seed ^= ((const uint32_t*)&h)[3] + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            const unsigned char* p = h.begin();
+            const unsigned char* e = h.end();
+            while (p != e) {
+                seed ^= (size_t)(*p++) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
+            }
             {
                 const std::vector<unsigned char> &vv = std::get<1>(v);
                 for (size_t i = 0; i < vv.size(); ++i) {
