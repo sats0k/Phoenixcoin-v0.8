@@ -715,6 +715,18 @@ static time_t PortableTimegmWallet(struct tm *tm)
 }
 #endif
 
+#ifdef _WIN32
+static bool PortableGmtimeWallet(const time_t *t, struct tm *tm_out)
+{
+    return gmtime_s(tm_out, t) == 0;
+}
+#else
+static bool PortableGmtimeWallet(const time_t *t, struct tm *tm_out)
+{
+    return gmtime_r(t, tm_out) != nullptr;
+}
+#endif
+
 static bool IsValidDateTimeWallet(int year, int month, int day, int hour, int min, int sec)
 {
     if (month < 1 || month > 12 || day < 1 || day > 31 ||
@@ -750,10 +762,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
@@ -776,10 +789,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
@@ -802,10 +816,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
@@ -828,10 +843,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
@@ -854,10 +870,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
@@ -880,10 +897,11 @@ int64 DecodeDumpTime(const std::string &s) {
                     tm.tm_isdst = 0;
                     time_t t = PortableTimegmWallet(&tm);
                     if (t != -1) {
-                        struct tm *tm_check = gmtime(&t);
-                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
-                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
-                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                        struct tm tm_check = {};
+                        if (PortableGmtimeWallet(&t, &tm_check) &&
+                            tm_check.tm_year == tm.tm_year && tm_check.tm_mon == tm.tm_mon &&
+                            tm_check.tm_mday == tm.tm_mday && tm_check.tm_hour == tm.tm_hour &&
+                            tm_check.tm_min == tm.tm_min && tm_check.tm_sec == tm.tm_sec) {
                             return (int64)t;
                         }
                     }
