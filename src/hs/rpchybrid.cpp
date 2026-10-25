@@ -117,6 +117,21 @@ static time_t PortableTimegm(struct tm *tm)
 }
 #endif
 
+static bool IsValidDateTime(int year, int month, int day, int hour, int min, int sec)
+{
+    if (month < 1 || month > 12 || day < 1 || day > 31 ||
+        hour < 0 || hour > 23 || min < 0 || min > 59 || sec < 0 || sec > 59)
+        return false;
+    if (day == 31 && (month == 4 || month == 6 || month == 9 || month == 11))
+        return false;
+    if (month == 2) {
+        bool isLeap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        if (day > (isLeap ? 29 : 28))
+            return false;
+    }
+    return true;
+}
+
 static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
 {
     if (s.empty())
@@ -127,18 +142,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0, hour=0, min=0, sec=0;
         if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &min, &sec) == 6) {
             if (s == strprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", year, month, day, hour, min, sec)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, hour, min, sec)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = hour;
+                    tm.tm_min = min;
+                    tm.tm_sec = sec;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -148,18 +170,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0, hour=0, min=0, sec=0;
         if (sscanf(s.c_str(), "%d-%d-%d~%d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
             if (s == strprintf("%04d-%02d-%02d~%02d:%02d:%02d", year, month, day, hour, min, sec)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, hour, min, sec)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = hour;
+                    tm.tm_min = min;
+                    tm.tm_sec = sec;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -169,18 +198,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0, hour=0, min=0, sec=0;
         if (sscanf(s.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
             if (s == strprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, hour, min, sec)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = hour;
+                    tm.tm_min = min;
+                    tm.tm_sec = sec;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -190,18 +226,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0, hour=0, min=0, sec=0;
         if (sscanf(s.c_str(), "%d/%d/%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
             if (s == strprintf("%04d/%02d/%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, hour, min, sec)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = hour;
+                    tm.tm_min = min;
+                    tm.tm_sec = sec;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -211,18 +254,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0, hour=0, min=0, sec=0;
         if (sscanf(s.c_str(), "%d.%d.%d %d:%d:%d", &day, &month, &year, &hour, &min, &sec) == 6) {
             if (s == strprintf("%02d.%02d.%04d %02d:%02d:%02d", day, month, year, hour, min, sec)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = hour;
-                tm.tm_min = min;
-                tm.tm_sec = sec;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, hour, min, sec)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = hour;
+                    tm.tm_min = min;
+                    tm.tm_sec = sec;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
@@ -232,18 +282,25 @@ static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
         int year=0, month=0, day=0;
         if (sscanf(s.c_str(), "%d-%d-%d", &year, &month, &day) == 3) {
             if (s == strprintf("%04d-%02d-%02d", year, month, day)) {
-                struct tm tm = {};
-                tm.tm_year = year - 1900;
-                tm.tm_mon = month - 1;
-                tm.tm_mday = day;
-                tm.tm_hour = 0;
-                tm.tm_min = 0;
-                tm.tm_sec = 0;
-                tm.tm_isdst = 0;
-                time_t t = PortableTimegm(&tm);
-                if (t != -1) {
-                    nTimeOut = (int64)t;
-                    return true;
+                if (IsValidDateTime(year, month, day, 0, 0, 0)) {
+                    struct tm tm = {};
+                    tm.tm_year = year - 1900;
+                    tm.tm_mon = month - 1;
+                    tm.tm_mday = day;
+                    tm.tm_hour = 0;
+                    tm.tm_min = 0;
+                    tm.tm_sec = 0;
+                    tm.tm_isdst = 0;
+                    time_t t = PortableTimegm(&tm);
+                    if (t != -1) {
+                        struct tm *tm_check = gmtime(&t);
+                        if (tm_check && tm_check->tm_year == tm.tm_year && tm_check->tm_mon == tm.tm_mon &&
+                            tm_check->tm_mday == tm.tm_mday && tm_check->tm_hour == tm.tm_hour &&
+                            tm_check->tm_min == tm.tm_min && tm_check->tm_sec == tm.tm_sec) {
+                            nTimeOut = (int64)t;
+                            return true;
+                        }
+                    }
                 }
             }
         }
