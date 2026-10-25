@@ -105,34 +105,148 @@ static void EncodeHybridPrivKey(CWallet* pwallet, const CHybridKey& hk,
 // nTimeOut untouched) when the field is not a valid timestamp, so a malformed
 // line can be rejected explicitly instead of being silently treated as epoch
 // time. Trailing garbage is also rejected, so "2020-01-01junk" fails.
+#ifdef _WIN32
+static time_t PortableTimegm(struct tm *tm)
+{
+    return _mkgmtime(tm);
+}
+#else
+static time_t PortableTimegm(struct tm *tm)
+{
+    return timegm(tm);
+}
+#endif
+
 static bool DecodeDumpTimeHybrid(const std::string& s, int64& nTimeOut)
 {
     if (s.empty())
         return false;
 
-    const char* formats[] = {
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%d~%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M:%S",
-        "%d.%m.%Y %H:%M:%S",
-        "%Y-%m-%d",
-    };
-
-    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i) {
-        struct tm tm = {};
-        const char* p = strptime(s.c_str(), formats[i], &tm);
-        if (!p)
-            continue;
-        // Reject trailing garbage - must consume entire string
-        if (*p != '\0')
-            continue;
-        tm.tm_isdst = 0;
-        time_t t = timegm(&tm);
-        if (t == -1)
-            continue;
-        nTimeOut = (int64)t;
-        return true;
+    // Try ISO8601 UTC format with Z
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
+    }
+    // %Y-%m-%d~%H:%M:%S
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%d~%d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02d~%02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
+    }
+    // %Y-%m-%d %H:%M:%S
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
+    }
+    // %Y/%m/%d %H:%M:%S
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d/%d/%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d/%02d/%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
+    }
+    // %d.%m.%Y %H:%M:%S
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d.%d.%d %d:%d:%d", &day, &month, &year, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%02d.%02d.%04d %02d:%02d:%02d", day, month, year, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
+    }
+    // %Y-%m-%d
+    {
+        int year=0, month=0, day=0;
+        if (sscanf(s.c_str(), "%d-%d-%d", &year, &month, &day) == 3) {
+            if (s == strprintf("%04d-%02d-%02d", year, month, day)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = 0;
+                tm.tm_min = 0;
+                tm.tm_sec = 0;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegm(&tm);
+                if (t != -1) {
+                    nTimeOut = (int64)t;
+                    return true;
+                }
+            }
+        }
     }
 
     return false;

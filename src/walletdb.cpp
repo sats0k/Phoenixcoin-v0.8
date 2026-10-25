@@ -703,31 +703,136 @@ bool CWalletDB::Recover(CDBEnv& dbenv, std::string filename)
 
 /* Wallet keys export / import */
 
+#ifdef _WIN32
+static time_t PortableTimegmWallet(struct tm *tm)
+{
+    return _mkgmtime(tm);
+}
+#else
+static time_t PortableTimegmWallet(struct tm *tm)
+{
+    return timegm(tm);
+}
+#endif
+
 int64 DecodeDumpTime(const std::string &s) {
     if (s.empty())
         return 0;
 
-    const char* formats[] = {
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%d~%H:%M:%S",
-        "%Y-%m-%d %H:%M:%S",
-        "%Y/%m/%d %H:%M:%S",
-        "%d.%m.%Y %H:%M:%S",
-        "%Y-%m-%d",
-    };
-
-    for (size_t i = 0; i < sizeof(formats) / sizeof(formats[0]); ++i) {
-        struct tm tm = {};
-        const char* p = strptime(s.c_str(), formats[i], &tm);
-        if (!p)
-            continue;
-        if (*p != '\0')
-            continue;
-        tm.tm_isdst = 0;
-        time_t t = timegm(&tm);
-        if (t == -1)
-            continue;
-        return (int64)t;
+    // Try ISO8601 UTC format with Z
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%dT%d:%d:%dZ", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02dT%02d:%02d:%02dZ", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
+    }
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%d~%d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02d~%02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
+    }
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d-%02d-%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
+    }
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d/%d/%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%04d/%02d/%02d %02d:%02d:%02d", year, month, day, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
+    }
+    {
+        int year=0, month=0, day=0, hour=0, min=0, sec=0;
+        if (sscanf(s.c_str(), "%d.%d.%d %d:%d:%d", &day, &month, &year, &hour, &min, &sec) == 6) {
+            if (s == strprintf("%02d.%02d.%04d %02d:%02d:%02d", day, month, year, hour, min, sec)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = hour;
+                tm.tm_min = min;
+                tm.tm_sec = sec;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
+    }
+    {
+        int year=0, month=0, day=0;
+        if (sscanf(s.c_str(), "%d-%d-%d", &year, &month, &day) == 3) {
+            if (s == strprintf("%04d-%02d-%02d", year, month, day)) {
+                struct tm tm = {};
+                tm.tm_year = year - 1900;
+                tm.tm_mon = month - 1;
+                tm.tm_mday = day;
+                tm.tm_hour = 0;
+                tm.tm_min = 0;
+                tm.tm_sec = 0;
+                tm.tm_isdst = 0;
+                time_t t = PortableTimegmWallet(&tm);
+                if (t != -1) {
+                    return (int64)t;
+                }
+            }
+        }
     }
 
     return 0;
