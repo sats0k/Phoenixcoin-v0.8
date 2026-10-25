@@ -18,7 +18,7 @@
 #include <boost/iostreams/stream.hpp>
 #include <boost/asio/ssl.hpp>
 #include <fstream>
-#include <boost/shared_ptr.hpp>
+
 
 #include "base58.h"
 #include "init.h"
@@ -691,7 +691,7 @@ void ThreadRPCServer(void* parg)
 
 // Forward declaration required for RPCListen
 template <typename Protocol>
-static void RPCAcceptHandler(boost::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
+static void RPCAcceptHandler(std::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
                              ssl::context& context,
                              bool fUseSSL,
                              AcceptedConnection* conn,
@@ -701,7 +701,7 @@ static void RPCAcceptHandler(boost::shared_ptr< basic_socket_acceptor<Protocol> 
  * Sets up I/O resources to accept and handle a new connection.
  */
 template <typename Protocol>
-static void RPCListen(boost::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
+static void RPCListen(std::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
                    ssl::context& context,
                    const bool fUseSSL)
 {
@@ -721,7 +721,7 @@ static void RPCListen(boost::shared_ptr< basic_socket_acceptor<Protocol> > accep
  * Accept and handle incoming connection.
  */
 template <typename Protocol>
-static void RPCAcceptHandler(boost::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
+static void RPCAcceptHandler(std::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
                              ssl::context& context,
                              const bool fUseSSL,
                              AcceptedConnection* conn,
@@ -821,7 +821,7 @@ void ThreadRPCServer2(void* /*parg*/)
     asio::ip::address bindAddress = loopback ? asio::ip::address_v6::loopback() : asio::ip::address_v6::any();
     ip::tcp::endpoint endpoint(bindAddress, GetArg("-rpcport", GetDefaultRPCPort()));
     boost::system::error_code v6_only_error;
-    boost::shared_ptr<ip::tcp::acceptor> acceptor(new ip::tcp::acceptor(io_context));
+    std::shared_ptr<ip::tcp::acceptor> acceptor(new ip::tcp::acceptor(io_context));
 
     std::function<void()> StopRequestsHandler;
 
@@ -841,7 +841,7 @@ void ThreadRPCServer2(void* /*parg*/)
         RPCListen(acceptor, context, fUseSSL);
         // Cancel outstanding listen-requests for this acceptor when shutting down
         {
-            boost::shared_ptr<ip::tcp::acceptor> acc = acceptor;
+            std::shared_ptr<ip::tcp::acceptor> acc = acceptor;
             StopRequestsHandler = [acc](){ if (acc) acc->close(); };
         }
 
@@ -868,7 +868,7 @@ void ThreadRPCServer2(void* /*parg*/)
             RPCListen(acceptor, context, fUseSSL);
             // Cancel outstanding listen-requests for this acceptor when shutting down
             {
-                boost::shared_ptr<ip::tcp::acceptor> acc = acceptor;
+                std::shared_ptr<ip::tcp::acceptor> acc = acceptor;
                 StopRequestsHandler = [acc](){ if (acc) acc->close(); };
             }
 
