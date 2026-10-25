@@ -1952,6 +1952,16 @@ bool StopNode()
     if (vnThreadsRunning[THREAD_ADDEDCONNECTIONS] > 0) printf("ThreadOpenAddedConnections still running\n");
     if (vnThreadsRunning[THREAD_DUMPADDRESS] > 0) printf("ThreadDumpAddresses still running\n");
     if(vnThreadsRunning[THREAD_NTP] > 0) printf("ThreadNtpPoller still running\n");
+    // Stop the RPC listener first: while it is alive it can still spawn client
+    // threads, so waiting for the handlers before it would let a fresh handler
+    // start after the handler wait has already passed. ThreadRPCServer2 wakes
+    // from its accept wait on a timer, so this normally returns right away;
+    // bound it so a wedged listener cannot hang shutdown forever.
+    int64 nListenerStart = GetTime();
+    while (vnThreadsRunning[THREAD_RPCLISTENER] > 0 && GetTime() - nListenerStart < 5)
+        Sleep(20);
+    if (vnThreadsRunning[THREAD_RPCLISTENER] > 0)
+        printf("ThreadRPCListener still running after 5s\n");
     while (vnThreadsRunning[THREAD_MESSAGEHANDLER] > 0 || vnThreadsRunning[THREAD_RPCHANDLER] > 0)
         Sleep(20);
     Sleep(50);

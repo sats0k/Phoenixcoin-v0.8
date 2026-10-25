@@ -9,6 +9,7 @@
 #include <string>
 #include <functional>
 #include <memory>
+#include <chrono>
 
 #include <boost/asio.hpp>
 #include <boost/asio/ip/v6_only.hpp>
@@ -689,6 +690,10 @@ void ThreadRPCServer(void* parg)
     printf("ThreadRPCServer exited\n");
 }
 
+// Guards the RPC handler thread counter. Declared here because the accept
+// handler has to increment it before the client thread starts.
+static CCriticalSection cs_THREAD_RPCHANDLER;
+
 // Forward declaration required for RPCListen
 template <typename Protocol>
 static void RPCAcceptHandler(std::shared_ptr< basic_socket_acceptor<Protocol> > acceptor,
@@ -758,9 +763,22 @@ static void RPCAcceptHandler(std::shared_ptr< basic_socket_acceptor<Protocol> > 
     }
 
     // start HTTP client thread
-    else if (!NewThread(ThreadRPCServer3, conn)) {
-        printf("Failed to create RPC server client thread\n");
-        delete conn;
+    else {
+        // Count the handler before the thread exists: with the counter
+        // incremented inside the thread, shutdown can sample zero and tear
+        // globals down while a freshly spawned handler is still starting.
+        {
+            LOCK(cs_THREAD_RPCHANDLER);
+            ++vnThreadsRunning[THREAD_RPCHANDLER];
+        }
+        if (!NewThread(ThreadRPCServer3, conn)) {
+            printf("Failed to create RPC server client thread\n");
+            {
+                LOCK(cs_THREAD_RPCHANDLER);
+                --vnThreadsRunning[THREAD_RPCHANDLER];
+            }
+            delete conn;
+        }
     }
 
     vnThreadsRunning[THREAD_RPCLISTENER]--;
@@ -795,8 +813,13 @@ void ThreadRPCServer2(void* /*parg*/)
     }
 
     const bool fUseSSL = GetBoolArg("-rpcssl");
-    asio::io_context io_context;
-    ssl::context context(ssl::context::sslv23);
+    // Every AcceptedConnection holds references to both of these objects, and
+    // client handler threads can outlive this function (shutdown waits for the
+    // listener, not for each handler). Destroying them here would leave live
+    // connections pointing at a freed io_context / SSL_CTX, so keep them alive
+    // for the rest of the process.
+    static asio::io_context io_context;
+    static ssl::context context(ssl::context::sslv23);
     if (fUseSSL)
     {
         context.set_options(ssl::context::no_sslv2);
@@ -886,10 +909,21 @@ void ThreadRPCServer2(void* /*parg*/)
         return;
     }
 
-    vnThreadsRunning[THREAD_RPCLISTENER]--;
+    // run_one() blocks until a connection arrives, so fShutdown would go
+    // unnoticed when no client connects during shutdown. A periodic timer keeps
+    // waking the loop so the listener always notices fShutdown and exits.
+    boost::asio::steady_timer wakeup(io_context);
+    std::function<void(const boost::system::error_code&)> rearm =
+        [&](const boost::system::error_code&) {
+            if (fShutdown)
+                return;
+            wakeup.expires_after(std::chrono::milliseconds(200));
+            wakeup.async_wait(rearm);
+        };
+    wakeup.expires_after(std::chrono::milliseconds(200));
+    wakeup.async_wait(rearm);
     while (!fShutdown)
         io_context.run_one();
-    vnThreadsRunning[THREAD_RPCLISTENER]++;
     if (StopRequestsHandler) StopRequestsHandler();
 }
 
@@ -967,17 +1001,13 @@ static string JSONRPCExecBatch(const Array& vReq)
     return write_string(Value(ret), false) + "\n";
 }
 
-static CCriticalSection cs_THREAD_RPCHANDLER;
-
 void ThreadRPCServer3(void* parg)
 {
     // Make this thread recognisable as the RPC handler
     RenameThread("pxc-rpchand");
 
-    {
-        LOCK(cs_THREAD_RPCHANDLER);
-        vnThreadsRunning[THREAD_RPCHANDLER]++;
-    }
+    // THREAD_RPCHANDLER was incremented by RPCAcceptHandler before this thread
+    // was created, so shutdown can never miss it.
     AcceptedConnection *conn = (AcceptedConnection *) parg;
 
     bool fRun = true;
