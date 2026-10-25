@@ -56,7 +56,7 @@ using LockStack = std::vector< std::pair<void*, CLockLocation> >;
 
 static std::mutex dd_mutex;
 static std::map<std::pair<void*, void*>, LockStack> lockorders;
-static thread_local LockStack* lockstack_ptr = nullptr;
+static thread_local LockStack lockstack_tls;
 
 
 static void potential_deadlock_detected(const std::pair<void*, void*>& mismatch, const LockStack& s1, const LockStack& s2)
@@ -80,8 +80,7 @@ static void potential_deadlock_detected(const std::pair<void*, void*>& mismatch,
 
 static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
 {
-    if (lockstack_ptr == nullptr)
-        lockstack_ptr = new LockStack();
+    LockStack* lockstack_ptr = &lockstack_tls;
 
     if (fDebug) printf("Locking: %s\n", locklocation.ToString().c_str());
     dd_mutex.lock();
@@ -110,7 +109,8 @@ static void push_lock(void* c, const CLockLocation& locklocation, bool fTry)
 
 static void pop_lock()
 {
-    if (lockstack_ptr == nullptr)
+    LockStack* lockstack_ptr = &lockstack_tls;
+    if (lockstack_ptr->empty())
         return;
     if (fDebug)
     {
