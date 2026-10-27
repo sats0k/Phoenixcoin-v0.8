@@ -64,6 +64,7 @@ LIBS += \
     -l:libboost_thread.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_chrono.so$(BOOST_LIB_SUFFIX) \
     -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
+    -llmdb \
     -l:libssl.so$(OPENSSL_LIB_SUFFIX) \
     -l:libcrypto.so$(OPENSSL_LIB_SUFFIX)
 TESTDEFS += -DBOOST_TEST_DYN_LINK
@@ -73,6 +74,7 @@ LIBS += \
     -l:libboost_thread$(BOOST_LIB_SUFFIX).a \
     -l:libboost_chrono$(BOOST_LIB_SUFFIX).a \
     -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
+    -llmdb \
     -l:libssl$(OPENSSL_LIB_SUFFIX).a \
     -l:libcrypto$(OPENSSL_LIB_SUFFIX).a
 TESTLIBS += -l:libboost_unit_test_framework$(BOOST_LIB_SUFFIX).a
@@ -81,6 +83,7 @@ LIBS += \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
     -ldb_cxx$(BDB_LIB_SUFFIX) \
+    -llmdb \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
 endif
@@ -133,6 +136,7 @@ OBJS = \
     obj/version.o \
     obj/wallet.o \
     obj/walletdb.o \
+    obj/lmdbdb.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
     obj/hybrid_message.o \
