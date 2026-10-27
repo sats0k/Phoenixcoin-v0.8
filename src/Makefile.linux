@@ -137,6 +137,7 @@ OBJS = \
     obj/wallet.o \
     obj/walletdb.o \
     obj/lmdbdb.o \
+    obj/bdb_kv.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
     obj/hybrid_message.o \
