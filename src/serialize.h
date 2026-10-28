@@ -224,14 +224,20 @@ uint64 ReadCompactSize(Stream &is) {
     } else if(chSize == 253) {
         ushort xSize;
         READDATA(is, xSize);
+        if(xSize < 253)
+            throw(std::ios_base::failure("ReadCompactSize() : non-canonical encoding"));
         nSizeRet = xSize;
     } else if(chSize == 254) {
         uint xSize;
         READDATA(is, xSize);
+        if(xSize <= std::numeric_limits<unsigned short>::max())
+            throw(std::ios_base::failure("ReadCompactSize() : non-canonical encoding"));
         nSizeRet = xSize;
     } else {
         uint64 xSize;
         READDATA(is, xSize);
+        if(xSize <= std::numeric_limits<unsigned int>::max())
+            throw(std::ios_base::failure("ReadCompactSize() : non-canonical encoding"));
         nSizeRet = xSize;
     }
     if(nSizeRet > (uint64)MAX_SIZE)
