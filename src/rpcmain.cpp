@@ -10,6 +10,11 @@
 #include <functional>
 #include <memory>
 #include <chrono>
+#include <charconv>
+#include <system_error>
+#include <string>
+
+static const size_t MAX_HTTP_RPC_BODY_SIZE = 0x02000000;
 
 #include <boost/asio.hpp>
 #include <boost/asio/ip/v6_only.hpp>
@@ -19,6 +24,9 @@
 #include <boost/iostreams/stream.hpp>
 #include <boost/asio/ssl.hpp>
 #include <fstream>
+#include <sstream>
+#include <iterator>
+#include <algorithm>
 
 
 #include "base58.h"
@@ -397,43 +405,182 @@ static string HTTPReply(int nStatus, const string& strMsg, bool keepalive)
         strMsg.c_str());
 }
 
+static bool ParseIntStrictRPC(const std::string &s, long long &out)
+{
+    if (s.empty())
+        return false;
+    for (char c : s) {
+        if (c < '0' || c > '9')
+            return false;
+    }
+    if (s.size() > 1 && s[0] == '0')
+        return false;
+    long long value = 0;
+    const char *begin = s.data();
+    const char *end = begin + s.size();
+    auto result = std::from_chars(begin, end, value, 10);
+    if (result.ec != std::errc{} || result.ptr != end)
+        return false;
+    out = value;
+    return true;
+}
+
+static bool ReadHTTPLineBounded(std::basic_istream<char>& stream, string &str, size_t maxLen, size_t *bytesConsumed = nullptr)
+{
+    str.clear();
+    char c;
+    size_t raw = 0;
+    bool gotNewline = false;
+    std::string tmp;
+    while (stream.get(c)) {
+        if (c == '\n') {
+            gotNewline = true;
+            break;
+        }
+        if (raw >= maxLen)
+            return false;
+        tmp += c;
+        raw++;
+    }
+    if (stream.bad())
+        return false;
+    if (!gotNewline)
+        return false;
+    // maxLen is max raw bytes before \n (including optional \r)
+    str = tmp;
+    if (!str.empty() && str[str.size()-1] == '\r') {
+        str.resize(str.size()-1);
+    }
+    if (bytesConsumed)
+        *bytesConsumed = raw + 1; // +\n
+    return true;
+}
+
 int ReadHTTPStatus(std::basic_istream<char>& stream, int &proto)
 {
     string str;
-    getline(stream, str);
+    if (!ReadHTTPLineBounded(stream, str, 4096, nullptr))
+        return -1;
+    // Validate status line for control chars
+    for (char c : str) {
+        if ((unsigned char)c < 32 && c != '\t')
+            return -1;
+        if ((unsigned char)c == 127)
+            return -1;
+    }
     vector<string> vWords;
     istringstream iss(str);
     copy(istream_iterator<string>(iss), istream_iterator<string>(), back_inserter(vWords));
     if (vWords.size() < 2)
-        return HTTP_INTERNAL_SERVER_ERROR;
+        return -1;
     proto = 0;
-    const char *ver = strstr(str.c_str(), "HTTP/1.");
-    if (ver != nullptr)
-        proto = atoi(ver+7);
-    return atoi(vWords[1].c_str());
+    // Handle both request lines (POST / HTTP/1.1) and response lines (HTTP/1.1 200 OK)
+    if (vWords[0].substr(0, 5) == "HTTP/") {
+        if (vWords[0] == "HTTP/1.0")
+            proto = 0;
+        else if (vWords[0] == "HTTP/1.1")
+            proto = 1;
+        else
+            return -1;
+        if (vWords[1].size() != 3)
+            return -1;
+        for (char c : vWords[1]) {
+            if (c < '0' || c > '9')
+                return -1;
+        }
+        long long status = 0;
+        const char *begin = vWords[1].data();
+        const char *end = begin + vWords[1].size();
+        auto result = std::from_chars(begin, end, status, 10);
+        if (result.ec != std::errc{} || result.ptr != end)
+            return -1;
+        if (status < 100 || status > 599)
+            return -1;
+        return (int)status;
+    } else {
+        // Request line - extract protocol
+        if (vWords.size() >= 3 && vWords[2].substr(0, 5) == "HTTP/") {
+            if (vWords[2] == "HTTP/1.0")
+                proto = 0;
+            else if (vWords[2] == "HTTP/1.1")
+                proto = 1;
+            else
+                return -1;
+        } else {
+            proto = 1;
+        }
+        return HTTP_OK;
+    }
 }
 
 int ReadHTTPHeader(std::basic_istream<char>& stream, map<string, string>& mapHeadersRet)
 {
-    int nLen = 0;
+    int nLen = -1;
+    bool hasContentLength = false;
+    size_t totalHeaderBytes = 0;
     while(true) {
         string str;
-        std::getline(stream, str);
-        if (str.empty() || str == "\r")
+        size_t bytesConsumed = 0;
+        if (!ReadHTTPLineBounded(stream, str, 8192, &bytesConsumed))
+            return -1;
+        totalHeaderBytes += bytesConsumed;
+        if (totalHeaderBytes > 8192)
+            return -1;
+        if (str.empty())
             break;
+        // Reject obsolete folding at start of line
+        if (!str.empty() && (str[0] == ' ' || str[0] == '\t'))
+            return -1;
         string::size_type nColon = str.find(":");
-        if (nColon != string::npos)
+        if (nColon == string::npos)
+            return -1;
+        string strHeader = str.substr(0, nColon);
+        if (strHeader.empty() || strHeader.size() > 256)
+            return -1;
+        // Check for valid HTTP token chars before trimming
+        for (char ch : strHeader) {
+            unsigned char uch = (unsigned char)ch;
+            bool ok = (uch >= 'A' && uch <= 'Z') || (uch >= 'a' && uch <= 'z') || (uch >= '0' && uch <= '9') ||
+                      ch == '!' || ch == '#' || ch == '$' || ch == '%' || ch == '&' || ch == '\'' ||
+                      ch == '*' || ch == '+' || ch == '-' || ch == '.' || ch == '^' || ch == '_' ||
+                      ch == '`' || ch == '|' || ch == '~';
+            if (!ok)
+                return -1;
+        }
+        ToLowerCase(strHeader);
+        string strValue = str.substr(nColon+1);
+        strValue = TrimWhitespace(strValue);
+        // Validate header value - no control chars except HTAB
+        for (char vch : strValue) {
+            if ((unsigned char)vch < 32 && vch != '\t')
+                return -1;
+            if ((unsigned char)vch == 127)
+                return -1;
+        }
+        if (strHeader == "content-length")
         {
-            string strHeader = str.substr(0, nColon);
-            strHeader = TrimWhitespace(strHeader);
-            ToLowerCase(strHeader);
-            string strValue = str.substr(nColon+1);
-            strValue = TrimWhitespace(strValue);
+            if (hasContentLength)
+                return -1;
+            long long clen = 0;
+            if (!ParseIntStrictRPC(strValue, clen))
+                return -1;
+            if ((size_t)clen > MAX_HTTP_RPC_BODY_SIZE)
+                return -1;
+            nLen = (int)clen;
+            hasContentLength = true;
             mapHeadersRet[strHeader] = strValue;
-            if (strHeader == "content-length")
-                nLen = atoi(strValue.c_str());
+        }
+        else if (strHeader == "transfer-encoding")
+        {
+            return -1;
+        }
+        else
+        {
+            mapHeadersRet[strHeader] = strValue;
         }
     }
+    if (nLen == -1)
+        return 0;
     return nLen;
 }
 
@@ -445,10 +592,12 @@ int ReadHTTP(std::basic_istream<char> &stream, map<string, string> &mapHeadersRe
     // Read status
     int nProto = 0;
     int nStatus = ReadHTTPStatus(stream, nProto);
+    if (nStatus < 0)
+        return HTTP_INTERNAL_SERVER_ERROR;
 
     // Read header
     int nLen = ReadHTTPHeader(stream, mapHeadersRet);
-    if (nLen < 0 || nLen > (int)MAX_SIZE)
+    if (nLen < 0 || (size_t)nLen > MAX_HTTP_RPC_BODY_SIZE)
         return HTTP_INTERNAL_SERVER_ERROR;
 
     // Read message
@@ -456,10 +605,13 @@ int ReadHTTP(std::basic_istream<char> &stream, map<string, string> &mapHeadersRe
     {
         vector<char> vch(nLen);
         stream.read(&vch[0], nLen);
+        if (stream.gcount() != nLen)
+            return HTTP_INTERNAL_SERVER_ERROR;
         strMessageRet = string(vch.begin(), vch.end());
     }
 
     string sConHdr = mapHeadersRet["connection"];
+    ToLowerCase(sConHdr);
 
     if ((sConHdr != "close") && (sConHdr != "keep-alive"))
     {
@@ -468,6 +620,10 @@ int ReadHTTP(std::basic_istream<char> &stream, map<string, string> &mapHeadersRe
         else
             mapHeadersRet["connection"] = "close";
     }
+    else if (sConHdr == "close")
+        mapHeadersRet["connection"] = "close";
+    else if (sConHdr == "keep-alive")
+        mapHeadersRet["connection"] = "keep-alive";
 
     return nStatus;
 }
