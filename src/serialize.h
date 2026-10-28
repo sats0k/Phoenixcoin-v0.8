@@ -899,16 +899,18 @@ public:
     CDataStream& read(char* pch, int nSize)
     {
         // Read from the beginning of the buffer
-        assert(nSize >= 0);
-        assert(nReadPos <= vch.size());
+        if (nSize < 0)
+            throw(std::ios_base::failure("CDataStream::read() : negative size"));
+        if (nReadPos > vch.size())
+            throw(std::ios_base::failure("CDataStream::read() : invalid read position"));
         // Bytes actually available; saturates at 0 so neither the comparison
         // below nor the subtraction can wrap around.
         size_t nAvail = (nReadPos < vch.size()) ? vch.size() - nReadPos : 0;
         if ((size_t)nSize <= nAvail)
         {
             if (nSize > 0)
-                memcpy(pch, &vch[nReadPos], nSize);
-            nReadPos += nSize;
+                memcpy(pch, &vch[nReadPos], (size_t)nSize);
+            nReadPos += (size_t)nSize;
             if (nReadPos == vch.size())
             {
                 // Whenever we reach the end, take the opportunity to clear the buffer
@@ -919,8 +921,9 @@ public:
         }
         /* Don't trigger an exception here with setstate(std::ios::failbit) */
         printf("ERROR: CDataStream::read() : end of data\n");
-        memset(pch, 0, nSize);
-        if (nAvail > 0)
+        if (nSize > 0)
+            memset(pch, 0, (size_t)nSize);
+        if (nAvail > 0 && nSize > 0)
             memcpy(pch, &vch[nReadPos], nAvail);
         nReadPos = 0;
         vch.clear();
@@ -930,12 +933,14 @@ public:
     CDataStream& ignore(int nSize)
     {
         // Ignore from the beginning of the buffer
-        assert(nSize >= 0);
-        assert(nReadPos <= vch.size());
+        if (nSize < 0)
+            throw(std::ios_base::failure("CDataStream::ignore() : negative size"));
+        if (nReadPos > vch.size())
+            throw(std::ios_base::failure("CDataStream::ignore() : invalid read position"));
         size_t nAvail = (nReadPos < vch.size()) ? vch.size() - nReadPos : 0;
         if ((size_t)nSize <= nAvail)
         {
-            nReadPos += nSize;
+            nReadPos += (size_t)nSize;
             if (nReadPos == vch.size())
             {
                 // Whenever we reach the end, take the opportunity to clear the buffer
@@ -954,8 +959,13 @@ public:
     CDataStream& write(const char* pch, int nSize)
     {
         // Write to the end of the buffer
-        assert(nSize >= 0);
-        vch.insert(vch.end(), pch, pch + nSize);
+        if (nSize < 0)
+            throw(std::ios_base::failure("CDataStream::write() : negative size"));
+        if (nSize == 0)
+            return (*this);
+        if (pch == nullptr)
+            throw(std::ios_base::failure("CDataStream::write() : null buffer"));
+        vch.insert(vch.end(), pch, pch + (size_t)nSize);
         return (*this);
     }
 
