@@ -5,6 +5,7 @@
 #ifndef LMDBDB_H
 #define LMDBDB_H
 
+#include <atomic>
 #include <map>
 #include <string>
 
@@ -39,10 +40,27 @@ public:
      */
     bool OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate = true);
 
+    /**
+     * LMDB allows exactly one write transaction per environment.  The
+     * environment therefore owns a non-recursive writer lock that a write
+     * transaction holds from mdb_txn_begin() until commit/abort.
+     *
+     * TryAcquireWriter() never blocks: it returns false when another write
+     * transaction is already active (including a re-entrant write transaction
+     * in the same thread).  Callers must retry rather than assume progress.
+     *
+     * Note that this lock only serializes writers.  LMDB write transactions
+     * and cursors remain thread-affine even with MDB_NOTLS and must be
+     * committed or aborted on the thread that created them.
+     */
+    bool TryAcquireWriter();
+    void ReleaseWriter();
+
 private:
     MDB_env *env;
     std::string strPath;
     std::map<std::string, MDB_dbi> mapDbis;
+    std::atomic<bool> fWriterActive;
 };
 
 #endif // LMDBDB_H

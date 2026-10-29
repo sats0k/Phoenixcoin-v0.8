@@ -6,6 +6,7 @@
 #include <filesystem>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <boost/test/unit_test.hpp>
@@ -287,6 +288,163 @@ void RunRepeatedReadTransactions(const std::string &tag)
     }
 }
 
+// LMDB allows exactly one write transaction per environment.  The adapter
+// serializes writers with a non-blocking lock, so a second writer fails to
+// start while the first one is active.
+void RunWriterSerialization(const std::string &tag)
+{
+    DBGuard<CLMDBDatabase> guard(tag);
+    CKeyValueDB &db = guard.db;
+    CDBValue value;
+
+    std::unique_ptr<CDBTransaction> first = BeginWrite(db);
+    BOOST_CHECK(first->Write(Key("key"), Value("uncommitted")));
+
+    // A second writer must not start while the first one holds the slot.
+    BOOST_CHECK(db.BeginTransaction(false) == nullptr);
+
+    // Readers are not blocked by the writer, but they see the last committed
+    // snapshot rather than the pending write.
+    BOOST_CHECK(!ReadValue(db, Key("key"), value));
+
+    BOOST_REQUIRE_MESSAGE(first->Commit(), "write transaction commit failed");
+    BOOST_REQUIRE(ReadValue(db, Key("key"), value));
+    BOOST_CHECK(value == Value("uncommitted"));
+
+    // Committing releases the writer slot.
+    std::unique_ptr<CDBTransaction> second = BeginWrite(db);
+    BOOST_CHECK(second->Write(Key("key"), Value("aborted")));
+    second->Abort();
+
+    // ...and so does aborting.
+    std::unique_ptr<CDBTransaction> third = BeginWrite(db);
+    BOOST_CHECK(third->Write(Key("key"), Value("committed")));
+    BOOST_REQUIRE_MESSAGE(third->Commit(), "write transaction commit failed");
+
+    BOOST_REQUIRE(ReadValue(db, Key("key"), value));
+    BOOST_CHECK(value == Value("committed"));
+}
+
+// Read transactions are not tied to a thread because the environment is
+// opened with MDB_NOTLS.  A transaction may be finished on another thread as
+// long as it is not used concurrently.
+void RunTransactionThreadHandoff(const std::string &tag)
+{
+    DBGuard<CLMDBDatabase> guard(tag);
+    WriteValue(guard.db, Key("key"), Value("value"));
+
+    std::unique_ptr<CDBTransaction> txn = BeginRead(guard.db);
+    CDBValue value;
+    BOOST_REQUIRE(txn->Read(Key("key"), value));
+    BOOST_CHECK(value == Value("value"));
+
+    bool committed = false;
+    std::thread thread([&txn, &committed]() { committed = txn->Commit(); });
+    thread.join();
+
+    BOOST_CHECK(committed);
+}
+
+void RunConcurrentReaders(const std::string &tag)
+{
+    DBGuard<CLMDBDatabase> guard(tag);
+    WriteValue(guard.db, Key("counter"), Value("42"));
+
+    constexpr int nThreads = 8;
+    constexpr int nReads = 200;
+    std::atomic<int> failures(0);
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < nThreads; ++t) {
+        threads.emplace_back([&guard, &failures]() {
+            for (int i = 0; i < nReads; ++i) {
+                CDBValue value;
+                std::unique_ptr<CDBTransaction> txn = guard.db.BeginTransaction(true);
+                if (!txn.get()) {
+                    ++failures;
+                    continue;
+                }
+                if (!txn->Read(Key("counter"), value) || value != Value("42"))
+                    ++failures;
+                if (!txn->Commit())
+                    ++failures;
+            }
+        });
+    }
+
+    for (std::thread &thread : threads)
+        thread.join();
+
+    BOOST_CHECK_EQUAL(failures.load(), 0);
+}
+
+void RunConcurrentWriters(const std::string &tag)
+{
+    DBGuard<CLMDBDatabase> guard(tag);
+    WriteValue(guard.db, Key("counter"), Value("0"));
+
+    constexpr int nThreads = 4;
+    constexpr int nWrites = 50;
+    std::atomic<int> failures(0);
+    std::atomic<int> busyRetries(0);
+    std::atomic<int> committed(0);
+    std::vector<std::thread> threads;
+
+    for (int t = 0; t < nThreads; ++t) {
+        threads.emplace_back([&guard, &failures, &busyRetries, &committed]() {
+            int done = 0;
+            while (done < nWrites) {
+                std::unique_ptr<CDBTransaction> txn = guard.db.BeginTransaction(false);
+                if (!txn.get()) {
+                    ++busyRetries;
+                    std::this_thread::yield();
+                    continue;
+                }
+
+                CDBValue value;
+                if (!txn->Read(Key("counter"), value)) {
+                    txn->Abort();
+                    ++failures;
+                    continue;
+                }
+
+                int counter = 0;
+                try {
+                    counter = std::stoi(std::string(value.begin(), value.end()));
+                } catch (...) {
+                    txn->Abort();
+                    ++failures;
+                    continue;
+                }
+
+                if (!txn->Write(Key("counter"), Value(std::to_string(counter + 1)))) {
+                    txn->Abort();
+                    ++failures;
+                    continue;
+                }
+                if (!txn->Commit()) {
+                    ++failures;
+                    continue;
+                }
+
+                ++committed;
+                ++done;
+            }
+        });
+    }
+
+    for (std::thread &thread : threads)
+        thread.join();
+
+    BOOST_CHECK_EQUAL(failures.load(), 0);
+    BOOST_CHECK_EQUAL(committed.load(), nThreads * nWrites);
+    BOOST_TEST_MESSAGE("writer contention retries: " << busyRetries.load());
+
+    CDBValue value;
+    BOOST_REQUIRE(ReadValue(guard.db, Key("counter"), value));
+    BOOST_CHECK_EQUAL(std::stoi(std::string(value.begin(), value.end())), nThreads * nWrites);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -337,6 +495,26 @@ BOOST_AUTO_TEST_CASE(bdb_kvdb_repeated_read_transactions)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_repeated_read_transactions)
 {
     RunRepeatedReadTransactions<CLMDBDatabase>("lmdb_reads");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_writer_serialization)
+{
+    RunWriterSerialization("lmdb_writer_serialization");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_transaction_thread_handoff)
+{
+    RunTransactionThreadHandoff("lmdb_thread_handoff");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_readers)
+{
+    RunConcurrentReaders("lmdb_concurrent_readers");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_writers)
+{
+    RunConcurrentWriters("lmdb_concurrent_writers");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

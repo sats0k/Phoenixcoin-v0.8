@@ -78,8 +78,17 @@ CDBValue CLMDBIterator::Value() const
     return v;
 }
 
-CLMDBTransaction::CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool readOnly) : txn(tx), dbi(d), fReadOnly(readOnly), fAborted(false), fCommitted(false)
+CLMDBTransaction::CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool readOnly, CLMDBEnv *env)
+    : txn(tx), dbi(d), fReadOnly(readOnly), fAborted(false), fCommitted(false), writerEnv(env)
 {
+}
+
+void CLMDBTransaction::ReleaseWriter()
+{
+    if (writerEnv) {
+        writerEnv->ReleaseWriter();
+        writerEnv = nullptr;
+    }
 }
 
 CLMDBTransaction::~CLMDBTransaction()
@@ -88,6 +97,7 @@ CLMDBTransaction::~CLMDBTransaction()
         mdb_txn_abort(txn);
         txn = nullptr;
     }
+    ReleaseWriter();
 }
 
 bool CLMDBTransaction::Read(const CDBKey &key, CDBValue &value)
@@ -144,6 +154,7 @@ bool CLMDBTransaction::Commit()
     int ret = mdb_txn_commit(txn);
     txn = nullptr;
     fCommitted = (ret == 0);
+    ReleaseWriter();
     return fCommitted;
 }
 
@@ -154,6 +165,7 @@ void CLMDBTransaction::Abort()
         txn = nullptr;
     }
     fAborted = true;
+    ReleaseWriter();
 }
 
 CLMDBDatabase::CLMDBDatabase() : dbi(0), fInit(false)
@@ -191,9 +203,23 @@ void CLMDBDatabase::Close()
 std::unique_ptr<CDBTransaction> CLMDBDatabase::BeginTransaction(bool fReadOnly)
 {
     if (!fInit) return nullptr;
+
+    CLMDBEnv *writerEnv = nullptr;
+    if (!fReadOnly) {
+        // LMDB has a single writer per environment.  Fail fast instead of
+        // blocking; the caller is expected to retry.
+        if (!env.TryAcquireWriter())
+            return nullptr;
+        writerEnv = &env;
+    }
+
     MDB_txn *txn = nullptr;
     unsigned int flags = fReadOnly ? MDB_RDONLY : 0;
     int rc = mdb_txn_begin(env.GetEnv(), nullptr, flags, &txn);
-    if (rc != 0) return nullptr;
-    return std::unique_ptr<CDBTransaction>(new CLMDBTransaction(txn, dbi, fReadOnly));
+    if (rc != 0) {
+        if (writerEnv)
+            writerEnv->ReleaseWriter();
+        return nullptr;
+    }
+    return std::unique_ptr<CDBTransaction>(new CLMDBTransaction(txn, dbi, fReadOnly, writerEnv));
 }

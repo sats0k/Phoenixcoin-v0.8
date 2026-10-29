@@ -12,7 +12,7 @@ constexpr size_t LMDB_DEFAULT_MAPSIZE = 1024ULL * 1024ULL * 1024ULL; // 1GB
 constexpr unsigned int LMDB_MAX_DBS = 64;
 }
 
-CLMDBEnv::CLMDBEnv() : env(nullptr)
+CLMDBEnv::CLMDBEnv() : env(nullptr), fWriterActive(false)
 {
 }
 
@@ -57,7 +57,13 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate)
         return false;
     }
 
-    rc = mdb_env_open(env, path.c_str(), 0, 0644);
+    // MDB_NOTLS detaches read transactions from a thread-local reader slot.
+    // The key/value abstraction hands transactions out as moveable objects, so
+    // a transaction may be committed or destroyed on a different thread than
+    // the one that created it.  With MDB_NOTLS the slot is tied to the
+    // transaction instead of the thread; the transaction still must not be
+    // used concurrently from several threads.
+    rc = mdb_env_open(env, path.c_str(), MDB_NOTLS, 0644);
     if (rc != 0) {
         printf("mdb_env_open failed: %s\n", mdb_strerror(rc));
         mdb_env_close(env);
@@ -73,6 +79,7 @@ void CLMDBEnv::Close()
 {
     // DBI handles are invalidated when the environment is closed.
     mapDbis.clear();
+    fWriterActive.store(false);
 
     if (env) {
         mdb_env_close(env);
@@ -115,4 +122,15 @@ bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)
 
     mapDbis[name] = dbi;
     return true;
+}
+
+bool CLMDBEnv::TryAcquireWriter()
+{
+    bool expected = false;
+    return fWriterActive.compare_exchange_strong(expected, true);
+}
+
+void CLMDBEnv::ReleaseWriter()
+{
+    fWriterActive.store(false);
 }

@@ -35,8 +35,11 @@ class CLMDBTransaction : public CDBTransaction
     bool fReadOnly;
     bool fAborted;
     bool fCommitted;
+    CLMDBEnv *writerEnv;
+
+    void ReleaseWriter();
 public:
-    CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool fReadOnly);
+    CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool fReadOnly, CLMDBEnv *env = nullptr);
     ~CLMDBTransaction();
     bool Read(const CDBKey &key, CDBValue &value) override;
     bool Write(const CDBKey &key, const CDBValue &value, bool fOverwrite = true) override;
