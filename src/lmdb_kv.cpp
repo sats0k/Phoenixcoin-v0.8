@@ -65,7 +65,7 @@ void CLMDBIterator::Prev()
 CDBKey CLMDBIterator::Key() const
 {
     CDBKey k;
-    if (!valid || !key.mv_data) return k;
+    if (!valid || key.mv_size == 0 || !key.mv_data) return k;
     k.assign((unsigned char*)key.mv_data, (unsigned char*)key.mv_data + key.mv_size);
     return k;
 }
@@ -73,7 +73,7 @@ CDBKey CLMDBIterator::Key() const
 CDBValue CLMDBIterator::Value() const
 {
     CDBValue v;
-    if (!valid || !value.mv_data) return v;
+    if (!valid || value.mv_size == 0 || !value.mv_data) return v;
     v.assign((unsigned char*)value.mv_data, (unsigned char*)value.mv_data + value.mv_size);
     return v;
 }
@@ -84,7 +84,7 @@ CLMDBTransaction::CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool readOnly) : txn(
 
 CLMDBTransaction::~CLMDBTransaction()
 {
-    if (txn && !fCommitted && !fAborted) {
+    if (txn) {
         mdb_txn_abort(txn);
         txn = nullptr;
     }
@@ -98,6 +98,10 @@ bool CLMDBTransaction::Read(const CDBKey &key, CDBValue &value)
     mkey.mv_data = (void*)key.data();
     int ret = mdb_get(txn, dbi, &mkey, &mval);
     if (ret != 0) return false;
+    if (mval.mv_size == 0 || !mval.mv_data) {
+        value.clear();
+        return true;
+    }
     value.assign((unsigned char*)mval.mv_data, (unsigned char*)mval.mv_data + mval.mv_size);
     return true;
 }
@@ -105,11 +109,12 @@ bool CLMDBTransaction::Read(const CDBKey &key, CDBValue &value)
 bool CLMDBTransaction::Write(const CDBKey &key, const CDBValue &value, bool fOverwrite)
 {
     if (!txn || fReadOnly) return false;
+    static const unsigned char empty = 0;
     MDB_val mkey, mval;
     mkey.mv_size = key.size();
     mkey.mv_data = (void*)key.data();
     mval.mv_size = value.size();
-    mval.mv_data = (void*)value.data();
+    mval.mv_data = value.empty() ? (void*)&empty : (void*)value.data();
     unsigned int flags = fOverwrite ? 0 : MDB_NOOVERWRITE;
     int ret = mdb_put(txn, dbi, &mkey, &mval, flags);
     return ret == 0;
@@ -133,11 +138,9 @@ std::unique_ptr<CDBIterator> CLMDBTransaction::NewIterator(const CDBKey &prefix)
 
 bool CLMDBTransaction::Commit()
 {
-    if (fReadOnly) {
-        fCommitted = true;
-        return true;
-    }
     if (!txn) return false;
+    // mdb_txn_commit() is valid for read-only transactions too.  It must be
+    // called (or Abort()) so the reader slot is released.
     int ret = mdb_txn_commit(txn);
     txn = nullptr;
     fCommitted = (ret == 0);
@@ -146,14 +149,14 @@ bool CLMDBTransaction::Commit()
 
 void CLMDBTransaction::Abort()
 {
-    if (txn && !fCommitted) {
+    if (txn) {
         mdb_txn_abort(txn);
         txn = nullptr;
     }
     fAborted = true;
 }
 
-CLMDBDatabase::CLMDBDatabase() : env(nullptr), dbi(0), fInit(false)
+CLMDBDatabase::CLMDBDatabase() : dbi(0), fInit(false)
 {
 }
 
@@ -164,40 +167,33 @@ CLMDBDatabase::~CLMDBDatabase()
 
 bool CLMDBDatabase::Open(const std::string &path, bool fCreate)
 {
-    (void)fCreate;
     if (fInit) return true;
     strPath = path;
-    int rc = mdb_env_create(&env);
-    if (rc != 0) return false;
-    mdb_env_set_maxdbs(env, 64);
-    mdb_env_set_mapsize(env, 1024ULL * 1024ULL * 1024ULL);
-    rc = mdb_env_open(env, path.c_str(), MDB_CREATE, 0644);
-    if (rc != 0) { mdb_env_close(env); env = nullptr; return false; }
-    MDB_txn *txn = nullptr;
-    rc = mdb_txn_begin(env, nullptr, 0, &txn);
-    if (rc != 0) { mdb_env_close(env); env = nullptr; return false; }
-    rc = mdb_dbi_open(txn, "main", MDB_CREATE, &dbi);
-    if (rc != 0) { mdb_txn_abort(txn); mdb_env_close(env); env = nullptr; return false; }
-    mdb_txn_commit(txn);
+    if (!env.Open(path, fCreate)) return false;
+    if (!env.OpenDbi("main", dbi, fCreate)) {
+        env.Close();
+        dbi = 0;
+        return false;
+    }
     fInit = true;
     return true;
 }
 
 void CLMDBDatabase::Close()
 {
-    if (fInit && env) {
-        mdb_env_close(env);
-        env = nullptr;
+    if (fInit) {
+        env.Close();
+        dbi = 0;
         fInit = false;
     }
 }
 
 std::unique_ptr<CDBTransaction> CLMDBDatabase::BeginTransaction(bool fReadOnly)
 {
-    if (!env) return nullptr;
+    if (!fInit) return nullptr;
     MDB_txn *txn = nullptr;
     unsigned int flags = fReadOnly ? MDB_RDONLY : 0;
-    int rc = mdb_txn_begin(env, nullptr, flags, &txn);
+    int rc = mdb_txn_begin(env.GetEnv(), nullptr, flags, &txn);
     if (rc != 0) return nullptr;
     return std::unique_ptr<CDBTransaction>(new CLMDBTransaction(txn, dbi, fReadOnly));
 }

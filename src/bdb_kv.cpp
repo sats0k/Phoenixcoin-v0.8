@@ -11,8 +11,6 @@ CBDBIterator::CBDBIterator(Db *db) : pdb(db), cursor(nullptr), valid(false)
     if (pdb) {
         pdb->cursor(nullptr, &cursor, 0);
     }
-    memset(&key, 0, sizeof(key));
-    memset(&value, 0, sizeof(value));
     key.set_flags(DB_DBT_USERMEM);
     value.set_flags(DB_DBT_USERMEM);
 }
@@ -148,6 +146,7 @@ bool CBDBTransaction::Erase(const CDBKey &key)
 
 std::unique_ptr<CDBIterator> CBDBTransaction::NewIterator(const CDBKey &prefix)
 {
+    (void)prefix;
     return std::unique_ptr<CDBIterator>(new CBDBIterator(pdb));
 }
 
@@ -184,6 +183,7 @@ CBDBDatabase::~CBDBDatabase()
 
 bool CBDBDatabase::Open(const std::string &path, bool fCreate)
 {
+    (void)fCreate;
     if (fInit) return true;
     strPath = path;
     dbenv.set_lg_bsize(1048576);

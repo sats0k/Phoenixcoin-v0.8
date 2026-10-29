@@ -7,6 +7,7 @@
 
 #include "db_kv.h"
 #include "lmdbdb.h"
+
 #include <lmdb.h>
 
 class CLMDBIterator : public CDBIterator
@@ -47,14 +48,14 @@ public:
 
 class CLMDBDatabase : public CKeyValueDB
 {
-public:
-    MDB_env *env;
+    CLMDBEnv env;
     MDB_dbi dbi;
     std::string strPath;
     bool fInit;
 
+public:
     CLMDBDatabase();
-    ~CLMDBDatabase();
+    ~CLMDBDatabase() override;
     bool Open(const std::string &strPath, bool fCreate = true) override;
     void Close() override;
     std::unique_ptr<CDBTransaction> BeginTransaction(bool fReadOnly = false) override;

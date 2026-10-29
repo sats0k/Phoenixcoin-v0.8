@@ -1,45 +1,48 @@
 // Copyright (c) 2026 The Phoenixcoin developers
-#include "sync.h"
 // Distributed under the MIT/X11 software licence, see the accompanying
 // file LICENCE or http://opensource.org/license/mit
 
 #ifndef LMDBDB_H
 #define LMDBDB_H
 
-#include <string>
 #include <map>
-#include <vector>
-#include <utility>
+#include <string>
+
 #include <lmdb.h>
 
-#include "serialize.h"
-#include "uint256.h"
-
+/**
+ * Thin RAII wrapper around an LMDB environment.
+ *
+ * A CLMDBEnv owns one MDB_env and caches the named sub-databases opened in it.
+ * The CDB-style key/value adapters use this class instead of managing MDB_env
+ * themselves, so there is only one place that knows about environment setup
+ * and shutdown.
+ */
 class CLMDBEnv
 {
 public:
+    CLMDBEnv();
+    ~CLMDBEnv();
+
+    CLMDBEnv(const CLMDBEnv&) = delete;
+    CLMDBEnv& operator=(const CLMDBEnv&) = delete;
+
+    bool Open(const std::string &path, bool fCreate = true);
+    void Close();
+
+    bool IsOpen() const { return env != nullptr; }
+    MDB_env *GetEnv() const { return env; }
+
+    /**
+     * Open (and cache) a named sub-database.  When fCreate is false the
+     * sub-database must already exist.
+     */
+    bool OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate = true);
+
+private:
     MDB_env *env;
     std::string strPath;
     std::map<std::string, MDB_dbi> mapDbis;
-    CCriticalSection cs_db;
-
-    CLMDBEnv();
-    ~CLMDBEnv();
-    bool Open(const std::string &path);
-    void Close();
-    bool IsOpen() const { return env != nullptr; }
-};
-
-extern CLMDBEnv lmdbenv;
-
-class CLMDBTxn
-{
-public:
-    MDB_txn *txn;
-    CLMDBTxn(bool readOnly = false);
-    ~CLMDBTxn();
-    bool Commit();
-    void Abort();
 };
 
 #endif // LMDBDB_H
