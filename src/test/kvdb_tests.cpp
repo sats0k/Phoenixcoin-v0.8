@@ -445,6 +445,146 @@ void RunConcurrentWriters(const std::string &tag)
     BOOST_CHECK_EQUAL(std::stoi(std::string(value.begin(), value.end())), nThreads * nWrites);
 }
 
+template <typename DBType>
+void RunPrefixIteration(const std::string &tag)
+{
+    DBGuard<DBType> guard(tag);
+    CKeyValueDB &db = guard.db;
+
+    WriteValue(db, Key("ab"), Value("ab"));
+    WriteValue(db, Key("abc1"), Value("1"));
+    WriteValue(db, Key("abc2"), Value("2"));
+    WriteValue(db, Key("abd"), Value("abd"));
+    WriteValue(db, Key("b"), Value("b"));
+
+    // Prefix that ends in 0xff exercises the explicit upper-bound path.
+    const CDBKey lowPrefix{0xfe, 0xff};
+    WriteValue(db, lowPrefix, Value("low"));
+    WriteValue(db, CDBKey{0xfe, 0xff, 0x01}, Value("low1"));
+    WriteValue(db, CDBKey{0xfe, 0xff, 0x02}, Value("low2"));
+    WriteValue(db, CDBKey{0xff}, Value("high"));
+
+    // All-0xff prefix has no upper bound and exercises the DB_LAST path.
+    const CDBKey highPrefix{0xff};
+    WriteValue(db, CDBKey{0xff, 0x01}, Value("high1"));
+    WriteValue(db, CDBKey{0xff, 0x02}, Value("high2"));
+
+    std::unique_ptr<CDBTransaction> txn = BeginRead(db);
+    {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator(Key("abc"));
+        BOOST_REQUIRE_MESSAGE(it.get() != nullptr, "could not create prefixed iterator");
+
+        std::vector<CDBKey> keys;
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+            keys.push_back(it->Key());
+        BOOST_CHECK(keys == (std::vector<CDBKey>{Key("abc1"), Key("abc2")}));
+
+        it->SeekToLast();
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK(it->Key() == Key("abc2"));
+        BOOST_CHECK(it->Value() == Value("2"));
+
+        it->Prev();
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK(it->Key() == Key("abc1"));
+
+        // A seek below the prefix starts at the first matching key.
+        it->Seek(Key("ab"));
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK(it->Key() == Key("abc1"));
+
+        it->Seek(Key("abc2"));
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK(it->Key() == Key("abc2"));
+
+        // The next key after the prefix ends iteration.
+        it->Next();
+        BOOST_CHECK(!it->Valid());
+
+        it->Seek(Key("abcd"));
+        BOOST_CHECK(!it->Valid());
+    }
+
+    {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator(lowPrefix);
+        std::vector<CDBKey> keys;
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+            keys.push_back(it->Key());
+        const std::vector<CDBKey> expected{
+            lowPrefix,
+            CDBKey{0xfe, 0xff, 0x01},
+            CDBKey{0xfe, 0xff, 0x02},
+        };
+        BOOST_CHECK(keys == expected);
+
+        it->SeekToLast();
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK((it->Key() == CDBKey{0xfe, 0xff, 0x02}));
+    }
+
+    {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator(highPrefix);
+        it->SeekToLast();
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK((it->Key() == CDBKey{0xff, 0x02}));
+
+        std::vector<CDBKey> keys;
+        for (it->SeekToFirst(); it->Valid(); it->Next())
+            keys.push_back(it->Key());
+        const std::vector<CDBKey> expected{
+            CDBKey{0xff},
+            CDBKey{0xff, 0x01},
+            CDBKey{0xff, 0x02},
+        };
+        BOOST_CHECK(keys == expected);
+    }
+    BOOST_REQUIRE_MESSAGE(txn->Commit(), "read transaction commit failed");
+}
+
+void RunSharedEnvironment(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE_MESSAGE(env.Open(dir.string()), "could not open shared LMDB environment");
+
+        CLMDBDatabase chain;
+        CLMDBDatabase wallet;
+        BOOST_REQUIRE_MESSAGE(chain.Open(env, "chain", true),
+                              "could not open chain sub-database");
+        BOOST_REQUIRE_MESSAGE(wallet.Open(env, "wallet", true),
+                              "could not open wallet sub-database");
+
+        // Sub-databases are isolated even though they share one environment.
+        WriteValue(chain, Key("key"), Value("chain"));
+        WriteValue(wallet, Key("key"), Value("wallet"));
+
+        CDBValue value;
+        BOOST_REQUIRE(ReadValue(chain, Key("key"), value));
+        BOOST_CHECK(value == Value("chain"));
+        BOOST_REQUIRE(ReadValue(wallet, Key("key"), value));
+        BOOST_CHECK(value == Value("wallet"));
+
+        // Closing a database handle must leave the shared environment open.
+        chain.Close();
+        BOOST_CHECK(env.IsOpen());
+
+        CLMDBDatabase chainAgain;
+        BOOST_REQUIRE_MESSAGE(chainAgain.Open(env, "chain", false),
+                              "could not reopen shared chain sub-database");
+        BOOST_REQUIRE(ReadValue(chainAgain, Key("key"), value));
+        BOOST_CHECK(value == Value("chain"));
+
+        chainAgain.Close();
+        wallet.Close();
+        env.Close();
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -515,6 +655,21 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_readers)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_writers)
 {
     RunConcurrentWriters("lmdb_concurrent_writers");
+}
+
+BOOST_AUTO_TEST_CASE(bdb_kvdb_prefix_iteration)
+{
+    RunPrefixIteration<CBDBDatabase>("bdb_prefix");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_prefix_iteration)
+{
+    RunPrefixIteration<CLMDBDatabase>("lmdb_prefix");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_shared_environment)
+{
+    RunSharedEnvironment("lmdb_shared_env");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

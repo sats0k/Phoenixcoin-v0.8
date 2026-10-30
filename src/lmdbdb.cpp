@@ -8,7 +8,11 @@
 #include <filesystem>
 
 namespace {
+#if defined(__LP64__) || defined(_WIN64)
+constexpr size_t LMDB_DEFAULT_MAPSIZE = 4096ULL * 1024ULL * 1024ULL; // 4GB
+#else
 constexpr size_t LMDB_DEFAULT_MAPSIZE = 1024ULL * 1024ULL * 1024ULL; // 1GB
+#endif
 constexpr unsigned int LMDB_MAX_DBS = 64;
 }
 
@@ -21,10 +25,14 @@ CLMDBEnv::~CLMDBEnv()
     Close();
 }
 
-bool CLMDBEnv::Open(const std::string &path, bool fCreate)
+bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize)
 {
+    std::lock_guard<std::mutex> lock(mutexEnv);
     if (env)
         return strPath == path;
+
+    if (nMapSize == 0)
+        nMapSize = LMDB_DEFAULT_MAPSIZE;
 
     std::error_code ec;
     if (!std::filesystem::exists(path, ec)) {
@@ -49,7 +57,7 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate)
         return false;
     }
 
-    rc = mdb_env_set_mapsize(env, LMDB_DEFAULT_MAPSIZE);
+    rc = mdb_env_set_mapsize(env, nMapSize);
     if (rc != 0) {
         printf("mdb_env_set_mapsize failed: %s\n", mdb_strerror(rc));
         mdb_env_close(env);
@@ -77,6 +85,8 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate)
 
 void CLMDBEnv::Close()
 {
+    std::lock_guard<std::mutex> lock(mutexEnv);
+
     // DBI handles are invalidated when the environment is closed.
     mapDbis.clear();
     fWriterActive.store(false);
@@ -90,6 +100,8 @@ void CLMDBEnv::Close()
 
 bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)
 {
+    std::lock_guard<std::mutex> lock(mutexEnv);
+
     if (!env)
         return false;
 

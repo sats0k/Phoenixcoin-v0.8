@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <string>
 
 #include <lmdb.h>
@@ -28,11 +29,12 @@ public:
     CLMDBEnv(const CLMDBEnv&) = delete;
     CLMDBEnv& operator=(const CLMDBEnv&) = delete;
 
-    bool Open(const std::string &path, bool fCreate = true);
+    bool Open(const std::string &path, bool fCreate = true, size_t nMapSize = 0);
     void Close();
 
     bool IsOpen() const { return env != nullptr; }
     MDB_env *GetEnv() const { return env; }
+    const std::string &GetPath() const { return strPath; }
 
     /**
      * Open (and cache) a named sub-database.  When fCreate is false the
@@ -61,6 +63,7 @@ private:
     std::string strPath;
     std::map<std::string, MDB_dbi> mapDbis;
     std::atomic<bool> fWriterActive;
+    std::mutex mutexEnv;
 };
 
 #endif // LMDBDB_H

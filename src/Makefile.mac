@@ -62,6 +62,7 @@ LIBS += \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
     -ldb_cxx$(BDB_LIB_SUFFIX) \
+    -llmdb \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
 
@@ -109,6 +110,9 @@ OBJS = \
     obj/version.o \
     obj/wallet.o \
     obj/walletdb.o \
+    obj/lmdbdb.o \
+    obj/bdb_kv.o \
+    obj/lmdb_kv.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
     obj/hybrid_message.o \

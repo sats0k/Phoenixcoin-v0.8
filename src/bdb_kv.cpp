@@ -5,8 +5,35 @@
 #include "bdb_kv.h"
 #include "util.h"
 #include <algorithm>
+#include <cstring>
 
-CBDBIterator::CBDBIterator(Db *db) : pdb(db), cursor(nullptr), valid(false)
+namespace {
+
+bool KeyHasPrefix(const Dbt &key, const CDBKey &prefix)
+{
+    return prefix.size() <= key.get_size() &&
+           memcmp(key.get_data(), prefix.data(), prefix.size()) == 0;
+}
+
+// Computes the smallest key that sorts after every key beginning with prefix.
+// Returns false when no such key exists (the prefix is all 0xff).
+bool PrefixUpperBound(const CDBKey &prefix, CDBKey &upper)
+{
+    upper = prefix;
+    while (!upper.empty()) {
+        if (upper.back() != 0xff) {
+            ++upper.back();
+            return true;
+        }
+        upper.pop_back();
+    }
+    return false;
+}
+
+} // namespace
+
+CBDBIterator::CBDBIterator(Db *db, const CDBKey &keyPrefix)
+    : pdb(db), cursor(nullptr), prefix(keyPrefix), valid(false)
 {
     if (pdb) {
         pdb->cursor(nullptr, &cursor, 0);
@@ -28,35 +55,72 @@ bool CBDBIterator::Valid() const
     return valid && cursor != nullptr;
 }
 
+bool CBDBIterator::MatchesPrefix() const
+{
+    return prefix.empty() || KeyHasPrefix(key, prefix);
+}
+
 void CBDBIterator::SeekToFirst()
 {
     if (!cursor) return;
-    static unsigned char kbuf[1024], vbuf[4096];
+    static unsigned char kbuf[4096], vbuf[4096];
     key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
     value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-    int ret = cursor->get(&key, &value, DB_FIRST);
-    valid = (ret == 0);
+
+    if (prefix.empty()) {
+        int ret = cursor->get(&key, &value, DB_FIRST);
+        valid = (ret == 0);
+        return;
+    }
+
+    memcpy(kbuf, prefix.data(), prefix.size());
+    key.set_size(prefix.size());
+    int ret = cursor->get(&key, &value, DB_SET_RANGE);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CBDBIterator::SeekToLast()
 {
     if (!cursor) return;
-    static unsigned char kbuf[1024], vbuf[4096];
+    static unsigned char kbuf[4096], vbuf[4096];
     key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
     value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
+
+    CDBKey upper;
+    if (!prefix.empty() && PrefixUpperBound(prefix, upper)) {
+        memcpy(kbuf, upper.data(), upper.size());
+        key.set_size(upper.size());
+        int ret = cursor->get(&key, &value, DB_SET_RANGE);
+        if (ret == 0)
+            ret = cursor->get(&key, &value, DB_PREV);
+        else if (ret == DB_NOTFOUND)
+            ret = cursor->get(&key, &value, DB_LAST);
+        valid = (ret == 0) && MatchesPrefix();
+        return;
+    }
+
     int ret = cursor->get(&key, &value, DB_LAST);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CBDBIterator::Seek(const CDBKey &seekKey)
 {
     if (!cursor) return;
+
+    // Clamp a seek below the prefix to the prefix itself so a prefixed
+    // iterator starts at the first matching record.
+    const CDBKey *effective = &seekKey;
+    if (!prefix.empty() &&
+        std::lexicographical_compare(seekKey.begin(), seekKey.end(), prefix.begin(), prefix.end())) {
+        effective = &prefix;
+    }
+
     static unsigned char kbuf[4096], vbuf[4096];
-    memcpy(kbuf, seekKey.data(), seekKey.size());
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(seekKey.size());
+    memcpy(kbuf, effective->data(), effective->size());
+    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(effective->size());
     value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
     int ret = cursor->get(&key, &value, DB_SET_RANGE);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CBDBIterator::Next()
@@ -66,7 +130,7 @@ void CBDBIterator::Next()
     key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
     value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
     int ret = cursor->get(&key, &value, DB_NEXT);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CBDBIterator::Prev()
@@ -76,7 +140,7 @@ void CBDBIterator::Prev()
     key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
     value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
     int ret = cursor->get(&key, &value, DB_PREV);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 CDBKey CBDBIterator::Key() const
@@ -146,8 +210,7 @@ bool CBDBTransaction::Erase(const CDBKey &key)
 
 std::unique_ptr<CDBIterator> CBDBTransaction::NewIterator(const CDBKey &prefix)
 {
-    (void)prefix;
-    return std::unique_ptr<CDBIterator>(new CBDBIterator(pdb));
+    return std::unique_ptr<CDBIterator>(new CBDBIterator(pdb, prefix));
 }
 
 bool CBDBTransaction::Commit()

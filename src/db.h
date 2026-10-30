@@ -10,11 +10,13 @@
 
 #include <db_cxx.h>
 
+#include <memory>
 #include <utility>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "db_kv.h"
 #include "sync.h"
 #include "serialize.h"
 #include "bignum.h"
@@ -101,6 +103,25 @@ public:
 
 extern CDBEnv bitdb;
 
+enum DBBackend
+{
+    DB_BACKEND_BDB = 0,
+    DB_BACKEND_LMDB = 1,
+};
+
+/** Returns the chain index backend selected by -dbbackend (default: BDB). */
+DBBackend GetConfiguredDBBackend();
+
+/**
+ * Opens the LMDB chain index and, on first use, copies the raw records from an
+ * existing blkindex.dat.  The Berkeley DB file is left untouched.
+ */
+bool InitLMDBChainDB();
+void CloseLMDBChainDB();
+
+/** Begins a transaction on the active chain index backend (LMDB). */
+std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly);
+
 
 /** RAII class that provides access to a Berkeley database */
 class CDB
@@ -110,6 +131,16 @@ protected:
     std::string strFile;
     DbTxn *activeTxn;
     bool fReadOnly;
+
+    // When the LMDB chain backend is active this database delegates to it and
+    // pdb stays null.  Wallet and address databases always use Berkeley DB.
+    std::unique_ptr<CDBTransaction> kvTxn;
+    bool fUseKV;
+
+    bool ReadKV(const CDBKey& key, CDBValue& value);
+    bool WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite);
+    bool EraseKV(const CDBKey& key);
+    bool ExistsKV(const CDBKey& key);
 
     explicit CDB(const char* pszFile, const char* pszMode="r+");
     ~CDB() { Close(); }
@@ -123,6 +154,25 @@ protected:
     template<typename K, typename T>
     bool Read(const K& key, T& value)
     {
+        if (fUseKV)
+        {
+            CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+            ssKey << key;
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            CDBValue kvValue;
+            if (!ReadKV(kvKey, kvValue))
+                return false;
+            try {
+                CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+                if (!kvValue.empty())
+                    ssValue.write((const char*)kvValue.data(), kvValue.size());
+                ssValue >> value;
+                return true;
+            } catch (const std::exception&) {
+                return false;
+            }
+        }
+
         if (!pdb)
             return false;
 
@@ -158,7 +208,7 @@ protected:
     template<typename K, typename T>
     bool Write(const K& key, const T& value, bool fOverwrite=true)
     {
-        if (!pdb)
+        if (!fUseKV && !pdb)
             return false;
         if (fReadOnly)
             assert(!"Write called on database in read-only mode");
@@ -167,12 +217,20 @@ protected:
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
         ssKey << key;
-        Dbt datKey(&ssKey[0], ssKey.size());
 
         // Value
         CDataStream ssValue(SER_DISK, CLIENT_VERSION);
         ssValue.reserve(10000);
         ssValue << value;
+
+        if (fUseKV)
+        {
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            const CDBValue kvValue(ssValue.begin(), ssValue.end());
+            return WriteKV(kvKey, kvValue, fOverwrite);
+        }
+
+        Dbt datKey(&ssKey[0], ssKey.size());
         Dbt datValue(&ssValue[0], ssValue.size());
 
         // Write
@@ -187,7 +245,7 @@ protected:
     template<typename K>
     bool Erase(const K& key)
     {
-        if (!pdb)
+        if (!fUseKV && !pdb)
             return false;
         if (fReadOnly)
             assert(!"Erase called on database in read-only mode");
@@ -196,6 +254,13 @@ protected:
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
         ssKey << key;
+
+        if (fUseKV)
+        {
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            return EraseKV(kvKey);
+        }
+
         Dbt datKey(&ssKey[0], ssKey.size());
 
         // Erase
@@ -209,6 +274,14 @@ protected:
     template<typename K>
     bool Exists(const K& key)
     {
+        if (fUseKV)
+        {
+            CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+            ssKey << key;
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            return ExistsKV(kvKey);
+        }
+
         if (!pdb)
             return false;
 
@@ -279,6 +352,14 @@ protected:
 public:
     bool TxnBegin()
     {
+        if (fUseKV)
+        {
+            if (kvTxn)
+                return false;
+            kvTxn = BeginChainTransaction(false);
+            return kvTxn.get() != nullptr;
+        }
+
         if (!pdb || activeTxn)
             return false;
         DbTxn* ptxn = bitdb.TxnBegin();
@@ -290,6 +371,15 @@ public:
 
     bool TxnCommit()
     {
+        if (fUseKV)
+        {
+            if (!kvTxn)
+                return false;
+            bool fSuccess = kvTxn->Commit();
+            kvTxn.reset();
+            return fSuccess;
+        }
+
         if (!pdb || !activeTxn)
             return false;
         int ret = activeTxn->commit(0);
@@ -299,6 +389,15 @@ public:
 
     bool TxnAbort()
     {
+        if (fUseKV)
+        {
+            if (!kvTxn)
+                return false;
+            kvTxn->Abort();
+            kvTxn.reset();
+            return true;
+        }
+
         if (!pdb || !activeTxn)
             return false;
         int ret = activeTxn->abort();
@@ -351,6 +450,9 @@ public:
     bool WriteBestInvalidWork(CBigNum bnBestInvalidWork);
     bool LoadBlockIndex();
 
+    /** Copies raw blkindex.dat records into an empty LMDB chain index. */
+    static bool MigrateToLMDB();
+
     /* Calls related to sync checkpoints */
     bool ReadSyncCheckpoint(uint256 &hashCheckpoint);
     bool WriteSyncCheckpoint(uint256 hashCheckpoint);
@@ -358,6 +460,7 @@ public:
     bool WriteCheckpointPubKey(const std::string &strPubKey);
 private:
     bool LoadBlockIndexGuts();
+    bool LoadBlockIndexGutsKV();
 };
 
 

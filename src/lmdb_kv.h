@@ -14,9 +14,12 @@ class CLMDBIterator : public CDBIterator
 {
     MDB_cursor *cursor;
     MDB_val key, value;
+    CDBKey prefix;
     bool valid;
+
+    bool MatchesPrefix() const;
 public:
-    CLMDBIterator(MDB_txn *txn, MDB_dbi dbi);
+    CLMDBIterator(MDB_txn *txn, MDB_dbi dbi, const CDBKey &prefix = CDBKey());
     ~CLMDBIterator();
     bool Valid() const override;
     void SeekToFirst() override;
@@ -51,15 +54,20 @@ public:
 
 class CLMDBDatabase : public CKeyValueDB
 {
-    CLMDBEnv env;
+    CLMDBEnv ownedEnv;
+    CLMDBEnv *env;
     MDB_dbi dbi;
     std::string strPath;
+    std::string strSubDb;
+    bool fOwnsEnv;
     bool fInit;
 
 public:
     CLMDBDatabase();
     ~CLMDBDatabase() override;
     bool Open(const std::string &strPath, bool fCreate = true) override;
+    /** Open a sub-database in a caller-owned, shared environment. */
+    bool Open(CLMDBEnv &sharedEnv, const std::string &strSubDb, bool fCreate = true);
     void Close() override;
     std::unique_ptr<CDBTransaction> BeginTransaction(bool fReadOnly = false) override;
 };

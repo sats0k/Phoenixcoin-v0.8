@@ -5,7 +5,36 @@
 #include "lmdb_kv.h"
 #include "util.h"
 
-CLMDBIterator::CLMDBIterator(MDB_txn *txn, MDB_dbi d) : cursor(nullptr), valid(false)
+#include <algorithm>
+#include <cstring>
+
+namespace {
+
+bool KeyHasPrefix(const MDB_val &key, const CDBKey &prefix)
+{
+    return prefix.size() <= key.mv_size &&
+           memcmp(key.mv_data, prefix.data(), prefix.size()) == 0;
+}
+
+// Computes the smallest key that sorts after every key beginning with prefix.
+// Returns false when no such key exists (the prefix is all 0xff).
+bool PrefixUpperBound(const CDBKey &prefix, CDBKey &upper)
+{
+    upper = prefix;
+    while (!upper.empty()) {
+        if (upper.back() != 0xff) {
+            ++upper.back();
+            return true;
+        }
+        upper.pop_back();
+    }
+    return false;
+}
+
+} // namespace
+
+CLMDBIterator::CLMDBIterator(MDB_txn *txn, MDB_dbi d, const CDBKey &keyPrefix)
+    : cursor(nullptr), prefix(keyPrefix), valid(false)
 {
     if (txn && mdb_cursor_open(txn, d, &cursor) != 0) {
         cursor = nullptr;
@@ -25,41 +54,77 @@ bool CLMDBIterator::Valid() const
     return valid && cursor != nullptr;
 }
 
+bool CLMDBIterator::MatchesPrefix() const
+{
+    return prefix.empty() || KeyHasPrefix(key, prefix);
+}
+
 void CLMDBIterator::SeekToFirst()
 {
     if (!cursor) return;
-    int ret = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
-    valid = (ret == 0);
+
+    if (prefix.empty()) {
+        valid = (mdb_cursor_get(cursor, &key, &value, MDB_FIRST) == 0);
+        return;
+    }
+
+    key.mv_size = prefix.size();
+    key.mv_data = (void*)prefix.data();
+    int ret = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CLMDBIterator::SeekToLast()
 {
     if (!cursor) return;
+
+    CDBKey upper;
+    if (!prefix.empty() && PrefixUpperBound(prefix, upper)) {
+        key.mv_size = upper.size();
+        key.mv_data = (void*)upper.data();
+        int ret = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+        if (ret == 0)
+            ret = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+        else if (ret == MDB_NOTFOUND)
+            ret = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+        valid = (ret == 0) && MatchesPrefix();
+        return;
+    }
+
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CLMDBIterator::Seek(const CDBKey &seekKey)
 {
     if (!cursor) return;
-    key.mv_size = seekKey.size();
-    key.mv_data = (void*)seekKey.data();
+
+    // Clamp a seek below the prefix to the prefix itself so a prefixed
+    // iterator starts at the first matching record.
+    const CDBKey *effective = &seekKey;
+    if (!prefix.empty() &&
+        std::lexicographical_compare(seekKey.begin(), seekKey.end(), prefix.begin(), prefix.end())) {
+        effective = &prefix;
+    }
+
+    key.mv_size = effective->size();
+    key.mv_data = (void*)effective->data();
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CLMDBIterator::Next()
 {
     if (!cursor || !valid) return;
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 void CLMDBIterator::Prev()
 {
     if (!cursor || !valid) return;
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
-    valid = (ret == 0);
+    valid = (ret == 0) && MatchesPrefix();
 }
 
 CDBKey CLMDBIterator::Key() const
@@ -142,8 +207,7 @@ bool CLMDBTransaction::Erase(const CDBKey &key)
 
 std::unique_ptr<CDBIterator> CLMDBTransaction::NewIterator(const CDBKey &prefix)
 {
-    (void)prefix;
-    return std::unique_ptr<CDBIterator>(new CLMDBIterator(txn, dbi));
+    return std::unique_ptr<CDBIterator>(new CLMDBIterator(txn, dbi, prefix));
 }
 
 bool CLMDBTransaction::Commit()
@@ -168,7 +232,7 @@ void CLMDBTransaction::Abort()
     ReleaseWriter();
 }
 
-CLMDBDatabase::CLMDBDatabase() : dbi(0), fInit(false)
+CLMDBDatabase::CLMDBDatabase() : env(nullptr), dbi(0), fOwnsEnv(false), fInit(false)
 {
 }
 
@@ -181,10 +245,37 @@ bool CLMDBDatabase::Open(const std::string &path, bool fCreate)
 {
     if (fInit) return true;
     strPath = path;
-    if (!env.Open(path, fCreate)) return false;
-    if (!env.OpenDbi("main", dbi, fCreate)) {
-        env.Close();
+    strSubDb = "main";
+    env = &ownedEnv;
+    fOwnsEnv = true;
+    if (!env->Open(path, fCreate)) {
+        env = nullptr;
+        fOwnsEnv = false;
+        return false;
+    }
+    if (!env->OpenDbi(strSubDb, dbi, fCreate)) {
+        env->Close();
         dbi = 0;
+        env = nullptr;
+        fOwnsEnv = false;
+        return false;
+    }
+    fInit = true;
+    return true;
+}
+
+bool CLMDBDatabase::Open(CLMDBEnv &sharedEnv, const std::string &subDb, bool fCreate)
+{
+    if (fInit) return true;
+    if (!sharedEnv.IsOpen())
+        return false;
+    strPath = sharedEnv.GetPath();
+    strSubDb = subDb;
+    env = &sharedEnv;
+    fOwnsEnv = false;
+    if (!env->OpenDbi(strSubDb, dbi, fCreate)) {
+        dbi = 0;
+        env = nullptr;
         return false;
     }
     fInit = true;
@@ -193,29 +284,35 @@ bool CLMDBDatabase::Open(const std::string &path, bool fCreate)
 
 void CLMDBDatabase::Close()
 {
-    if (fInit) {
-        env.Close();
-        dbi = 0;
-        fInit = false;
-    }
+    if (!fInit) return;
+
+    // Shared environments outlive individual database handles; only the
+    // owning adapter is allowed to shut the environment down.
+    if (fOwnsEnv && env)
+        env->Close();
+
+    dbi = 0;
+    env = nullptr;
+    fOwnsEnv = false;
+    fInit = false;
 }
 
 std::unique_ptr<CDBTransaction> CLMDBDatabase::BeginTransaction(bool fReadOnly)
 {
-    if (!fInit) return nullptr;
+    if (!fInit || !env) return nullptr;
 
     CLMDBEnv *writerEnv = nullptr;
     if (!fReadOnly) {
         // LMDB has a single writer per environment.  Fail fast instead of
         // blocking; the caller is expected to retry.
-        if (!env.TryAcquireWriter())
+        if (!env->TryAcquireWriter())
             return nullptr;
-        writerEnv = &env;
+        writerEnv = env;
     }
 
     MDB_txn *txn = nullptr;
     unsigned int flags = fReadOnly ? MDB_RDONLY : 0;
-    int rc = mdb_txn_begin(env.GetEnv(), nullptr, flags, &txn);
+    int rc = mdb_txn_begin(env->GetEnv(), nullptr, flags, &txn);
     if (rc != 0) {
         if (writerEnv)
             writerEnv->ReleaseWriter();

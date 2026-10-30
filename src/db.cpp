@@ -18,6 +18,9 @@
 #include "main.h"
 #include "checkpoints.h" /* for hashSyncCheckpoint */
 #include "db.h"
+#include "lmdb_kv.h"
+
+#include <cctype>
 
 using namespace std;
 using namespace boost;
@@ -32,6 +35,49 @@ unsigned int nWalletDBUpdated;
 //
 
 CDBEnv bitdb;
+
+namespace {
+
+CLMDBEnv g_lmdbChainEnv;
+CLMDBDatabase g_lmdbChainDb;
+bool g_fLMDBChainEnabled = false;
+
+#if defined(__LP64__) || defined(_WIN64)
+constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 4096;
+#else
+constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 1024;
+#endif
+
+} // namespace
+
+DBBackend GetConfiguredDBBackend()
+{
+    std::string strBackend = GetArg("-dbbackend", "bdb");
+    std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
+}
+
+std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly)
+{
+    if (!g_fLMDBChainEnabled)
+        return nullptr;
+
+    if (fReadOnly)
+        return g_lmdbChainDb.BeginTransaction(true);
+
+    // The environment allows a single writer.  Other writers may be busy for a
+    // short time, so wait for the slot rather than failing a block write.
+    for (int i = 0; i < 60000; ++i) {
+        std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(false);
+        if (txn)
+            return txn;
+        if (fShutdown)
+            break;
+        Sleep(1);
+    }
+    return nullptr;
+}
 
 void CDBEnv::EnvShutdown()
 {
@@ -216,8 +262,10 @@ void CDBEnv::CheckpointLSN(std::string strFile)
 }
 
 
+static bool IsChainFile(std::string strFile);
+
 CDB::CDB(const char *pszFile, const char* pszMode) :
-    pdb(nullptr), activeTxn(nullptr)
+    pdb(nullptr), activeTxn(nullptr), fUseKV(false)
 {
     int ret;
     if (pszFile == nullptr)
@@ -225,6 +273,26 @@ CDB::CDB(const char *pszFile, const char* pszMode) :
 
     fReadOnly = (!strchr(pszMode, '+') && !strchr(pszMode, 'w'));
     bool fCreate = strchr(pszMode, 'c');
+
+    // The chain index can live in LMDB; wallet and address databases always
+    // stay on Berkeley DB.
+    if (IsChainFile(pszFile) && g_fLMDBChainEnabled)
+    {
+        strFile = pszFile;
+        fUseKV = true;
+
+        // Match the Berkeley DB constructor: a newly created chain database
+        // records the client version before it is used.
+        if (fCreate && !Exists(string("version")))
+        {
+            bool fTmp = fReadOnly;
+            fReadOnly = false;
+            WriteVersion(CLIENT_VERSION);
+            fReadOnly = fTmp;
+        }
+        return;
+    }
+
     unsigned int nFlags = DB_THREAD;
     if (fCreate)
         nFlags |= DB_CREATE;
@@ -289,6 +357,17 @@ static bool IsChainFile(std::string strFile)
 
 void CDB::Close()
 {
+    if (fUseKV)
+    {
+        if (kvTxn)
+        {
+            kvTxn->Abort();
+            kvTxn.reset();
+        }
+        fUseKV = false;
+        return;
+    }
+
     if (!pdb)
         return;
     if (activeTxn)
@@ -311,6 +390,198 @@ void CDB::Close()
         LOCK(bitdb.cs_db);
         --bitdb.mapFileUseCount[strFile];
     }
+}
+
+bool CDB::ReadKV(const CDBKey& key, CDBValue& value)
+{
+    if (kvTxn)
+        return kvTxn->Read(key, value);
+
+    std::unique_ptr<CDBTransaction> txn = BeginChainTransaction(true);
+    if (!txn)
+        return false;
+    bool fFound = txn->Read(key, value);
+    txn->Commit();
+    return fFound;
+}
+
+bool CDB::WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite)
+{
+    if (kvTxn)
+        return kvTxn->Write(key, value, fOverwrite);
+
+    // Outside an explicit transaction, commit every write so readers see it.
+    std::unique_ptr<CDBTransaction> txn = BeginChainTransaction(false);
+    if (!txn)
+        return false;
+    bool fWritten = txn->Write(key, value, fOverwrite);
+    bool fCommitted = txn->Commit();
+    return fWritten && fCommitted;
+}
+
+bool CDB::EraseKV(const CDBKey& key)
+{
+    if (kvTxn)
+        return kvTxn->Erase(key);
+
+    std::unique_ptr<CDBTransaction> txn = BeginChainTransaction(false);
+    if (!txn)
+        return false;
+    bool fErased = txn->Erase(key);
+    bool fCommitted = txn->Commit();
+    return fErased && fCommitted;
+}
+
+bool CDB::ExistsKV(const CDBKey& key)
+{
+    if (kvTxn)
+    {
+        CDBValue value;
+        return kvTxn->Read(key, value);
+    }
+
+    std::unique_ptr<CDBTransaction> txn = BeginChainTransaction(true);
+    if (!txn)
+        return false;
+    CDBValue value;
+    bool fFound = txn->Read(key, value);
+    txn->Commit();
+    return fFound;
+}
+
+namespace {
+
+bool IsChainLMDBEmpty(bool& fEmpty)
+{
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(true);
+    if (!txn)
+        return false;
+    std::unique_ptr<CDBIterator> it = txn->NewIterator();
+    it->SeekToFirst();
+    fEmpty = !it->Valid();
+    it.reset();
+    return txn->Commit();
+}
+
+} // namespace
+
+// Copies the raw key/value pairs from blkindex.dat into an empty LMDB chain
+// index.  The Berkeley DB file is kept as-is so switching back is lossless.
+bool CTxDB::MigrateToLMDB()
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(GetDataDir() / "blkindex.dat"))
+        return true;
+
+    bool fEmpty = false;
+    if (!IsChainLMDBEmpty(fEmpty))
+        return error("MigrateToLMDB(): cannot inspect LMDB chain index");
+    if (!fEmpty)
+        return true; // already migrated
+
+    printf("Migrating chain index from blkindex.dat to LMDB...\n");
+
+    CTxDB db("r");
+    Dbc* pcursor = db.GetCursor();
+    if (!pcursor)
+        return error("MigrateToLMDB(): cannot open blkindex.dat cursor");
+
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(false);
+    if (!txn)
+    {
+        pcursor->close();
+        return error("MigrateToLMDB(): cannot begin LMDB write transaction");
+    }
+
+    size_t nRecords = 0;
+    bool fSuccess = true;
+    while (true)
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        int ret = db.ReadAtCursor(pcursor, ssKey, ssValue, DB_NEXT);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0)
+        {
+            fSuccess = false;
+            break;
+        }
+
+        const CDBKey key(ssKey.begin(), ssKey.end());
+        const CDBValue value(ssValue.begin(), ssValue.end());
+        if (!txn->Write(key, value, true))
+        {
+            fSuccess = false;
+            break;
+        }
+        ++nRecords;
+    }
+    pcursor->close();
+
+    if (!fSuccess)
+    {
+        txn->Abort();
+        return error("MigrateToLMDB(): failed to copy blkindex.dat");
+    }
+    if (!txn->Commit())
+        return error("MigrateToLMDB(): failed to commit LMDB chain index");
+
+    printf("Chain index migration complete (%" PRIszu " records)\n", nRecords);
+    db.Close();
+    bitdb.CloseDb("blkindex.dat");
+    return true;
+}
+
+bool InitLMDBChainDB()
+{
+    if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
+        return true;
+
+    // Tests run with a mocked Berkeley environment and must not touch the
+    // configured data directory.
+    if (bitdb.IsMock())
+        return true;
+
+    if (!bitdb.Open(GetDataDir()))
+        return error("InitLMDBChainDB(): failed to open database environment");
+
+    const std::filesystem::path pathChain = GetDataDir() / "blkindex";
+    int64 nMapSizeMiB = GetArg("-lmdbmapsize", LMDB_DEFAULT_MAPSIZE_MIB);
+    if (nMapSizeMiB <= 0)
+        nMapSizeMiB = LMDB_DEFAULT_MAPSIZE_MIB;
+    const size_t nMapSize = static_cast<size_t>(nMapSizeMiB) * 1024ULL * 1024ULL;
+
+    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize))
+        return error("InitLMDBChainDB(): failed to open LMDB environment %s",
+                     pathChain.string().c_str());
+
+    if (!g_lmdbChainDb.Open(g_lmdbChainEnv, "main", true))
+    {
+        g_lmdbChainEnv.Close();
+        return error("InitLMDBChainDB(): failed to open chain database");
+    }
+
+    if (!CTxDB::MigrateToLMDB())
+    {
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return false;
+    }
+
+    g_fLMDBChainEnabled = true;
+    printf("Chain index database: LMDB (%s)\n", pathChain.string().c_str());
+    return true;
+}
+
+void CloseLMDBChainDB()
+{
+    if (!g_fLMDBChainEnabled)
+        return;
+    g_fLMDBChainEnabled = false;
+    g_lmdbChainDb.Close();
+    g_lmdbChainEnv.Close();
 }
 
 void CDBEnv::CloseDb(const string& strFile)
@@ -791,8 +1062,70 @@ bool CTxDB::LoadBlockIndex()
 
 
 
+namespace {
+
+enum BlockIndexLoadResult
+{
+    BLOCK_INDEX_RECORD,
+    BLOCK_INDEX_END,
+    BLOCK_INDEX_ERROR,
+};
+
+BlockIndexLoadResult LoadBlockIndexRecord(CDataStream& ssKey, CDataStream& ssValue)
+{
+    try {
+        // The key layout for every index record is the varint length of the
+        // string prefix followed by the type string itself and then the 32-byte
+        // block hash, i.e. make_pair(string, uint256).  We compare the prefix
+        // bytes directly instead of constructing a std::string each record,
+        // and we reuse the hash already present in the key rather than
+        // recomputing the SHA256d header hash via CDiskBlockIndex::GetBlockHash().
+        uint64 nSize = ReadCompactSize(ssKey);
+        if (nSize != 10 || ssKey.size() < 10 + 32)
+            return BLOCK_INDEX_END; // finished loading block index
+        if (memcmp(&ssKey[0], "blockindex", 10) != 0)
+            return BLOCK_INDEX_END;
+        ssKey.ignore(10);
+        uint256 hashBlock;
+        ssKey >> hashBlock;
+
+        if (fRequestShutdown)
+            return BLOCK_INDEX_END; // if shutdown was requested while loading
+
+        CDiskBlockIndex diskindex;
+        ssValue >> diskindex;
+
+        // Construct block index object
+        CBlockIndex* pindexNew = InsertBlockIndex(hashBlock);
+        pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
+        pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
+        pindexNew->nFile          = diskindex.nFile;
+        pindexNew->nBlockPos      = diskindex.nBlockPos;
+        pindexNew->nHeight        = diskindex.nHeight;
+        pindexNew->nVersion       = diskindex.nVersion;
+        pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
+        pindexNew->nTime          = diskindex.nTime;
+        pindexNew->nBits          = diskindex.nBits;
+        pindexNew->nNonce         = diskindex.nNonce;
+
+        // Watch for genesis block
+        if (pindexGenesisBlock == nullptr && hashBlock == hashGenesisBlock)
+            pindexGenesisBlock = pindexNew;
+
+        return BLOCK_INDEX_RECORD;
+    }
+    catch (std::exception&) {
+        return BLOCK_INDEX_ERROR;
+    }
+}
+
+} // namespace
+
 bool CTxDB::LoadBlockIndexGuts()
 {
+    if (fUseKV)
+        return LoadBlockIndexGutsKV();
+
     // Get database cursor
     Dbc* pcursor = GetCursor();
     if (!pcursor)
@@ -811,58 +1144,66 @@ bool CTxDB::LoadBlockIndexGuts()
         if (ret == DB_NOTFOUND)
             break;
         else if (ret != 0)
-            return false;
-
-        // Unserialize
-
-        try {
-        // The key layout for every index record is the varint length of the
-        // string prefix followed by the type string itself and then the 32-byte
-        // block hash, i.e. make_pair(string, uint256).  We compare the prefix
-        // bytes directly instead of constructing a std::string each record,
-        // and we reuse the hash already present in the key rather than
-        // recomputing the SHA256d header hash via CDiskBlockIndex::GetBlockHash().
-        uint64 nSize = ReadCompactSize(ssKey);
-        if (nSize != 10 || ssKey.size() < 10 + 32)
-            break; // finished loading block index
-        if (memcmp(&ssKey[0], "blockindex", 10) != 0)
-            break;
-        ssKey.ignore(10);
-        uint256 hashBlock;
-        ssKey >> hashBlock;
-
-        if (fRequestShutdown)
-            break; // if shutdown was requested while loading
-
         {
-            CDiskBlockIndex diskindex;
-            ssValue >> diskindex;
-
-            // Construct block index object
-            CBlockIndex* pindexNew = InsertBlockIndex(hashBlock);
-            pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
-            pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
-            pindexNew->nFile          = diskindex.nFile;
-            pindexNew->nBlockPos      = diskindex.nBlockPos;
-            pindexNew->nHeight        = diskindex.nHeight;
-            pindexNew->nVersion       = diskindex.nVersion;
-            pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-            pindexNew->nTime          = diskindex.nTime;
-            pindexNew->nBits          = diskindex.nBits;
-            pindexNew->nNonce         = diskindex.nNonce;
-
-            // Watch for genesis block
-            if (pindexGenesisBlock == nullptr && hashBlock == hashGenesisBlock)
-                pindexGenesisBlock = pindexNew;
+            pcursor->close();
+            return false;
         }
-        }    // try
-        catch (std::exception &e) {
+
+        BlockIndexLoadResult result = LoadBlockIndexRecord(ssKey, ssValue);
+        if (result == BLOCK_INDEX_END)
+            break;
+        if (result == BLOCK_INDEX_ERROR)
+        {
+            pcursor->close();
             return error("%s() : deserialize error", __PRETTY_FUNCTION__);
         }
     }
     pcursor->close();
 
     return true;
+}
+
+bool CTxDB::LoadBlockIndexGutsKV()
+{
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(true);
+    if (!txn)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("blockindex");
+    const CDBKey prefix(ssPrefix.begin(), ssPrefix.end());
+
+    std::unique_ptr<CDBIterator> it = txn->NewIterator(prefix);
+    if (!it)
+    {
+        txn->Abort();
+        return false;
+    }
+
+    for (it->SeekToFirst(); it->Valid(); it->Next())
+    {
+        const CDBKey key = it->Key();
+        const CDBValue value = it->Value();
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        if (!key.empty())
+            ssKey.write((const char*)key.data(), key.size());
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        if (!value.empty())
+            ssValue.write((const char*)value.data(), value.size());
+
+        BlockIndexLoadResult result = LoadBlockIndexRecord(ssKey, ssValue);
+        if (result == BLOCK_INDEX_END)
+            break;
+        if (result == BLOCK_INDEX_ERROR)
+        {
+            it.reset();
+            txn->Abort();
+            return error("%s() : deserialize error", __PRETTY_FUNCTION__);
+        }
+    }
+    it.reset();
+
+    return txn->Commit();
 }
 
 

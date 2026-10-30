@@ -7,6 +7,9 @@
 #include <vector>
 #include <set>
 
+#include <algorithm>
+#include <cctype>
+
 #ifndef WINDOWS
 #include <signal.h>
 #endif
@@ -89,6 +92,7 @@ void Shutdown(void */*parg*/) {
         nTransactionsUpdated++;
         bitdb.Flush(false);
         StopNode();
+        CloseLMDBChainDB();
         bitdb.Flush(true);
         std::filesystem::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
@@ -265,6 +269,8 @@ std::string HelpMessage()
 #endif
 #endif
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
+        "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
+        "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI
         "  -server                " + _("Accept command line and JSON-RPC commands") + "\n" +
@@ -379,6 +385,16 @@ bool AppInit2()
     if(strCpMode == "strict") CheckpointsMode = Checkpoints::STRICT;
     if(strCpMode == "advisory") CheckpointsMode = Checkpoints::ADVISORY;
     if(strCpMode == "permissive") CheckpointsMode = Checkpoints::PERMISSIVE;
+
+    std::string strDBBackend = GetArg("-dbbackend", "bdb");
+    std::transform(strDBBackend.begin(), strDBBackend.end(), strDBBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (strDBBackend != "bdb" && strDBBackend != "lmdb")
+        return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'bdb' or 'lmdb'"),
+                                   strDBBackend.c_str()));
+
+    if (mapArgs.count("-lmdbmapsize") && GetArg("-lmdbmapsize", 0) <= 0)
+        return InitError(_("-lmdbmapsize must be a positive number of MiB"));
 
     if (mapArgs.count("-bind")) {
         // when specifying an explicit binding address, you want to listen on it
@@ -688,6 +704,9 @@ bool AppInit2()
                                  " everything from it except for wallet.dat."), strDataDir.c_str());
         return InitError(msg);
     }
+
+    if (!InitLMDBChainDB())
+        return InitError(_("Error initializing LMDB chain database"));
 
     if (GetBoolArg("-loadblockindextest"))
     {

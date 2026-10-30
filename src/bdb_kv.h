@@ -14,9 +14,12 @@ class CBDBIterator : public CDBIterator
     Db *pdb;
     Dbc *cursor;
     Dbt key, value;
+    CDBKey prefix;
     bool valid;
+
+    bool MatchesPrefix() const;
 public:
-    CBDBIterator(Db *db);
+    CBDBIterator(Db *db, const CDBKey &prefix = CDBKey());
     ~CBDBIterator();
     bool Valid() const override;
     void SeekToFirst() override;
