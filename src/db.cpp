@@ -204,6 +204,15 @@ DBBackend GetConfiguredDBBackend()
     return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
 }
 
+ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB, bool fLMDBEmpty)
+{
+    if (!fLMDBEmpty)
+        return CHAIN_INDEX_USE_EXISTING;
+    if (fMarkerLMDB)
+        return CHAIN_INDEX_FAIL_MISSING;
+    return CHAIN_INDEX_MIGRATE_BDB;
+}
+
 int64 GetLMDBMaxMapSizeMiB()
 {
     return LMDB_MAX_MAPSIZE_MIB;
@@ -657,6 +666,15 @@ bool IsChainLMDBEmpty(bool& fEmpty)
     return txn->Commit();
 }
 
+bool MissingLMDBChainIndexError(const std::filesystem::path& pathChain)
+{
+    return error("The LMDB chain index at %s is missing or empty, but "
+                 "blkindex.backend marks LMDB as authoritative. Restore the "
+                 "chain index from a backup, or remove blkindex.backend to "
+                 "deliberately re-import blkindex.dat.",
+                 pathChain.string().c_str());
+}
+
 } // namespace
 
 // Copies the raw key/value pairs from blkindex.dat into an empty LMDB chain
@@ -741,10 +759,21 @@ bool InitLMDBChainDB()
     if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
         return true;
 
+    const std::filesystem::path pathChain = GetDataDir() / "blkindex";
+
+    std::string strMarker;
+    const bool fMarkerLMDB = ReadChainBackendMarker(GetDataDir(), strMarker) &&
+                             strMarker == "lmdb";
+
+    // Once the marker says LMDB is authoritative, an empty or missing LMDB
+    // index is data loss.  Never silently resurrect the migration-time BDB
+    // snapshot; a deliberate re-import requires removing the marker.
+    if (fMarkerLMDB && !HasLMDBChainIndex(GetDataDir()))
+        return MissingLMDBChainIndexError(pathChain);
+
     if (!bitdb.Open(GetDataDir()))
         return error("InitLMDBChainDB(): failed to open database environment");
 
-    const std::filesystem::path pathChain = GetDataDir() / "blkindex";
     const std::string strMapSize = mapArgs.count("-lmdbmapsize")
         ? mapArgs["-lmdbmapsize"]
         : std::to_string(LMDB_DEFAULT_MAPSIZE_MIB);
@@ -769,11 +798,32 @@ bool InitLMDBChainDB()
         return error("InitLMDBChainDB(): failed to open chain database");
     }
 
-    if (!CTxDB::MigrateToLMDB())
+    bool fLMDBEmpty = false;
+    if (!IsChainLMDBEmpty(fLMDBEmpty))
     {
         g_lmdbChainDb.Close();
         g_lmdbChainEnv.Close();
-        return false;
+        return error("InitLMDBChainDB(): cannot inspect LMDB chain index");
+    }
+
+    switch (GetChainIndexStartupAction(fMarkerLMDB, fLMDBEmpty))
+    {
+    case CHAIN_INDEX_FAIL_MISSING:
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return MissingLMDBChainIndexError(pathChain);
+
+    case CHAIN_INDEX_MIGRATE_BDB:
+        if (!CTxDB::MigrateToLMDB())
+        {
+            g_lmdbChainDb.Close();
+            g_lmdbChainEnv.Close();
+            return false;
+        }
+        break;
+
+    case CHAIN_INDEX_USE_EXISTING:
+        break;
     }
 
     if (!WriteChainBackendMarker(GetDataDir(), "lmdb"))

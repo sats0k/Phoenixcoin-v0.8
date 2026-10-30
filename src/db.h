@@ -109,6 +109,21 @@ enum DBBackend
     DB_BACKEND_LMDB = 1,
 };
 
+/** Startup action for the LMDB chain index once the environment is open. */
+enum ChainIndexStartupAction
+{
+    CHAIN_INDEX_USE_EXISTING,
+    CHAIN_INDEX_MIGRATE_BDB,
+    CHAIN_INDEX_FAIL_MISSING,
+};
+
+/**
+ * Decides what startup should do with the LMDB chain index.  A marker saying
+ * LMDB is authoritative forbids migration: an empty index means data loss, not
+ * an invitation to resurrect the old blkindex.dat snapshot.
+ */
+ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB, bool fLMDBEmpty);
+
 /** Returns the chain index backend selected by -dbbackend (default: BDB). */
 DBBackend GetConfiguredDBBackend();
 

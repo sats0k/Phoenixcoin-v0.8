@@ -26,7 +26,12 @@ containing `lmdb`.  This marker makes the data directory's backend explicit:
   silently loading the stale `blkindex.dat`;
 - a datadir that already contains a non-empty `blkindex/data.mdb` but no marker
   (created by an older development build) is treated as an LMDB datadir for the
-  same reason.
+  same reason;
+- a marker that says `lmdb` requires a non-empty LMDB index.  If `blkindex/` is
+  missing, empty, or removed, startup fails rather than silently re-importing
+  the migration-time `blkindex.dat` snapshot;
+- migration from `blkindex.dat` only runs when no marker exists (or the marker
+  is `bdb`).
 
 ## Returning to Berkeley DB
 
@@ -77,5 +82,10 @@ There is no `-reindex` mode in this codebase, and blocks are not replayed from
 the `blk0001.dat` files.  If the index is lost, remove the chain index
 (`blkindex/` and `blkindex.backend` for LMDB, or `blkindex.dat` for Berkeley DB)
 and the node creates a fresh index containing only the genesis block, then
-downloads the chain again.  Keeping `blkindex.dat` after removing the LMDB
-directory only re-imports the index as it was at migration time.
+downloads the chain again.
+
+If the marker says `lmdb` but the LMDB index is missing or empty, restore
+`blkindex/` from a backup.  To deliberately fall back to the migration-time
+snapshot, remove only `blkindex.backend`; the next LMDB start will then import
+`blkindex.dat` again.  That snapshot does not contain blocks or UTXO changes
+made after the original migration, so prefer a backup when one exists.

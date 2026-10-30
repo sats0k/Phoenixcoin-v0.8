@@ -741,6 +741,14 @@ void RunNoSyncCrashConsistency(const std::string &tag)
 }
 #endif
 
+void RunChainIndexStartupAction(const std::string & /*tag*/)
+{
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, false), CHAIN_INDEX_USE_EXISTING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, false), CHAIN_INDEX_USE_EXISTING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, true), CHAIN_INDEX_MIGRATE_BDB);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, true), CHAIN_INDEX_FAIL_MISSING);
+}
+
 void RunLMDBMapSizeParsing(const std::string &tag)
 {
     size_t nBytes = 0;
@@ -924,6 +932,11 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_map_size_adjust)
 BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)
 {
     RunLMDBMapSizeParsing("lmdb_mapsize_parse");
+}
+
+BOOST_AUTO_TEST_CASE(chain_index_startup_action)
+{
+    RunChainIndexStartupAction("chain_index_startup_action");
 }
 
 #ifndef WINDOWS
