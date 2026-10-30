@@ -741,6 +741,36 @@ void RunNoSyncCrashConsistency(const std::string &tag)
 }
 #endif
 
+void RunLMDBMapSizeParsing(const std::string &tag)
+{
+    size_t nBytes = 0;
+    std::string strError;
+
+    BOOST_REQUIRE(ParseLMDBMapSize("1", nBytes, strError));
+    BOOST_CHECK_EQUAL(nBytes, static_cast<size_t>(1024ULL * 1024ULL));
+
+    BOOST_REQUIRE(ParseLMDBMapSize(std::to_string(GetLMDBMaxMapSizeMiB()), nBytes, strError));
+    BOOST_CHECK(nBytes > 0);
+
+    BOOST_CHECK(!ParseLMDBMapSize("0", nBytes, strError));
+    BOOST_CHECK(!ParseLMDBMapSize("-1", nBytes, strError));
+    BOOST_CHECK(!ParseLMDBMapSize("", nBytes, strError));
+    BOOST_CHECK(!ParseLMDBMapSize("abc", nBytes, strError));
+    BOOST_CHECK(!ParseLMDBMapSize("1024MiB", nBytes, strError));
+    BOOST_CHECK(!ParseLMDBMapSize("999999999999999999999999", nBytes, strError));
+
+    const std::string strTooLarge = std::to_string(GetLMDBMaxMapSizeMiB() + 1);
+    BOOST_CHECK(!ParseLMDBMapSize(strTooLarge, nBytes, strError));
+    BOOST_CHECK(!strError.empty());
+
+    // A 4096 MiB request must not wrap on 32-bit builds, where it is above the
+    // supported LMDB address-space range.
+    if (GetLMDBMaxMapSizeMiB() < 4096)
+        BOOST_CHECK(!ParseLMDBMapSize("4096", nBytes, strError));
+    else
+        BOOST_REQUIRE(ParseLMDBMapSize("4096", nBytes, strError));
+}
+
 void RunChainBackendMarker(const std::string &tag)
 {
     const std::filesystem::path dir = MakeTempDir(tag);
@@ -889,6 +919,11 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_environment)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_map_size_adjust)
 {
     RunMapSizeAdjust("lmdb_mapsize");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)
+{
+    RunLMDBMapSizeParsing("lmdb_mapsize_parse");
 }
 
 #ifndef WINDOWS

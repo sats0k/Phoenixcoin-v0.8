@@ -270,7 +270,7 @@ std::string HelpMessage()
 #endif
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
         "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
-        "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit)") + "\n" +
+        "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit; values above the platform limit are rejected)") + "\n" +
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI
@@ -394,8 +394,13 @@ bool AppInit2()
         return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'bdb' or 'lmdb'"),
                                    strDBBackend.c_str()));
 
-    if (mapArgs.count("-lmdbmapsize") && GetArg("-lmdbmapsize", 0) <= 0)
-        return InitError(_("-lmdbmapsize must be a positive number of MiB"));
+    if (mapArgs.count("-lmdbmapsize"))
+    {
+        size_t nMapSize = 0;
+        std::string strError;
+        if (!ParseLMDBMapSize(mapArgs["-lmdbmapsize"], nMapSize, strError))
+            return InitError(strprintf(_("Invalid -lmdbmapsize: %s"), strError.c_str()));
+    }
 
     if (mapArgs.count("-bind")) {
         // when specifying an explicit binding address, you want to listen on it

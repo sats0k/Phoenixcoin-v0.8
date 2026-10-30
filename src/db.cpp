@@ -4,6 +4,9 @@
 // file LICENCE or http://opensource.org/license/mit
 
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
 
 #ifndef WINDOWS
 #include "sys/stat.h"
@@ -14,6 +17,7 @@
 #include <fstream>
 #include <stdint.h>
 
+#include "allocators.h" /* for GetSystemPageSize */
 #include "util.h"
 #include "main.h"
 #include "checkpoints.h" /* for hashSyncCheckpoint */
@@ -44,11 +48,34 @@ bool g_fLMDBChainEnabled = false;
 
 #if defined(__LP64__) || defined(_WIN64)
 constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 4096;
+// A 64-bit map is bounded by the representable size_t range, not by a small
+// platform constant.  Keep the MiB limit inside that range.
+constexpr int64 LMDB_MAX_MAPSIZE_MIB =
+    static_cast<int64>((std::numeric_limits<size_t>::max)() / (1024ULL * 1024ULL));
 #else
 constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 1024;
+// 32-bit processes cannot map the full 4 GiB address space.  LMDB documents a
+// practical limit in the ~1.1-2 GiB range, so reject larger requests instead
+// of letting the size_t conversion wrap.
+constexpr int64 LMDB_MAX_MAPSIZE_MIB = 2048;
 #endif
 
 constexpr const char* CHAIN_BACKEND_MARKER = "blkindex.backend";
+
+bool ParseInt64Strict(const std::string& strValue, int64& nValue)
+{
+    if (strValue.empty())
+        return false;
+
+    errno = 0;
+    char* pszEnd = nullptr;
+    const long long nParsed = strtoll(strValue.c_str(), &pszEnd, 10);
+    if (errno == ERANGE || pszEnd == strValue.c_str() || *pszEnd != '\0')
+        return false;
+
+    nValue = nParsed;
+    return true;
+}
 
 std::filesystem::path GetChainBackendMarkerPath(const std::filesystem::path& dir)
 {
@@ -175,6 +202,54 @@ DBBackend GetConfiguredDBBackend()
     std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
+}
+
+int64 GetLMDBMaxMapSizeMiB()
+{
+    return LMDB_MAX_MAPSIZE_MIB;
+}
+
+bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError)
+{
+    int64 nMiB = 0;
+    if (!ParseInt64Strict(strValue, nMiB))
+    {
+        strError = strprintf("'%s' is not a valid number of MiB", strValue.c_str());
+        return false;
+    }
+
+    if (nMiB <= 0)
+    {
+        strError = strprintf("must be a positive number of MiB (got %s)",
+                             std::to_string(nMiB).c_str());
+        return false;
+    }
+
+    if (nMiB > LMDB_MAX_MAPSIZE_MIB)
+    {
+        strError = strprintf("%s MiB exceeds the maximum supported value of %s MiB "
+                             "for this platform",
+                             std::to_string(nMiB).c_str(),
+                             std::to_string(LMDB_MAX_MAPSIZE_MIB).c_str());
+        return false;
+    }
+
+    // The multiplication is safe: nMiB is positive and at most
+    // SIZE_MAX / MiB (or 2048 on 32-bit builds).
+    const size_t nCandidate = static_cast<size_t>(nMiB) * (1024ULL * 1024ULL);
+
+    const size_t nPageSize = GetSystemPageSize();
+    if (nPageSize > 0 && nPageSize <= nCandidate && nCandidate % nPageSize != 0)
+    {
+        strError = strprintf("%s MiB is not a multiple of the system page size "
+                             "(%s bytes)",
+                             std::to_string(nMiB).c_str(),
+                             std::to_string(nPageSize).c_str());
+        return false;
+    }
+
+    nBytes = nCandidate;
+    return true;
 }
 
 std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly)
@@ -670,10 +745,14 @@ bool InitLMDBChainDB()
         return error("InitLMDBChainDB(): failed to open database environment");
 
     const std::filesystem::path pathChain = GetDataDir() / "blkindex";
-    int64 nMapSizeMiB = GetArg("-lmdbmapsize", LMDB_DEFAULT_MAPSIZE_MIB);
-    if (nMapSizeMiB <= 0)
-        nMapSizeMiB = LMDB_DEFAULT_MAPSIZE_MIB;
-    const size_t nMapSize = static_cast<size_t>(nMapSizeMiB) * 1024ULL * 1024ULL;
+    const std::string strMapSize = mapArgs.count("-lmdbmapsize")
+        ? mapArgs["-lmdbmapsize"]
+        : std::to_string(LMDB_DEFAULT_MAPSIZE_MIB);
+    size_t nMapSize = 0;
+    std::string strMapSizeError;
+    if (!ParseLMDBMapSize(strMapSize, nMapSize, strMapSizeError))
+        return error("InitLMDBChainDB(): invalid -lmdbmapsize: %s",
+                     strMapSizeError.c_str());
 
     // Match Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour unless durability was
     // explicitly requested.  NOSYNC keeps each commit atomic and consistent,

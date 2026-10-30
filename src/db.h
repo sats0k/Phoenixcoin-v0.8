@@ -112,6 +112,16 @@ enum DBBackend
 /** Returns the chain index backend selected by -dbbackend (default: BDB). */
 DBBackend GetConfiguredDBBackend();
 
+/** Maximum supported -lmdbmapsize value in MiB for this build. */
+int64 GetLMDBMaxMapSizeMiB();
+
+/**
+ * Parses a -lmdbmapsize value in MiB and converts it to a page-aligned byte
+ * count.  Fails for non-numeric, non-positive, unrepresentable, unsupported and
+ * unaligned values, filling strError with a user-facing reason.
+ */
+bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError);
+
 /** Reads the blkindex.backend marker from dir.  Returns false when it is absent. */
 bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
 

@@ -41,7 +41,10 @@ index.
 - `-dbbackend=lmdb|bdb` — chain index backend, default `bdb`.
 - `-lmdbmapsize=<MiB>` — maximum size of the LMDB chain index map.  The default
   is 4096 MiB on 64-bit platforms and 1024 MiB elsewhere.  The map size is a
-  limit, not a preallocation.
+  limit, not a preallocation.  The value must be a positive integer; values that
+  are not representable or that exceed the platform's LMDB address-space limit
+  are rejected at startup.  32-bit builds accept at most 2048 MiB, and the
+  converted byte count must be a multiple of the system page size.
 - `-lmdbnosync=<0|1>` — default `1`.  Commits do not fsync, matching Berkeley
   DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per block during
   initial sync.  Transactions remain atomic and consistent.  Set to `0` for
