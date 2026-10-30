@@ -16,7 +16,7 @@ constexpr size_t LMDB_DEFAULT_MAPSIZE = 1024ULL * 1024ULL * 1024ULL; // 1GB
 constexpr unsigned int LMDB_MAX_DBS = 64;
 }
 
-CLMDBEnv::CLMDBEnv() : env(nullptr), fWriterActive(false)
+CLMDBEnv::CLMDBEnv() : env(nullptr), fWriterActive(false), fNoSync(false)
 {
 }
 
@@ -25,7 +25,7 @@ CLMDBEnv::~CLMDBEnv()
     Close();
 }
 
-bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize)
+bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize, bool fNoSync)
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
     if (env)
@@ -71,7 +71,16 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize)
     // the one that created it.  With MDB_NOTLS the slot is tied to the
     // transaction instead of the thread; the transaction still must not be
     // used concurrently from several threads.
-    rc = mdb_env_open(env, path.c_str(), MDB_NOTLS, 0644);
+    //
+    // MDB_NOSYNC matches Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour: commits
+    // stay atomic and consistent, but do not force the OS buffers to disk.
+    // This avoids an fsync for every block during initial sync.  The data is
+    // flushed explicitly when the environment is closed.
+    unsigned int nFlags = MDB_NOTLS;
+    if (fNoSync)
+        nFlags |= MDB_NOSYNC;
+
+    rc = mdb_env_open(env, path.c_str(), nFlags, 0644);
     if (rc != 0) {
         printf("mdb_env_open failed: %s\n", mdb_strerror(rc));
         mdb_env_close(env);
@@ -80,12 +89,35 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize)
     }
 
     strPath = path;
+    this->fNoSync = fNoSync;
+    return true;
+}
+
+bool CLMDBEnv::Sync(bool fForce)
+{
+    std::lock_guard<std::mutex> lock(mutexEnv);
+    if (!env)
+        return false;
+
+    int rc = mdb_env_sync(env, fForce ? 1 : 0);
+    if (rc != 0) {
+        printf("mdb_env_sync failed: %s\n", mdb_strerror(rc));
+        return false;
+    }
     return true;
 }
 
 void CLMDBEnv::Close()
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
+
+    // Flush the memory map before tearing it down.  This is required for
+    // MDB_NOSYNC environments and harmless for synchronous ones.
+    if (env && fNoSync) {
+        int rc = mdb_env_sync(env, 1);
+        if (rc != 0)
+            printf("mdb_env_sync failed: %s\n", mdb_strerror(rc));
+    }
 
     // DBI handles are invalidated when the environment is closed.
     mapDbis.clear();
@@ -96,6 +128,7 @@ void CLMDBEnv::Close()
         env = nullptr;
     }
     strPath.clear();
+    fNoSync = false;
 }
 
 bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)

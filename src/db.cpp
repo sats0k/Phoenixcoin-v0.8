@@ -553,7 +553,12 @@ bool InitLMDBChainDB()
         nMapSizeMiB = LMDB_DEFAULT_MAPSIZE_MIB;
     const size_t nMapSize = static_cast<size_t>(nMapSizeMiB) * 1024ULL * 1024ULL;
 
-    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize))
+    // Match Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour unless durability was
+    // explicitly requested.  NOSYNC keeps each commit atomic and consistent,
+    // but skips the per-commit fsync that otherwise dominates block import.
+    const bool fNoSync = GetBoolArg("-lmdbnosync", true);
+
+    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync))
         return error("InitLMDBChainDB(): failed to open LMDB environment %s",
                      pathChain.string().c_str());
 
@@ -571,7 +576,8 @@ bool InitLMDBChainDB()
     }
 
     g_fLMDBChainEnabled = true;
-    printf("Chain index database: LMDB (%s)\n", pathChain.string().c_str());
+    printf("Chain index database: LMDB (%s%s)\n", pathChain.string().c_str(),
+           fNoSync ? ", nosync" : "");
     return true;
 }
 

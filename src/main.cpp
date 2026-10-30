@@ -1862,11 +1862,13 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     return true;
 }
 
-bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew)
+bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
 {
     uint256 hash = GetHash();
 
-    if (!txdb.TxnBegin())
+    // AddToBlockIndex() already wrote the block index in a transaction and
+    // hands it over here so both writes share one commit.
+    if (!fTxnActive && !txdb.TxnBegin())
         return error("SetBestChain() : TxnBegin failed");
 
     if (pindexGenesisBlock == nullptr && hash == hashGenesisBlock)
@@ -2011,14 +2013,20 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
     CTxDB txdb;
     if (!txdb.TxnBegin())
         return false;
-    txdb.WriteBlockIndex(CDiskBlockIndex(pindexNew));
-    if (!txdb.TxnCommit())
+    if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindexNew)))
         return false;
 
-    // New best
+    // New best.  SetBestChain() reuses the open transaction so the block index
+    // and the best-chain update are committed together.
     if (pindexNew->bnChainWork > bnBestChainWork)
-        if (!SetBestChain(txdb, pindexNew))
+    {
+        if (!SetBestChain(txdb, pindexNew, true))
             return false;
+    }
+    else if (!txdb.TxnCommit())
+    {
+        return false;
+    }
 
     txdb.Close();
 

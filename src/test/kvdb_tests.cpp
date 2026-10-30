@@ -585,6 +585,55 @@ void RunSharedEnvironment(const std::string &tag)
     std::filesystem::remove_all(dir, ec);
 }
 
+void RunNoSyncEnvironment(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE_MESSAGE(env.Open(dir.string(), true, 0, true),
+                              "could not open nosync LMDB environment");
+        BOOST_CHECK(env.IsNoSync());
+
+        unsigned int flags = 0;
+        BOOST_REQUIRE_EQUAL(mdb_env_get_flags(env.GetEnv(), &flags), 0);
+        BOOST_CHECK((flags & MDB_NOSYNC) != 0);
+
+        CLMDBDatabase db;
+        BOOST_REQUIRE_MESSAGE(db.Open(env, "main", true),
+                              "could not open nosync sub-database");
+        WriteValue(db, Key("persistent"), Value("value"));
+        db.Close();
+
+        BOOST_CHECK(env.Sync(true));
+        // Closing also flushes the environment when it was opened with MDB_NOSYNC.
+        env.Close();
+    }
+
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE_MESSAGE(env.Open(dir.string(), false, 0, false),
+                              "could not reopen LMDB environment");
+        BOOST_CHECK(!env.IsNoSync());
+
+        unsigned int flags = 0;
+        BOOST_REQUIRE_EQUAL(mdb_env_get_flags(env.GetEnv(), &flags), 0);
+        BOOST_CHECK((flags & MDB_NOSYNC) == 0);
+
+        CLMDBDatabase db;
+        BOOST_REQUIRE_MESSAGE(db.Open(env, "main", false),
+                              "could not reopen sub-database");
+        CDBValue value;
+        BOOST_REQUIRE(ReadValue(db, Key("persistent"), value));
+        BOOST_CHECK(value == Value("value"));
+        db.Close();
+        env.Close();
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -670,6 +719,11 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_prefix_iteration)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_shared_environment)
 {
     RunSharedEnvironment("lmdb_shared_env");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_environment)
+{
+    RunNoSyncEnvironment("lmdb_nosync");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

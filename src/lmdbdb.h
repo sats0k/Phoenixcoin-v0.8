@@ -29,12 +29,24 @@ public:
     CLMDBEnv(const CLMDBEnv&) = delete;
     CLMDBEnv& operator=(const CLMDBEnv&) = delete;
 
-    bool Open(const std::string &path, bool fCreate = true, size_t nMapSize = 0);
+    /**
+     * Opens (and creates when needed) the environment.  With fNoSync the
+     * environment is opened with MDB_NOSYNC, so commits do not fsync and a
+     * system crash may lose the most recent transactions.  The database stays
+     * consistent (MDB_WRITEMAP is not used) and the data is flushed when the
+     * environment is closed.
+     */
+    bool Open(const std::string &path, bool fCreate = true, size_t nMapSize = 0,
+              bool fNoSync = false);
     void Close();
+
+    /** Flushes the memory map to disk.  Returns false when there is no open environment. */
+    bool Sync(bool fForce = true);
 
     bool IsOpen() const { return env != nullptr; }
     MDB_env *GetEnv() const { return env; }
     const std::string &GetPath() const { return strPath; }
+    bool IsNoSync() const { return fNoSync; }
 
     /**
      * Open (and cache) a named sub-database.  When fCreate is false the
@@ -63,6 +75,7 @@ private:
     std::string strPath;
     std::map<std::string, MDB_dbi> mapDbis;
     std::atomic<bool> fWriterActive;
+    bool fNoSync;
     std::mutex mutexEnv;
 };
 
