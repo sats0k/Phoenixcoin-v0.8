@@ -97,3 +97,35 @@ If the marker says `lmdb` but the LMDB index is missing or empty, restore
 snapshot, remove only `blkindex.backend`; the next LMDB start will then import
 `blkindex.dat` again.  That snapshot does not contain blocks or UTXO changes
 made after the original migration, so prefer a backup when one exists.
+
+## Validation
+
+The backend was validated on Linux x86-64 with a build configured with
+`-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
+
+- `kvdb_tests` passed 24/24 test cases (1238 assertions) with no sanitizer
+  reports.
+- `regression_lmdb_chain_migration.sh` passed 64/64 checks with
+  AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+- The full unit suite passed 140/141 test cases (40534/40535 assertions).
+  The only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
+  sanitizer slowdown.  There were no AddressSanitizer errors.  The eight
+  UndefinedBehaviorSanitizer reports were all in pre-existing non-LMDB code
+  (`Hash160` on an empty vector, base32/base64 decoding, and empty-vector
+  handling in `EvalScript`).
+
+Crash recovery was checked at two points:
+
+- Killing the daemon part-way through migration left no backend marker.
+  The next start discarded the partial index, repeated the migration, and
+  produced the same 588001 records and chain tip as an uninterrupted
+  migration.
+- Three `SIGKILL`/restart cycles during initial sync at and above height
+  202135 always reopened the last committed tip or a later one.  The tip
+  block and its coinbase transaction remained readable after every restart,
+  and syncing continued to height 227811 with 665129 records.
+
+A full BDB chain at height 202135 (588001 records: 202136 `blockindex` and
+385861 `tx`) was migrated in about three seconds.  LMDB contained exactly
+588001 entries in a 72118272-byte `data.mdb`, and the BDB and LMDB tips had the
+same hash.  The migrated node then continued syncing normally.
