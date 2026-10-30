@@ -471,7 +471,9 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   daemon connects blocks 3-4 through the normal `submitblock` path, and
   two further restarts preserve the tip, height, block bytes and
   transaction lookups. Raw record counts are compared with `db_dump` and
-  `mdb_dump` when those tools are installed.
+  `mdb_dump` when those tools are installed; otherwise those particular
+  checks are skipped. The RPC port is allocated dynamically, so concurrent
+  runs do not collide, and can be pinned with `PXC_REGTEST_PORT`.
 
 Run a single script with:
 

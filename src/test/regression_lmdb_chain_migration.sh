@@ -24,12 +24,36 @@
 # bytes are fixed mainnet data and need no network access.
 #
 # Usage: src/test/regression_lmdb_chain_migration.sh [path-to-phoenixcoind]
+#
+# The RPC port is chosen from the ephemeral range and can be pinned with
+# PXC_REGTEST_PORT for debugging or constrained environments.
 
 set -u
 
 BIN="${1:-$(cd "$(dirname "$0")/../.." && pwd)/src/phoenixcoind}"
 DATADIR="$(mktemp -d "/tmp/lmdb-chain.XXXXXX")"
-PORT=19891
+
+# Pick a free RPC port so concurrent runs do not collide.  The datadir is
+# already unique; this covers the other shared resource.
+find_free_port() {
+    local i port
+    for i in $(seq 1 50); do
+        port=$(( RANDOM % 16384 + 49152 ))
+        if ! (exec 3<>"/dev/tcp/127.0.0.1/$port") 2>/dev/null; then
+            echo "$port"
+            return 0
+        fi
+    done
+    return 1
+}
+
+PORT="${PXC_REGTEST_PORT:-$(find_free_port)}"
+case "$PORT" in
+    ''|*[!0-9]*)
+        echo "ERROR: could not allocate an RPC port (set PXC_REGTEST_PORT)" >&2
+        exit 1
+        ;;
+esac
 
 GENESIS_HASH="be2f30f9e8db8f430056869c43503a992d232b28508e83eda101161a18cf7c73"
 
@@ -167,9 +191,15 @@ dump_keys() {
         return 1
     fi
     if [ "$tool" = "db_dump" ]; then
-        out=$("$tool" -p "$file" 2>/dev/null) || return 1
+        out=$("$tool" -p "$file" 2>/dev/null) || {
+            echo "  SKIP: $tool could not read $file" >&2
+            return 1
+        }
     else
-        out=$("$tool" -p -s main "$file" 2>/dev/null) || return 1
+        out=$("$tool" -p -s main "$file" 2>/dev/null) || {
+            echo "  SKIP: $tool could not read $file" >&2
+            return 1
+        }
     fi
     printf '%s\n' "$out" > "$DATADIR/$tag.dump"
     awk '/^HEADER=END$/{inside=1; next}
