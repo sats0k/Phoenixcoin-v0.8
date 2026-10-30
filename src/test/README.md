@@ -433,8 +433,9 @@ size comparison can notice.
 
 In addition to the Boost unit suite, this directory contains shell
 regression scripts that drive full `phoenixcoind` daemons end to end.
-They exercise the hybrid private-key export/import flows that need a real
-wallet and database. Each script takes an optional path to a
+They exercise the hybrid private-key export/import flows and the
+Berkeley DB to LMDB chain-index handoff that need a real wallet and
+database. Each script takes an optional path to a
 `phoenixcoind` binary (defaults to the freshly built `src/phoenixcoind`),
 prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
 
@@ -463,6 +464,14 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   too-few-fields lines, unparseable timestamps, timestamps with trailing
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
+- `regression_lmdb_chain_migration.sh` — full Berkeley DB to LMDB chain
+  index handoff: a BDB-backed daemon accepts real mainnet blocks 1-2,
+  the next start with `-dbbackend=lmdb` migrates every block-index and
+  transaction record and writes the `blkindex.backend` marker, the LMDB
+  daemon connects blocks 3-4 through the normal `submitblock` path, and
+  two further restarts preserve the tip, height, block bytes and
+  transaction lookups. Raw record counts are compared with `db_dump` and
+  `mdb_dump` when those tools are installed.
 
 Run a single script with:
 
