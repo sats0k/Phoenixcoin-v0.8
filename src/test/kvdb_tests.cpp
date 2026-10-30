@@ -4,6 +4,7 @@
 
 #include <atomic>
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <string>
 #include <thread>
@@ -11,7 +12,13 @@
 
 #include <boost/test/unit_test.hpp>
 
+#ifndef WINDOWS
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 #include "bdb_kv.h"
+#include "db.h"
 #include "lmdb_kv.h"
 #include "util.h"
 
@@ -634,6 +641,159 @@ void RunNoSyncEnvironment(const std::string &tag)
     std::filesystem::remove_all(dir, ec);
 }
 
+void RunMapSizeAdjust(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE_MESSAGE(env.Open(dir.string()), "could not open LMDB environment");
+        CLMDBDatabase db;
+        BOOST_REQUIRE_MESSAGE(db.Open(env, "main", true), "could not open sub-database");
+        WriteValue(db, Key("persistent"), Value("value"));
+        db.Close();
+        env.Close();
+    }
+
+    constexpr size_t nSmallMap = 1ULL * 1024ULL * 1024ULL;
+    {
+        // A map smaller than the existing data file must be enlarged instead of
+        // failing to open.  This protects a datadir created with a larger
+        // -lmdbmapsize from being started without that option.
+        CLMDBEnv env;
+        BOOST_REQUIRE_MESSAGE(env.Open(dir.string(), false, nSmallMap, false),
+                              "could not reopen LMDB environment with a small map");
+
+        MDB_envinfo info;
+        BOOST_REQUIRE_EQUAL(mdb_env_info(env.GetEnv(), &info), 0);
+        BOOST_CHECK(info.me_mapsize > nSmallMap);
+
+        CLMDBDatabase db;
+        BOOST_REQUIRE_MESSAGE(db.Open(env, "main", false), "could not reopen sub-database");
+        CDBValue value;
+        BOOST_REQUIRE(ReadValue(db, Key("persistent"), value));
+        BOOST_CHECK(value == Value("value"));
+        db.Close();
+        env.Close();
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+
+#ifndef WINDOWS
+void RunNoSyncCrashConsistency(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+
+    // Create the environment and sub-database first so the child only writes.
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE(env.Open(dir.string(), true, 0, true));
+        CLMDBDatabase db;
+        BOOST_REQUIRE(db.Open(env, "main", true));
+        db.Close();
+        env.Close();
+    }
+
+    const pid_t pid = fork();
+    BOOST_REQUIRE_MESSAGE(pid >= 0, "fork failed");
+
+    if (pid == 0) {
+        // Commit with MDB_NOSYNC and terminate without closing the environment.
+        // This models a process crash rather than a clean shutdown.
+        CLMDBEnv env;
+        if (!env.Open(dir.string(), false, 0, true))
+            _exit(10);
+        CLMDBDatabase db;
+        if (!db.Open(env, "main", false))
+            _exit(11);
+        std::unique_ptr<CDBTransaction> txn = db.BeginTransaction(false);
+        if (!txn.get())
+            _exit(12);
+        if (!txn->Write(Key("crash"), Value("survives")))
+            _exit(13);
+        if (!txn->Commit())
+            _exit(14);
+        _exit(0);
+    }
+
+    int status = 0;
+    BOOST_REQUIRE_EQUAL(waitpid(pid, &status, 0), pid);
+    BOOST_REQUIRE(WIFEXITED(status));
+    BOOST_REQUIRE_EQUAL(WEXITSTATUS(status), 0);
+
+    // The committed transaction must still be visible after the crash.
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE(env.Open(dir.string(), false, 0, false));
+        CLMDBDatabase db;
+        BOOST_REQUIRE(db.Open(env, "main", false));
+        CDBValue value;
+        BOOST_REQUIRE(ReadValue(db, Key("crash"), value));
+        BOOST_CHECK(value == Value("survives"));
+        db.Close();
+        env.Close();
+    }
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+}
+#endif
+
+void RunChainBackendMarker(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    std::string marker;
+
+    BOOST_CHECK(!ReadChainBackendMarker(dir, marker));
+    BOOST_CHECK(!HasLMDBChainIndex(dir));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    BOOST_REQUIRE(WriteChainBackendMarker(dir, "bdb"));
+    BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "bdb");
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // Switching to LMDB must block a later default BDB start.
+    BOOST_REQUIRE(WriteChainBackendMarker(dir, "lmdb"));
+    BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // Unknown markers are rejected instead of guessing.
+    BOOST_REQUIRE(WriteChainBackendMarker(dir, "sqlite"));
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    BOOST_REQUIRE(!ec);
+
+    // Legacy LMDB datadirs have no marker; a non-empty data.mdb is authoritative.
+    const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
+    BOOST_REQUIRE(std::filesystem::create_directories(legacy / "blkindex"));
+    {
+        std::ofstream data(legacy / "blkindex" / "data.mdb", std::ios::trunc);
+        BOOST_REQUIRE(data.good());
+        data << "lmdb";
+    }
+    BOOST_CHECK(HasLMDBChainIndex(legacy));
+    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
+
+    // An empty placeholder is not an index and must not block BDB.
+    std::filesystem::resize_file(legacy / "blkindex" / "data.mdb", 0, ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_CHECK(!HasLMDBChainIndex(legacy));
+    BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
+
+    std::filesystem::remove_all(legacy, ec);
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -724,6 +884,23 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_shared_environment)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_environment)
 {
     RunNoSyncEnvironment("lmdb_nosync");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_map_size_adjust)
+{
+    RunMapSizeAdjust("lmdb_mapsize");
+}
+
+#ifndef WINDOWS
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_crash_consistency)
+{
+    RunNoSyncCrashConsistency("lmdb_nosync_crash");
+}
+#endif
+
+BOOST_AUTO_TEST_CASE(chain_backend_marker)
+{
+    RunChainBackendMarker("chain_backend_marker");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

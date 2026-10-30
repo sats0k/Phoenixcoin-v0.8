@@ -6,9 +6,19 @@
 #include "util.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdio>
 #include <cstring>
 
 namespace {
+
+void LogMapFullOnce()
+{
+    static std::atomic<bool> fWarned(false);
+    bool expected = false;
+    if (fWarned.compare_exchange_strong(expected, true))
+        printf("LMDB map is full; increase -lmdbmapsize and restart\n");
+}
 
 bool KeyHasPrefix(const MDB_val &key, const CDBKey &prefix)
 {
@@ -192,6 +202,8 @@ bool CLMDBTransaction::Write(const CDBKey &key, const CDBValue &value, bool fOve
     mval.mv_data = value.empty() ? (void*)&empty : (void*)value.data();
     unsigned int flags = fOverwrite ? 0 : MDB_NOOVERWRITE;
     int ret = mdb_put(txn, dbi, &mkey, &mval, flags);
+    if (ret == MDB_MAP_FULL)
+        LogMapFullOnce();
     return ret == 0;
 }
 
@@ -218,6 +230,10 @@ bool CLMDBTransaction::Commit()
     int ret = mdb_txn_commit(txn);
     txn = nullptr;
     fCommitted = (ret == 0);
+    if (ret == MDB_MAP_FULL)
+        LogMapFullOnce();
+    else if (ret != 0)
+        printf("mdb_txn_commit failed: %s\n", mdb_strerror(ret));
     ReleaseWriter();
     return fCommitted;
 }

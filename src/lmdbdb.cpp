@@ -3,6 +3,7 @@
 // file LICENCE or http://opensource.org/license/mit
 
 #include "lmdbdb.h"
+#include "datatypes.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -35,11 +36,29 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize, bool
         nMapSize = LMDB_DEFAULT_MAPSIZE;
 
     std::error_code ec;
-    if (!std::filesystem::exists(path, ec)) {
+    const bool fPathExists = std::filesystem::exists(path, ec);
+    if (!fPathExists) {
         if (!fCreate)
             return false;
         if (!std::filesystem::create_directories(path, ec))
             return false;
+    } else {
+        // Never reopen an existing database with a map smaller than the data
+        // file.  This happens when a datadir was created with a larger
+        // -lmdbmapsize and is later started without that option.
+        const std::filesystem::path pathData = std::filesystem::path(path) / "data.mdb";
+        const uintmax_t nDataSize = std::filesystem::file_size(pathData, ec);
+        if (!ec && nDataSize > 0) {
+            const size_t nMinMapSize = static_cast<size_t>(nDataSize) + 16ULL * 1024ULL * 1024ULL;
+            if (nMapSize < nMinMapSize) {
+                const size_t nOldMapSize = nMapSize;
+                nMapSize = nMinMapSize;
+                printf("LMDB map size increased from %" PRIszu " to %" PRIszu
+                       " bytes to fit the existing database\n",
+                       nOldMapSize, nMapSize);
+            }
+        }
+        ec.clear();
     }
 
     int rc = mdb_env_create(&env);

@@ -48,7 +48,126 @@ constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 4096;
 constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 1024;
 #endif
 
+constexpr const char* CHAIN_BACKEND_MARKER = "blkindex.backend";
+
+std::filesystem::path GetChainBackendMarkerPath(const std::filesystem::path& dir)
+{
+    return dir / CHAIN_BACKEND_MARKER;
+}
+
+void LogLMDBMapUsage()
+{
+    MDB_env* env = g_lmdbChainEnv.GetEnv();
+    if (!env)
+        return;
+
+    MDB_envinfo info;
+    MDB_stat stat;
+    if (mdb_env_info(env, &info) != 0 || mdb_env_stat(env, &stat) != 0)
+        return;
+
+    const double nUsedMiB =
+        static_cast<double>((info.me_last_pgno + 1) * stat.ms_psize) / (1024.0 * 1024.0);
+    const double nMapMiB = static_cast<double>(info.me_mapsize) / (1024.0 * 1024.0);
+    printf("LMDB chain index: %.1f of %.1f MiB used\n", nUsedMiB, nMapMiB);
+
+    if (info.me_mapsize > 0 && info.me_last_pgno + 1 > 0) {
+        const double nRatio = nUsedMiB / nMapMiB;
+        if (nRatio >= 0.85)
+            printf("Warning: LMDB chain index is %.0f%% full; increase "
+                   "-lmdbmapsize before it runs out of space\n", nRatio * 100.0);
+    }
+}
+
 } // namespace
+
+bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend)
+{
+    std::ifstream file(GetChainBackendMarkerPath(dir));
+    if (!file)
+        return false;
+
+    std::getline(file, strBackend);
+    while (!strBackend.empty() &&
+           (strBackend.back() == '\r' || strBackend.back() == '\n' ||
+            strBackend.back() == ' ' || strBackend.back() == '\t'))
+        strBackend.pop_back();
+    while (!strBackend.empty() &&
+           (strBackend.front() == ' ' || strBackend.front() == '\t'))
+        strBackend.erase(strBackend.begin());
+    return true;
+}
+
+bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend)
+{
+    const std::filesystem::path pathMarker = GetChainBackendMarkerPath(dir);
+    const std::filesystem::path pathTmp = pathMarker.string() + ".tmp";
+
+    {
+        std::ofstream file(pathTmp, std::ios::trunc);
+        if (!file)
+            return error("WriteChainBackendMarker(): cannot create %s",
+                         pathTmp.string().c_str());
+        file << strBackend << "\n";
+        file.flush();
+        if (!file)
+            return error("WriteChainBackendMarker(): cannot write %s",
+                         pathTmp.string().c_str());
+    }
+
+    std::error_code ec;
+    std::filesystem::rename(pathTmp, pathMarker, ec);
+    if (ec) {
+        // Windows does not replace an existing file with rename().
+        std::filesystem::remove(pathMarker, ec);
+        std::filesystem::rename(pathTmp, pathMarker, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(pathTmp, ec);
+        return error("WriteChainBackendMarker(): cannot rename %s to %s",
+                     pathTmp.string().c_str(), pathMarker.string().c_str());
+    }
+    return true;
+}
+
+bool HasLMDBChainIndex(const std::filesystem::path& dir)
+{
+    const std::filesystem::path pathData = dir / "blkindex" / "data.mdb";
+    std::error_code ec;
+    if (!std::filesystem::exists(pathData, ec) || ec)
+        return false;
+    const uintmax_t nSize = std::filesystem::file_size(pathData, ec);
+    return !ec && nSize > 0;
+}
+
+bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured)
+{
+    std::string strMarker;
+    if (ReadChainBackendMarker(dir, strMarker)) {
+        if (strMarker != "lmdb" && strMarker != "bdb")
+            return error("Unknown chain backend marker in %s: '%s'",
+                         GetChainBackendMarkerPath(dir).string().c_str(),
+                         strMarker.c_str());
+
+        if (strMarker == "lmdb" && configured == DB_BACKEND_BDB)
+            return error("This data directory uses the LMDB chain index. "
+                         "Start with -dbbackend=lmdb. To revert to Berkeley DB, "
+                         "back up the data directory and remove both 'blkindex' "
+                         "and 'blkindex.backend'.");
+        return true;
+    }
+
+    // Older LMDB builds did not write a marker.  Treat an existing LMDB chain
+    // index as authoritative so that a default BDB start cannot silently load
+    // the stale blkindex.dat.
+    if (configured == DB_BACKEND_BDB && HasLMDBChainIndex(dir))
+        return error("Found an LMDB chain index at %s. "
+                     "Start with -dbbackend=lmdb, or remove 'blkindex' after "
+                     "backing up the data directory to use Berkeley DB.",
+                     (dir / "blkindex").string().c_str());
+
+    return true;
+}
 
 DBBackend GetConfiguredDBBackend()
 {
@@ -536,12 +655,15 @@ bool CTxDB::MigrateToLMDB()
 
 bool InitLMDBChainDB()
 {
-    if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
-        return true;
-
     // Tests run with a mocked Berkeley environment and must not touch the
     // configured data directory.
     if (bitdb.IsMock())
+        return true;
+
+    if (!CheckChainBackendCompatibility(GetDataDir(), GetConfiguredDBBackend()))
+        return false;
+
+    if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
         return true;
 
     if (!bitdb.Open(GetDataDir()))
@@ -575,9 +697,17 @@ bool InitLMDBChainDB()
         return false;
     }
 
+    if (!WriteChainBackendMarker(GetDataDir(), "lmdb"))
+    {
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return false;
+    }
+
     g_fLMDBChainEnabled = true;
     printf("Chain index database: LMDB (%s%s)\n", pathChain.string().c_str(),
            fNoSync ? ", nosync" : "");
+    LogLMDBMapUsage();
     return true;
 }
 

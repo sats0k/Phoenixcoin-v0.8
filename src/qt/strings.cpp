@@ -94,7 +94,7 @@ QT_TRANSLATE_NOOP("pxc-core", "Connect to a node to retrieve peer addresses, and
 QT_TRANSLATE_NOOP("pxc-core", "Discover own IP address (default: 1 when listening and no -externalip)"),
 QT_TRANSLATE_NOOP("pxc-core", "Don't generate coins"),
 QT_TRANSLATE_NOOP("pxc-core", "Done loading"),
-QT_TRANSLATE_NOOP("pxc-core", "Error loading blkindex.dat"),
+QT_TRANSLATE_NOOP("pxc-core", "Error loading chain index database"),
 QT_TRANSLATE_NOOP("pxc-core", "Error loading wallet.dat"),
 QT_TRANSLATE_NOOP("pxc-core", "Error loading wallet.dat: Wallet corrupted"),
 QT_TRANSLATE_NOOP("pxc-core", "Error loading wallet.dat: Wallet requires newer version of Phoenixcoin"),

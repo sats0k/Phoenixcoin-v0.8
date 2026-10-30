@@ -112,9 +112,30 @@ enum DBBackend
 /** Returns the chain index backend selected by -dbbackend (default: BDB). */
 DBBackend GetConfiguredDBBackend();
 
+/** Reads the blkindex.backend marker from dir.  Returns false when it is absent. */
+bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
+
+/** Atomically writes the blkindex.backend marker in dir. */
+bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
+
+/** Returns true when dir contains a non-empty LMDB chain index. */
+bool HasLMDBChainIndex(const std::filesystem::path& dir);
+
 /**
- * Opens the LMDB chain index and, on first use, copies the raw records from an
- * existing blkindex.dat.  The Berkeley DB file is left untouched.
+ * Checks that the configured backend can use the chain index in dir.  A marker
+ * records which backend owns the index, and a legacy LMDB index without a
+ * marker is still treated as authoritative.  This prevents a default BDB start
+ * from silently loading a stale blkindex.dat after an LMDB migration.
+ */
+bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
+
+/**
+ * Validates the configured chain index backend against the data directory and,
+ * when LMDB is selected, opens it and copies the raw records from an existing
+ * blkindex.dat on first use.  The Berkeley DB file is left untouched.
+ *
+ * A blkindex.backend marker records that the data directory has moved to LMDB
+ * so that a later default BDB start cannot silently load the stale index.
  */
 bool InitLMDBChainDB();
 void CloseLMDBChainDB();
@@ -425,7 +446,7 @@ public:
 
 
 
-/** Access to the transaction database (blkindex.dat) */
+/** Access to the block and transaction index (blkindex.dat or the LMDB chain index) */
 class CTxDB : public CDB
 {
 public:

@@ -707,7 +707,7 @@ bool AppInit2()
     }
 
     if (!InitLMDBChainDB())
-        return InitError(_("Error initializing LMDB chain database"));
+        return InitError(_("Error initializing chain index database"));
 
     if (GetBoolArg("-loadblockindextest"))
     {
@@ -721,7 +721,7 @@ bool AppInit2()
     printf("Loading block index...\n");
     nStart = GetTimeMillis();
     if (!LoadBlockIndex())
-        return InitError(_("Error loading blkindex.dat"));
+        return InitError(_("Error loading chain index database"));
 
     // as LoadBlockIndex can take several minutes, it's possible the user
     // requested to kill phoenixcoin-qt during the last operation. If so, exit.
