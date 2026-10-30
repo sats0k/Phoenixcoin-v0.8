@@ -71,6 +71,14 @@ larger `-lmdbmapsize`.
 
 Online resizing while the node is running is not implemented.
 
+## Write consistency
+
+Adding a block writes its block-index record and, when it becomes the best
+chain, the best-chain pointer in one transaction.  If any part of that write
+fails, the transaction is aborted and the newly created in-memory
+`mapBlockIndex` entry is removed again, so a failed write cannot leave an index
+entry whose database record was rolled back.  This applies to both backends.
+
 ## Recovery
 
 LMDB never overwrites committed pages in place, so an interrupted process leaves

@@ -120,6 +120,14 @@ extern CCriticalSection cs_main;
 using BlockMap = std::unordered_map<uint256, CBlockIndex*, uint256Hasher>;
 
 extern BlockMap mapBlockIndex;
+
+/**
+ * Removes the in-memory block index entry created by AddToBlockIndex() when the
+ * corresponding database transaction fails.  The entry is erased only if it
+ * still points at pindex; pindex is deleted in either case.
+ */
+void RollbackBlockIndexEntry(const uint256& hash, CBlockIndex* pindex);
+
 extern uint256 hashGenesisBlock;
 extern CBlockIndex* pindexGenesisBlock;
 extern int nBestHeight;

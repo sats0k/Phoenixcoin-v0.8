@@ -1867,13 +1867,18 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
     uint256 hash = GetHash();
 
     // AddToBlockIndex() already wrote the block index in a transaction and
-    // hands it over here so both writes share one commit.
+    // hands it over here so both writes share one commit.  On success this
+    // function owns that commit: the genesis branch, SetBestChainInner() and
+    // Reorganize() all commit before returning true.  On failure
+    // AddToBlockIndex() aborts any still-open transaction and rolls back its
+    // in-memory block index entry.
     if (!fTxnActive && !txdb.TxnBegin())
         return error("SetBestChain() : TxnBegin failed");
 
     if (pindexGenesisBlock == nullptr && hash == hashGenesisBlock)
     {
-        txdb.WriteHashBestChain(hash);
+        if (!txdb.WriteHashBestChain(hash))
+            return error("SetBestChain() : WriteHashBestChain failed");
         if (!txdb.TxnCommit())
             return error("SetBestChain() : TxnCommit failed");
         pindexGenesisBlock = pindexNew;
@@ -1989,6 +1994,57 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
 }
 
 
+void RollbackBlockIndexEntry(const uint256& hash, CBlockIndex* pindex)
+{
+    // A block that already became committed chain state must stay reachable;
+    // deleting it would leave pindexBest/pindexGenesisBlock dangling.  Failure
+    // paths should never get here after that point, but keep the committed
+    // state authoritative if a future path does.
+    if (pindex == pindexBest || pindex == pindexGenesisBlock || pindex->pnext != nullptr)
+        return;
+
+    // Undo any in-memory link that a partially completed connect may have set.
+    if (pindex->pprev && pindex->pprev->pnext == pindex)
+        pindex->pprev->pnext = nullptr;
+    if (pblockindexFBBHLast == pindex)
+        pblockindexFBBHLast = nullptr;
+
+    // AddToBlockIndex() inserted this exact object before starting the failed
+    // transaction.  Never erase an entry that another code path replaced, but
+    // always release the candidate so a failed write does not leak it.
+    BlockMap::iterator it = mapBlockIndex.find(hash);
+    if (it != mapBlockIndex.end() && it->second == pindex)
+        mapBlockIndex.erase(it);
+    delete pindex;
+}
+
+
+namespace {
+
+// Rolls back the candidate block index entry unless the caller disarms the
+// guard after the database transaction has committed.  The guard is declared
+// before CTxDB so the transaction is closed/aborted first.
+class CBlockIndexRollbackGuard
+{
+public:
+    CBlockIndexRollbackGuard(const uint256& hash, CBlockIndex* pindex)
+        : hash(hash), pindex(pindex), fArmed(true) {}
+    ~CBlockIndexRollbackGuard()
+    {
+        if (fArmed)
+            RollbackBlockIndexEntry(hash, pindex);
+    }
+    void Disarm() { fArmed = false; }
+
+private:
+    uint256 hash;
+    CBlockIndex* pindex;
+    bool fArmed;
+};
+
+} // namespace
+
+
 bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
 {
     // Check for duplicate
@@ -2010,25 +2066,30 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
     }
     pindexNew->bnChainWork = (pindexNew->pprev ? pindexNew->pprev->bnChainWork : 0) + pindexNew->GetBlockWork();
 
+    // Every failure path below (including an exception while opening the
+    // database) must remove the in-memory entry again.
+    CBlockIndexRollbackGuard rollback(hash, pindexNew);
+
     CTxDB txdb;
     if (!txdb.TxnBegin())
-        return false;
+        return error("AddToBlockIndex() : TxnBegin failed");
     if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindexNew)))
-        return false;
+        return error("AddToBlockIndex() : WriteBlockIndex failed");
 
     // New best.  SetBestChain() reuses the open transaction so the block index
     // and the best-chain update are committed together.
     if (pindexNew->bnChainWork > bnBestChainWork)
     {
         if (!SetBestChain(txdb, pindexNew, true))
-            return false;
+            return error("AddToBlockIndex() : SetBestChain failed");
     }
     else if (!txdb.TxnCommit())
     {
-        return false;
+        return error("AddToBlockIndex() : TxnCommit failed");
     }
 
     txdb.Close();
+    rollback.Disarm();
 
     if (pindexNew == pindexBest)
     {

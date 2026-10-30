@@ -20,6 +20,7 @@
 #include "bdb_kv.h"
 #include "db.h"
 #include "lmdb_kv.h"
+#include "main.h"
 #include "util.h"
 
 BOOST_AUTO_TEST_SUITE(kvdb_tests)
@@ -749,7 +750,7 @@ void RunChainIndexStartupAction(const std::string & /*tag*/)
     BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, true), CHAIN_INDEX_FAIL_MISSING);
 }
 
-void RunLMDBMapSizeParsing(const std::string &tag)
+void RunLMDBMapSizeParsing(const std::string & /*tag*/)
 {
     size_t nBytes = 0;
     std::string strError;
@@ -777,6 +778,29 @@ void RunLMDBMapSizeParsing(const std::string &tag)
         BOOST_CHECK(!ParseLMDBMapSize("4096", nBytes, strError));
     else
         BOOST_REQUIRE(ParseLMDBMapSize("4096", nBytes, strError));
+}
+
+void RunBlockIndexRollback(const std::string & /*tag*/)
+{
+    const uint256 hash("0x00000000000000000000000000000000000000000000000000000000deadbeef");
+    BOOST_REQUIRE(mapBlockIndex.count(hash) == 0);
+
+    // A failed AddToBlockIndex() must not leave the candidate behind.
+    CBlockIndex* pindex = new CBlockIndex();
+    mapBlockIndex[hash] = pindex;
+    RollbackBlockIndexEntry(hash, pindex);
+    BOOST_CHECK(mapBlockIndex.count(hash) == 0);
+
+    // The rollback must not erase an entry that belongs to another object.
+    CBlockIndex* pindexKept = new CBlockIndex();
+    CBlockIndex* pindexOther = new CBlockIndex();
+    mapBlockIndex[hash] = pindexKept;
+    RollbackBlockIndexEntry(hash, pindexOther);
+    BOOST_CHECK_EQUAL(mapBlockIndex.count(hash), 1u);
+    BOOST_CHECK(mapBlockIndex[hash] == pindexKept);
+
+    RollbackBlockIndexEntry(hash, pindexKept);
+    BOOST_CHECK(mapBlockIndex.count(hash) == 0);
 }
 
 void RunChainBackendMarker(const std::string &tag)
@@ -937,6 +961,11 @@ BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)
 BOOST_AUTO_TEST_CASE(chain_index_startup_action)
 {
     RunChainIndexStartupAction("chain_index_startup_action");
+}
+
+BOOST_AUTO_TEST_CASE(chain_index_failed_write_rollback)
+{
+    RunBlockIndexRollback("chain_index_rollback");
 }
 
 #ifndef WINDOWS
