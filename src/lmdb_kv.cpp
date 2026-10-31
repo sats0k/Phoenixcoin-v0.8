@@ -44,10 +44,11 @@ bool PrefixUpperBound(const CDBKey &prefix, CDBKey &upper)
 } // namespace
 
 CLMDBIterator::CLMDBIterator(MDB_txn *txn, MDB_dbi d, const CDBKey &keyPrefix)
-    : cursor(nullptr), prefix(keyPrefix), valid(false)
+    : cursor(nullptr), prefix(keyPrefix), valid(false), fError(false)
 {
-    if (txn && mdb_cursor_open(txn, d, &cursor) != 0) {
+    if (!txn || mdb_cursor_open(txn, d, &cursor) != 0) {
         cursor = nullptr;
+        fError = true;
     }
 }
 
@@ -74,13 +75,18 @@ void CLMDBIterator::SeekToFirst()
     if (!cursor) return;
 
     if (prefix.empty()) {
-        valid = (mdb_cursor_get(cursor, &key, &value, MDB_FIRST) == 0);
+        int ret = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+        if (ret != 0 && ret != MDB_NOTFOUND)
+            fError = true;
+        valid = (ret == 0);
         return;
     }
 
     key.mv_size = prefix.size();
     key.mv_data = (void*)prefix.data();
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+    if (ret != 0 && ret != MDB_NOTFOUND)
+        fError = true;
     valid = (ret == 0) && MatchesPrefix();
 }
 
@@ -97,11 +103,15 @@ void CLMDBIterator::SeekToLast()
             ret = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
         else if (ret == MDB_NOTFOUND)
             ret = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+        if (ret != 0 && ret != MDB_NOTFOUND)
+            fError = true;
         valid = (ret == 0) && MatchesPrefix();
         return;
     }
 
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_LAST);
+    if (ret != 0 && ret != MDB_NOTFOUND)
+        fError = true;
     valid = (ret == 0) && MatchesPrefix();
 }
 
@@ -120,6 +130,8 @@ void CLMDBIterator::Seek(const CDBKey &seekKey)
     key.mv_size = effective->size();
     key.mv_data = (void*)effective->data();
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_SET_RANGE);
+    if (ret != 0 && ret != MDB_NOTFOUND)
+        fError = true;
     valid = (ret == 0) && MatchesPrefix();
 }
 
@@ -127,6 +139,8 @@ void CLMDBIterator::Next()
 {
     if (!cursor || !valid) return;
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_NEXT);
+    if (ret != 0 && ret != MDB_NOTFOUND)
+        fError = true;
     valid = (ret == 0) && MatchesPrefix();
 }
 
@@ -134,6 +148,8 @@ void CLMDBIterator::Prev()
 {
     if (!cursor || !valid) return;
     int ret = mdb_cursor_get(cursor, &key, &value, MDB_PREV);
+    if (ret != 0 && ret != MDB_NOTFOUND)
+        fError = true;
     valid = (ret == 0) && MatchesPrefix();
 }
 

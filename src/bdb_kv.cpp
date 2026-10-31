@@ -5,15 +5,10 @@
 #include "bdb_kv.h"
 #include "util.h"
 #include <algorithm>
+#include <openssl/crypto.h>
 #include <cstring>
 
 namespace {
-
-bool KeyHasPrefix(const Dbt &key, const CDBKey &prefix)
-{
-    return prefix.size() <= key.get_size() &&
-           memcmp(key.get_data(), prefix.data(), prefix.size()) == 0;
-}
 
 // Computes the smallest key that sorts after every key beginning with prefix.
 // Returns false when no such key exists (the prefix is all 0xff).
@@ -32,14 +27,15 @@ bool PrefixUpperBound(const CDBKey &prefix, CDBKey &upper)
 
 } // namespace
 
-CBDBIterator::CBDBIterator(Db *db, const CDBKey &keyPrefix)
-    : pdb(db), cursor(nullptr), prefix(keyPrefix), valid(false)
+CBDBIterator::CBDBIterator(Db *db, const CDBKey &keyPrefix, DbTxn *txn)
+    : pdb(db), cursor(nullptr), prefix(keyPrefix), valid(false), fError(false)
 {
     if (pdb) {
-        pdb->cursor(nullptr, &cursor, 0);
+        if (pdb->cursor(txn, &cursor, 0) != 0 || !cursor) {
+            cursor = nullptr;
+            fError = true;
+        }
     }
-    key.set_flags(DB_DBT_USERMEM);
-    value.set_flags(DB_DBT_USERMEM);
 }
 
 CBDBIterator::~CBDBIterator()
@@ -57,56 +53,91 @@ bool CBDBIterator::Valid() const
 
 bool CBDBIterator::MatchesPrefix() const
 {
-    return prefix.empty() || KeyHasPrefix(key, prefix);
+    return prefix.empty() ||
+           (prefix.size() <= currentKey.size() &&
+            memcmp(currentKey.data(), prefix.data(), prefix.size()) == 0);
+}
+
+bool CBDBIterator::Fetch(int flags, const CDBKey *seekKey)
+{
+    valid = false;
+    currentKey.clear();
+    currentValue.clear();
+    if (!cursor)
+        return false;
+
+    Dbt datKey;
+    if (seekKey && !seekKey->empty()) {
+        datKey.set_data(const_cast<unsigned char*>(seekKey->data()));
+        datKey.set_size(seekKey->size());
+    }
+    Dbt datValue;
+
+    // Match CDB::ReadAtCursor(): ask Berkeley DB for its own copies so the
+    // values do not point into cursor-owned memory that the next operation
+    // invalidates.  They are copied out and freed below.
+    datKey.set_flags(DB_DBT_MALLOC);
+    datValue.set_flags(DB_DBT_MALLOC);
+
+    int ret = cursor->get(&datKey, &datValue, flags);
+    if (ret != 0)
+    {
+        // DB_NOTFOUND is ordinary end of data, including for a seek past the
+        // last key.  Anything else is a real cursor error and must not be
+        // mistaken for an empty or complete scan by wallet loaders.
+        if (ret != DB_NOTFOUND)
+            fError = true;
+        return false;
+    }
+
+    if (datKey.get_data() && datKey.get_size() > 0)
+        currentKey.assign((unsigned char*)datKey.get_data(),
+                          (unsigned char*)datKey.get_data() + datKey.get_size());
+    if (datValue.get_data() && datValue.get_size() > 0)
+        currentValue.assign((unsigned char*)datValue.get_data(),
+                            (unsigned char*)datValue.get_data() + datValue.get_size());
+
+    if (datKey.get_data()) {
+        OPENSSL_cleanse(datKey.get_data(), datKey.get_size());
+        free(datKey.get_data());
+    }
+    if (datValue.get_data()) {
+        OPENSSL_cleanse(datValue.get_data(), datValue.get_size());
+        free(datValue.get_data());
+    }
+
+    valid = true;
+    return true;
 }
 
 void CBDBIterator::SeekToFirst()
 {
-    if (!cursor) return;
-    static unsigned char kbuf[4096], vbuf[4096];
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
-    value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-
-    if (prefix.empty()) {
-        int ret = cursor->get(&key, &value, DB_FIRST);
-        valid = (ret == 0);
-        return;
-    }
-
-    memcpy(kbuf, prefix.data(), prefix.size());
-    key.set_size(prefix.size());
-    int ret = cursor->get(&key, &value, DB_SET_RANGE);
-    valid = (ret == 0) && MatchesPrefix();
+    if (prefix.empty())
+        Fetch(DB_FIRST);
+    else
+        Fetch(DB_SET_RANGE, &prefix);
+    valid = valid && MatchesPrefix();
 }
 
 void CBDBIterator::SeekToLast()
 {
-    if (!cursor) return;
-    static unsigned char kbuf[4096], vbuf[4096];
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
-    value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-
     CDBKey upper;
     if (!prefix.empty() && PrefixUpperBound(prefix, upper)) {
-        memcpy(kbuf, upper.data(), upper.size());
-        key.set_size(upper.size());
-        int ret = cursor->get(&key, &value, DB_SET_RANGE);
-        if (ret == 0)
-            ret = cursor->get(&key, &value, DB_PREV);
-        else if (ret == DB_NOTFOUND)
-            ret = cursor->get(&key, &value, DB_LAST);
-        valid = (ret == 0) && MatchesPrefix();
+        if (Fetch(DB_SET_RANGE, &upper)) {
+            Fetch(DB_PREV);
+        } else {
+            Fetch(DB_LAST);
+        }
+        valid = valid && MatchesPrefix();
         return;
     }
 
-    int ret = cursor->get(&key, &value, DB_LAST);
-    valid = (ret == 0) && MatchesPrefix();
+    Fetch(DB_LAST);
+    valid = valid && MatchesPrefix();
 }
 
 void CBDBIterator::Seek(const CDBKey &seekKey)
 {
-    if (!cursor) return;
-
     // Clamp a seek below the prefix to the prefix itself so a prefixed
     // iterator starts at the first matching record.
     const CDBKey *effective = &seekKey;
@@ -115,48 +146,35 @@ void CBDBIterator::Seek(const CDBKey &seekKey)
         effective = &prefix;
     }
 
-    static unsigned char kbuf[4096], vbuf[4096];
-    memcpy(kbuf, effective->data(), effective->size());
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(effective->size());
-    value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-    int ret = cursor->get(&key, &value, DB_SET_RANGE);
-    valid = (ret == 0) && MatchesPrefix();
+    if (effective->empty())
+        Fetch(DB_FIRST);
+    else
+        Fetch(DB_SET_RANGE, effective);
+    valid = valid && MatchesPrefix();
 }
 
 void CBDBIterator::Next()
 {
     if (!cursor || !valid) return;
-    static unsigned char kbuf[4096], vbuf[4096];
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
-    value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-    int ret = cursor->get(&key, &value, DB_NEXT);
-    valid = (ret == 0) && MatchesPrefix();
+    Fetch(DB_NEXT);
+    valid = valid && MatchesPrefix();
 }
 
 void CBDBIterator::Prev()
 {
     if (!cursor || !valid) return;
-    static unsigned char kbuf[4096], vbuf[4096];
-    key.set_data(kbuf); key.set_ulen(sizeof(kbuf)); key.set_size(0);
-    value.set_data(vbuf); value.set_ulen(sizeof(vbuf)); value.set_size(0);
-    int ret = cursor->get(&key, &value, DB_PREV);
-    valid = (ret == 0) && MatchesPrefix();
+    Fetch(DB_PREV);
+    valid = valid && MatchesPrefix();
 }
 
 CDBKey CBDBIterator::Key() const
 {
-    CDBKey k;
-    if (!valid || !key.get_data()) return k;
-    k.assign((unsigned char*)key.get_data(), (unsigned char*)key.get_data() + key.get_size());
-    return k;
+    return valid ? currentKey : CDBKey();
 }
 
 CDBValue CBDBIterator::Value() const
 {
-    CDBValue v;
-    if (!valid || !value.get_data()) return v;
-    v.assign((unsigned char*)value.get_data(), (unsigned char*)value.get_data() + value.get_size());
-    return v;
+    return valid ? currentValue : CDBValue();
 }
 
 CBDBTransaction::CBDBTransaction(DbEnv *env, Db *db, bool readOnly) : dbenv(env), pdb(db), txn(nullptr), fReadOnly(readOnly), fAborted(false), fCommitted(false)

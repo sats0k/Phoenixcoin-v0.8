@@ -13,15 +13,19 @@ class CBDBIterator : public CDBIterator
 {
     Db *pdb;
     Dbc *cursor;
-    Dbt key, value;
     CDBKey prefix;
+    CDBKey currentKey;
+    CDBValue currentValue;
     bool valid;
+    bool fError;
 
     bool MatchesPrefix() const;
+    bool Fetch(int flags, const CDBKey *seekKey = nullptr);
 public:
-    CBDBIterator(Db *db, const CDBKey &prefix = CDBKey());
+    CBDBIterator(Db *db, const CDBKey &prefix = CDBKey(), DbTxn *txn = nullptr);
     ~CBDBIterator();
     bool Valid() const override;
+    bool Error() const override { return fError; }
     void SeekToFirst() override;
     void SeekToLast() override;
     void Seek(const CDBKey &key) override;

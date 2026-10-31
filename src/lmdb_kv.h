@@ -16,12 +16,14 @@ class CLMDBIterator : public CDBIterator
     MDB_val key, value;
     CDBKey prefix;
     bool valid;
+    bool fError;
 
     bool MatchesPrefix() const;
 public:
     CLMDBIterator(MDB_txn *txn, MDB_dbi dbi, const CDBKey &prefix = CDBKey());
     ~CLMDBIterator();
     bool Valid() const override;
+    bool Error() const override { return fError; }
     void SeekToFirst() override;
     void SeekToLast() override;
     void Seek(const CDBKey &key) override;
