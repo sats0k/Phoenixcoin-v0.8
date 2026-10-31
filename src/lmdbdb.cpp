@@ -17,7 +17,9 @@ constexpr size_t LMDB_DEFAULT_MAPSIZE = 1024ULL * 1024ULL * 1024ULL; // 1GB
 constexpr unsigned int LMDB_MAX_DBS = 64;
 }
 
-CLMDBEnv::CLMDBEnv() : env(nullptr), fWriterActive(false), fNoSync(false)
+CLMDBEnv::CLMDBEnv()
+    : env(nullptr), strMapSizeFlag("-lmdbmapsize"), fWriterActive(false),
+      fNoSync(false)
 {
 }
 
@@ -26,7 +28,8 @@ CLMDBEnv::~CLMDBEnv()
     Close();
 }
 
-bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize, bool fNoSync)
+bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
+                    bool fNoSync, const std::string &strMapSizeFlag)
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
     if (env)
@@ -109,6 +112,7 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize, bool
 
     strPath = path;
     this->fNoSync = fNoSync;
+    this->strMapSizeFlag = strMapSizeFlag;
     return true;
 }
 

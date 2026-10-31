@@ -1237,7 +1237,8 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     if (fMarkerLMDB && !HasLMDBWallet(dir))
         return MissingLMDBWalletError(pathWallet);
 
-    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync))
+    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync,
+                              "-lmdbwalletsize"))
         return error("InitLMDBWalletDB(): failed to open LMDB environment %s",
                      pathWallet.string().c_str());
 
@@ -1368,7 +1369,7 @@ bool RewriteWalletLMDB()
         std::filesystem::rename(pathOld, pathWallet, restoreEc);
         if (!restoreEc) {
             g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
-                                 g_fWalletNoSync);
+                                 g_fWalletNoSync, "-lmdbwalletsize");
             g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true);
         } else {
             g_fLMDBWalletEnabled = false;
@@ -1377,7 +1378,7 @@ bool RewriteWalletLMDB()
     }
 
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
-                              g_fWalletNoSync))
+                              g_fWalletNoSync, "-lmdbwalletsize"))
     {
         g_fLMDBWalletEnabled = false;
         return error("RewriteWalletLMDB(): cannot reopen the compacted wallet");

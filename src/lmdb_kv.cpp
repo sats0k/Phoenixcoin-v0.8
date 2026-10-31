@@ -12,12 +12,18 @@
 
 namespace {
 
-void LogMapFullOnce()
+void LogMapFullOnce(const std::string &strMapSizeFlag)
 {
-    static std::atomic<bool> fWarned(false);
+    // The chain index and the wallet have separate options.  Warn once per
+    // option so a failure names the map that actually needs to grow.
+    static std::atomic<bool> fWarnedChain(false);
+    static std::atomic<bool> fWarnedWallet(false);
+    std::atomic<bool> &fWarned =
+        strMapSizeFlag == "-lmdbwalletsize" ? fWarnedWallet : fWarnedChain;
     bool expected = false;
     if (fWarned.compare_exchange_strong(expected, true))
-        printf("LMDB map is full; increase -lmdbmapsize and restart\n");
+        printf("LMDB map is full; increase %s and restart\n",
+               strMapSizeFlag.c_str());
 }
 
 bool KeyHasPrefix(const MDB_val &key, const CDBKey &prefix)
@@ -219,7 +225,7 @@ bool CLMDBTransaction::Write(const CDBKey &key, const CDBValue &value, bool fOve
     unsigned int flags = fOverwrite ? 0 : MDB_NOOVERWRITE;
     int ret = mdb_put(txn, dbi, &mkey, &mval, flags);
     if (ret == MDB_MAP_FULL)
-        LogMapFullOnce();
+        LogMapFullOnce(writerEnv ? writerEnv->GetMapSizeFlag() : "-lmdbmapsize");
     return ret == 0;
 }
 
@@ -247,7 +253,7 @@ bool CLMDBTransaction::Commit()
     txn = nullptr;
     fCommitted = (ret == 0);
     if (ret == MDB_MAP_FULL)
-        LogMapFullOnce();
+        LogMapFullOnce(writerEnv ? writerEnv->GetMapSizeFlag() : "-lmdbmapsize");
     else if (ret != 0)
         printf("mdb_txn_commit failed: %s\n", mdb_strerror(ret));
     ReleaseWriter();

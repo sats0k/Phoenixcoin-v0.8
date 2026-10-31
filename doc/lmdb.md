@@ -66,6 +66,9 @@ again retries the migration.  A crash after the commit but before the marker is
 written is also safe: the populated `wallet/` is used on the next LMDB start and
 the marker is written then.
 
+If the wallet reaches its map limit, writes fail with an `LMDB map is full`
+message naming `-lmdbwalletsize`; restart with a larger value.
+
 The marker makes ownership explicit:
 
 - starting without `-walletbackend=lmdb` fails instead of silently opening a
