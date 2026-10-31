@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <stdint.h>
+#include <openssl/crypto.h>
 
 #include "allocators.h" /* for GetSystemPageSize */
 #include "util.h"
@@ -325,10 +326,13 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
         // The marker is authoritative in both directions.  In particular, a
         // leftover wallet/ directory must not let an LMDB start adopt a data
         // directory whose marker still says Berkeley DB owns the wallet.
+        // Migrating an explicitly marked BDB wallet requires removing the
+        // marker first, so the switch is always a deliberate act.
         if (strMarker == "bdb" && configured == DB_BACKEND_LMDB)
             return error("This data directory uses the Berkeley DB wallet. "
-                         "Berkeley DB to LMDB wallet migration is not available "
-                         "yet; start without -walletbackend=lmdb to use it.");
+                         "To migrate it to LMDB, back up the data directory, "
+                         "remove wallet.backend and any existing wallet/ "
+                         "directory, then restart with -walletbackend=lmdb.");
         return true;
     }
 
@@ -344,12 +348,15 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
     return true;
 }
 
-WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty)
+WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
+                                           bool fBDBWalletExists)
 {
     if (!fLMDBEmpty)
         return WALLET_USE_EXISTING;
     if (fMarkerLMDB)
         return WALLET_FAIL_MISSING;
+    if (fBDBWalletExists)
+        return WALLET_MIGRATE_BDB;
     return WALLET_INIT_NEW;
 }
 
@@ -1090,11 +1097,113 @@ bool IsWalletLMDBEmpty(bool& fEmpty)
     return true;
 }
 
-bool ExistingBDBWalletError()
+// Reads wallet.dat through the Berkeley DB environment that init.cpp already
+// opened.  The class only exists because the cursor helpers on CDB are
+// protected; the migration itself is a raw record copy.
+class CWalletMigrationSource : public CDB
 {
-    return error("Found an existing Berkeley DB wallet.dat. "
-                 "Berkeley DB to LMDB wallet migration is not available "
-                 "yet; start without -walletbackend=lmdb to use it.");
+public:
+    CWalletMigrationSource() : CDB("wallet.dat", "r") {}
+    using CDB::GetCursor;
+    using CDB::ReadAtCursor;
+};
+
+// Copies the raw key/value pairs from wallet.dat into the already-open, empty
+// LMDB wallet.  The Berkeley DB file is never modified, so a failed migration
+// can be retried and a default BDB start can still use it.  The caller writes
+// wallet.backend only after this function succeeds.
+bool MigrateWalletToLMDB(const std::filesystem::path& dir)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(dir / "wallet.dat"))
+        return true;
+
+    printf("Migrating wallet from wallet.dat to LMDB...\n");
+
+    std::unique_ptr<CWalletMigrationSource> source;
+    try {
+        source = std::make_unique<CWalletMigrationSource>();
+    } catch (const std::exception& e) {
+        return error("MigrateWalletToLMDB(): cannot open wallet.dat: %s",
+                     e.what());
+    }
+
+    Dbc* pcursor = source->GetCursor();
+    if (!pcursor) {
+        source->Close();
+        bitdb.CloseDb("wallet.dat");
+        return error("MigrateWalletToLMDB(): cannot open wallet.dat cursor");
+    }
+
+    std::unique_ptr<CDBTransaction> txn = g_lmdbWalletDb.BeginTransaction(false);
+    if (!txn) {
+        pcursor->close();
+        source->Close();
+        bitdb.CloseDb("wallet.dat");
+        return error("MigrateWalletToLMDB(): cannot begin LMDB write transaction");
+    }
+
+    size_t nRecords = 0;
+    bool fSuccess = true;
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        int ret = source->ReadAtCursor(pcursor, ssKey, ssValue, DB_NEXT);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0) {
+            fSuccess = false;
+            break;
+        }
+
+        const CDBKey key(ssKey.begin(), ssKey.end());
+        const CDBValue value(ssValue.begin(), ssValue.end());
+        const bool fWritten = txn->Write(key, value, true);
+        // Values can contain private keys; do not leave them in the staging
+        // stream once the LMDB transaction owns its own copy.
+        if (ssValue.size() > 0)
+            OPENSSL_cleanse(&ssValue[0], ssValue.size());
+        if (!fWritten) {
+            fSuccess = false;
+            break;
+        }
+        ++nRecords;
+    }
+    pcursor->close();
+
+    // Verify the whole copy inside the transaction, before committing.  A
+    // short write must never be mistaken for a successful migration.
+    size_t nStored = 0;
+    if (fSuccess && nRecords > 0) {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator();
+        if (!it) {
+            fSuccess = false;
+        } else {
+            for (it->SeekToFirst(); it->Valid(); it->Next())
+                ++nStored;
+            if (it->Error() || nStored != nRecords)
+                fSuccess = false;
+            it.reset();
+        }
+    }
+
+    source->Close();
+    bitdb.CloseDb("wallet.dat");
+
+    if (nRecords == 0) {
+        txn->Abort();
+        return error("MigrateWalletToLMDB(): wallet.dat contains no records");
+    }
+    if (!fSuccess) {
+        txn->Abort();
+        return error("MigrateWalletToLMDB(): failed to copy wallet.dat");
+    }
+    if (!txn->Commit())
+        return error("MigrateWalletToLMDB(): failed to commit LMDB wallet");
+
+    printf("Wallet migration complete (%" PRIszu " records)\n", nRecords);
+    return true;
 }
 
 bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
@@ -1121,18 +1230,12 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     std::string strMarker;
     const bool fMarkerLMDB = ReadWalletBackendMarker(dir, strMarker) &&
                              strMarker == "lmdb";
+    const bool fBDBWalletExists = std::filesystem::exists(dir / "wallet.dat");
 
     // Once the marker says LMDB is authoritative, an empty or missing LMDB
     // wallet is data loss, not an invitation to create a fresh wallet.
     if (fMarkerLMDB && !HasLMDBWallet(dir))
         return MissingLMDBWalletError(pathWallet);
-
-    // Stage 3 must not silently ignore an existing Berkeley DB wallet.  Check
-    // before creating the environment so a refused start leaves no empty LMDB
-    // wallet behind that could later look authoritative.
-    if (!fMarkerLMDB && !HasLMDBWallet(dir) &&
-        std::filesystem::exists(dir / "wallet.dat"))
-        return ExistingBDBWalletError();
 
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync))
         return error("InitLMDBWalletDB(): failed to open LMDB environment %s",
@@ -1152,24 +1255,34 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
         return error("InitLMDBWalletDB(): cannot inspect LMDB wallet");
     }
 
-    switch (GetWalletStartupAction(fMarkerLMDB, fLMDBEmpty))
+    switch (GetWalletStartupAction(fMarkerLMDB, fLMDBEmpty, fBDBWalletExists))
     {
     case WALLET_FAIL_MISSING:
         g_lmdbWalletDb.Close();
         g_lmdbWalletEnv.Close();
         return MissingLMDBWalletError(pathWallet);
 
-    case WALLET_INIT_NEW:
-        // Stage 3 must not silently ignore an existing Berkeley DB wallet.
-        // Converting wallet.dat is a separate, explicit migration step.
-        if (std::filesystem::exists(dir / "wallet.dat"))
+    case WALLET_MIGRATE_BDB:
+        if (!MigrateWalletToLMDB(dir))
         {
             g_lmdbWalletDb.Close();
             g_lmdbWalletEnv.Close();
-            return ExistingBDBWalletError();
+
+            // The environment was created empty for this attempt and the
+            // transaction was aborted, so nothing of value is lost.  Remove it
+            // so a failed migration does not leave a wallet/ directory that
+            // would later look authoritative to a default BDB start.
+            std::error_code ec;
+            std::filesystem::remove_all(pathWallet, ec);
+            if (ec)
+                error("InitLMDBWalletDB(): cannot remove incomplete LMDB "
+                      "wallet %s: %s", pathWallet.string().c_str(),
+                      ec.message().c_str());
+            return false;
         }
         break;
 
+    case WALLET_INIT_NEW:
     case WALLET_USE_EXISTING:
         break;
     }

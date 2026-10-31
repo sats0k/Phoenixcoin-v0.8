@@ -978,10 +978,21 @@ void RunWalletBackendMarker(const std::string &tag)
 
 void RunWalletStartupAction(const std::string & /*tag*/)
 {
-    BOOST_CHECK(GetWalletStartupAction(false, false) == WALLET_USE_EXISTING);
-    BOOST_CHECK(GetWalletStartupAction(false, true) == WALLET_INIT_NEW);
-    BOOST_CHECK(GetWalletStartupAction(true, false) == WALLET_USE_EXISTING);
-    BOOST_CHECK(GetWalletStartupAction(true, true) == WALLET_FAIL_MISSING);
+    // Existing LMDB data always wins, regardless of the marker or wallet.dat.
+    BOOST_CHECK(GetWalletStartupAction(false, false, false) == WALLET_USE_EXISTING);
+    BOOST_CHECK(GetWalletStartupAction(false, false, true) == WALLET_USE_EXISTING);
+    BOOST_CHECK(GetWalletStartupAction(true, false, false) == WALLET_USE_EXISTING);
+    BOOST_CHECK(GetWalletStartupAction(true, false, true) == WALLET_USE_EXISTING);
+
+    // No marker and an empty LMDB wallet: migrate wallet.dat when present,
+    // otherwise create a new wallet.
+    BOOST_CHECK(GetWalletStartupAction(false, true, false) == WALLET_INIT_NEW);
+    BOOST_CHECK(GetWalletStartupAction(false, true, true) == WALLET_MIGRATE_BDB);
+
+    // A marker saying LMDB is authoritative makes an empty wallet data loss,
+    // even when a stale wallet.dat is still lying around.
+    BOOST_CHECK(GetWalletStartupAction(true, true, false) == WALLET_FAIL_MISSING);
+    BOOST_CHECK(GetWalletStartupAction(true, true, true) == WALLET_FAIL_MISSING);
 }
 
 void RunWalletLMDBBackend(const std::string &tag)
@@ -1085,26 +1096,86 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
+}
+
+// Regression: an existing wallet.dat is copied into an empty LMDB wallet
+// before wallet.backend is written.  The test uses the mocked Berkeley DB
+// environment for the source records and a temporary directory for the LMDB
+// side, so it never touches the configured data directory.
+void RunWalletLMDBMigration(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            CloseLMDBWalletDB();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    CloseLMDBWalletDB();
+    BOOST_REQUIRE(!IsLMDBWalletEnabled());
 
     {
-        // Stage 3 has no BDB to LMDB wallet migration.  An existing wallet.dat
-        // must be refused before an empty LMDB wallet is created next to it.
-        const std::filesystem::path dir = MakeTempDir(tag + "_legacy");
-        {
-            std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
-            BOOST_REQUIRE(wallet.good());
-            wallet << "berkeley db wallet";
-        }
+        // Records in the Berkeley DB wallet that startup must carry over.
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_REQUIRE(db.Write(std::string("migration-probe"),
+                               std::string("value")));
+    }
+    {
+        // InitLMDBWalletDB() only migrates when wallet.dat exists on disk.
+        std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
+        BOOST_REQUIRE(wallet.good());
+        wallet << "berkeley db wallet";
+    }
 
-        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
-        BOOST_CHECK(!IsLMDBWalletEnabled());
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    BOOST_CHECK(IsLMDBWalletEnabled());
 
-        std::string marker;
-        BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
-        BOOST_CHECK(!std::filesystem::exists(dir / "wallet"));
+    std::string marker;
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(HasLMDBWallet(dir));
 
+    // The Berkeley DB file is the migration source and must survive untouched.
+    BOOST_CHECK(std::filesystem::exists(dir / "wallet.dat"));
+
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
+        BOOST_CHECK_EQUAL(value, "value");
+    }
+
+    // A restart must use the populated LMDB wallet, not migrate again.
+    CloseLMDBWalletDB();
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
+        BOOST_CHECK_EQUAL(value, "value");
+    }
+
+    // A crash after the transaction commits but before the marker is written
+    // must adopt the populated LMDB wallet, not re-import stale wallet.dat.
+    CloseLMDBWalletDB();
+    {
         std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
+        BOOST_REQUIRE(std::filesystem::remove(dir / "wallet.backend", ec));
+        BOOST_REQUIRE(!ec);
+    }
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
+        BOOST_CHECK_EQUAL(value, "value");
     }
 }
 
@@ -1328,6 +1399,11 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_backend)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
 {
     RunWalletLMDBStartupRefusal("wallet_lmdb_startup_refusal");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_migration)
+{
+    RunWalletLMDBMigration("wallet_lmdb_migration");
 }
 
 BOOST_AUTO_TEST_CASE(wallet_bdb_marker_authority)

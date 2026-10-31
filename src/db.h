@@ -177,6 +177,7 @@ enum WalletStartupAction
 {
     WALLET_USE_EXISTING,
     WALLET_INIT_NEW,
+    WALLET_MIGRATE_BDB,
     WALLET_FAIL_MISSING,
 };
 
@@ -186,9 +187,12 @@ DBBackend GetConfiguredWalletBackend();
 /**
  * Decides what startup should do with the LMDB wallet.  A marker saying LMDB
  * is authoritative forbids silently starting from an empty wallet; that is
- * data loss, not an invitation to create a fresh wallet.
+ * data loss, not an invitation to create a fresh wallet.  When no marker is
+ * present and wallet.dat exists, the wallet is copied into the empty LMDB
+ * environment before the marker is written.
  */
-WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty);
+WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
+                                           bool fBDBWalletExists);
 
 /** Reads the wallet.backend marker from dir.  Returns false when it is absent. */
 bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
@@ -210,7 +214,9 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
 
 /**
  * Validates the configured wallet backend and opens the LMDB wallet when it is
- * selected.  The Berkeley DB wallet.dat is left untouched.
+ * selected.  On first use, an existing wallet.dat is copied into the empty
+ * LMDB wallet in a single transaction.  The Berkeley DB file is left untouched
+ * so a failed or unwanted migration does not destroy the original wallet.
  *
  * A wallet.backend marker records that the data directory has moved to LMDB so
  * that a later default BDB start cannot silently open a stale wallet.dat.
