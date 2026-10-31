@@ -52,9 +52,21 @@ remain Berkeley DB, and the wallet is only moved when explicitly requested:
 2. Start with `-walletbackend=lmdb` (or put `walletbackend=lmdb` in
    `phoenixcoin.conf`).
 
-The LMDB wallet lives in `<datadir>/wallet/`.  A successful start writes
-`<datadir>/wallet.backend` containing `lmdb`.  The marker makes ownership
-explicit:
+The LMDB wallet lives in `<datadir>/wallet/`.  The first LMDB start converts an
+existing `wallet.dat`: every record is copied into the new environment inside a
+single write transaction, the copy is verified and committed, and only then is
+`<datadir>/wallet.backend` written with `lmdb`.  `wallet.dat` is opened
+read-only and is left unchanged, so the Berkeley DB wallet remains available
+until you deliberately remove it.
+
+If the copy fails, the transaction is aborted, the newly created `wallet/` is
+removed, no marker is written, and startup fails with an error.  The original
+`wallet.dat` is untouched, a normal BDB start still works, and selecting LMDB
+again retries the migration.  A crash after the commit but before the marker is
+written is also safe: the populated `wallet/` is used on the next LMDB start and
+the marker is written then.
+
+The marker makes ownership explicit:
 
 - starting without `-walletbackend=lmdb` fails instead of silently opening a
   stale `wallet.dat`;
@@ -63,14 +75,12 @@ explicit:
 - a marker that says `lmdb` requires a non-empty LMDB wallet, so a missing or
   deleted `wallet/` fails rather than creating an empty wallet;
 - a marker that says `bdb` refuses `-walletbackend=lmdb`, even when a leftover
-  `wallet/` directory exists, because BDB to LMDB migration is an explicit
-  operation and not a backend switch;
+  `wallet/` directory exists.  The `bdb` marker is authoritative: to migrate,
+  back up the data directory, remove both `wallet.backend` and any stale
+  `wallet/` directory, then restart with `-walletbackend=lmdb`.  Removing only
+  the marker would let the stale LMDB wallet be adopted instead of migrating
+  `wallet.dat`;
 - Berkeley DB `wallet.dat` is left untouched while LMDB is active.
-
-This release does not convert `wallet.dat` to LMDB.  If `-walletbackend=lmdb`
-is selected and no LMDB wallet exists yet, startup refuses to proceed when
-`wallet.dat` exists.  Berkeley DB to LMDB wallet migration is a separate step;
-start without `-walletbackend=lmdb` until then.
 
 `-salvagewallet` is Berkeley DB specific and is rejected together with
 `-walletbackend=lmdb`.  An LMDB wallet is an environment directory, so
@@ -182,25 +192,36 @@ A full BDB chain at height 202135 (588001 records: 202136 `blockindex` and
 same hash.  The migrated node then continued syncing normally.
 
 The wallet tests in `kvdb_tests` cover the wallet backend marker, the startup
-action matrix, `CWalletDB` routing, commit/abort, persistence across an
-environment restart, and prefix scans through `CDBScan`.  A dedicated
-regression covers the reverse authority case: with a `bdb` marker, an existing
-`wallet.dat`, and a real LMDB environment left in `wallet/`, an LMDB start is
-refused, the marker stays `bdb`, and the stale environment is not adopted or
-modified.  They pass in the normal build together with the rest of the unit
-suite.  The first stage does not include BDB to LMDB wallet migration; an
-existing `wallet.dat` is deliberately rejected when LMDB is requested without
-an LMDB wallet.
+action matrix (including migration), `CWalletDB` routing, commit/abort,
+persistence across an environment restart, and prefix scans through `CDBScan`.
+The migration test starts from records in a Berkeley DB wallet, copies them into
+an empty LMDB environment, verifies that the marker appears only after the
+source is intact and the copy is committed, and checks that a restart uses the
+LMDB wallet without migrating again.  A dedicated regression covers the reverse
+authority case: with a `bdb` marker, an existing `wallet.dat`, and a real LMDB
+environment left in `wallet/`, an LMDB start is refused, the marker stays
+`bdb`, and the stale environment is not adopted or modified.  They pass in the
+normal build together with the rest of the unit suite.
 
-A daemon smoke test on a temporary data directory covered the remaining wiring:
+`regression_lmdb_wallet_migration.sh` passed 45/45 checks.  It starts from a
+real Berkeley DB wallet and verifies the complete handoff:
 
-- the first start created `wallet/` and `wallet.backend` and printed
-  `Wallet database: LMDB`;
-- `getnewaddress` worked, the address survived a clean restart, and the
-  keypool was refilled through the LMDB wallet;
-- `backupwallet` produced an environment that loaded the same addresses when
-  restored into a fresh data directory;
-- `encryptwallet` compacted and rewrote the environment, and the encrypted
-  wallet reopened and unlocked after the restart;
-- an existing `wallet.dat`, and a `wallet.backend` marker with no LMDB wallet,
-  both stopped startup without creating an empty wallet.
+- `wallet.dat` is byte-for-byte unchanged before and after the switch, and the
+  LMDB wallet contains exactly the same number of raw records;
+- legacy keys, hybrid keys, and address-book entries still resolve after the
+  migration and after a restart;
+- the migration runs once, the restart does not copy again, and addresses
+  created while LMDB is active survive a restart;
+- a default BDB start is refused while `wallet.backend` says `lmdb`;
+- `backupwallet` produces a restorable LMDB environment;
+- a deliberately unreadable `wallet.dat` fails startup without writing a
+  marker or leaving `wallet/` behind, the untouched BDB wallet still starts,
+  and a retry after restoring the file migrates successfully.
+
+A daemon smoke test on a temporary data directory also covered the stage-3
+wiring: the first start created `wallet/` and `wallet.backend` and printed
+`Wallet database: LMDB`; `getnewaddress` worked, the address survived a clean
+restart, and the keypool was refilled through the LMDB wallet; `backupwallet`
+produced an environment that loaded the same addresses when restored into a
+fresh data directory; and `encryptwallet` compacted and rewrote the
+environment, with the encrypted wallet reopening and unlocking after restart.
