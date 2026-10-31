@@ -152,12 +152,12 @@ made after the original migration, so prefer a backup when one exists.
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 
-- `kvdb_tests` passed 30/30 test cases in the normal build.  The chain-index
+- `kvdb_tests` passed 31/31 test cases in the normal build.  The chain-index
   subset that existed at the time (24 cases, 1238 assertions) also passed under
   AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- The full unit suite passed 147 test cases with no errors in the normal build.
+- The full unit suite passed 148 test cases with no errors in the normal build.
   Under sanitizers it passed 140/141 test cases (40534/40535 assertions).  The
   only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
   sanitizer slowdown.  There were no AddressSanitizer errors.  The eight
@@ -183,10 +183,14 @@ same hash.  The migrated node then continued syncing normally.
 
 The wallet tests in `kvdb_tests` cover the wallet backend marker, the startup
 action matrix, `CWalletDB` routing, commit/abort, persistence across an
-environment restart, and prefix scans through `CDBScan`.  They pass in the
-normal build together with the rest of the unit suite.  The first stage does not
-include BDB to LMDB wallet migration; an existing `wallet.dat` is deliberately
-rejected when LMDB is requested without an LMDB wallet.
+environment restart, and prefix scans through `CDBScan`.  A dedicated
+regression covers the reverse authority case: with a `bdb` marker, an existing
+`wallet.dat`, and a real LMDB environment left in `wallet/`, an LMDB start is
+refused, the marker stays `bdb`, and the stale environment is not adopted or
+modified.  They pass in the normal build together with the rest of the unit
+suite.  The first stage does not include BDB to LMDB wallet migration; an
+existing `wallet.dat` is deliberately rejected when LMDB is requested without
+an LMDB wallet.
 
 A daemon smoke test on a temporary data directory covered the remaining wiring:
 

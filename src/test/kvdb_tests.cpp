@@ -1087,30 +1087,6 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
     }
 
     {
-        // A bdb marker is authoritative in the other direction too: a stale
-        // wallet/ directory must not let -walletbackend=lmdb adopt the data
-        // directory without an explicit migration.
-        const std::filesystem::path dir = MakeTempDir(tag + "_bdb_marker");
-        BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
-        BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
-        {
-            std::ofstream data(dir / "wallet" / "data.mdb", std::ios::trunc);
-            BOOST_REQUIRE(data.good());
-            data << "stale lmdb wallet";
-        }
-
-        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
-        BOOST_CHECK(!IsLMDBWalletEnabled());
-
-        std::string marker;
-        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
-        BOOST_CHECK_EQUAL(marker, "bdb");
-
-        std::error_code ec;
-        std::filesystem::remove_all(dir, ec);
-    }
-
-    {
         // Stage 3 has no BDB to LMDB wallet migration.  An existing wallet.dat
         // must be refused before an empty LMDB wallet is created next to it.
         const std::filesystem::path dir = MakeTempDir(tag + "_legacy");
@@ -1126,6 +1102,74 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
         std::string marker;
         BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
         BOOST_CHECK(!std::filesystem::exists(dir / "wallet"));
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+}
+
+// Regression: wallet.backend is authoritative in both directions.  A bdb
+// marker must refuse -walletbackend=lmdb even when a leftover wallet/
+// contains a real LMDB environment, otherwise a stale environment could be
+// adopted and the marker silently rewritten to lmdb.
+void RunWalletBDBMarkerAuthority(const std::string &tag)
+{
+    struct Guard {
+        ~Guard() { CloseLMDBWalletDB(); }
+    } guard;
+
+    {
+        // The marker alone is enough, even with an empty wallet/ directory.
+        const std::filesystem::path dir = MakeTempDir(tag + "_dir");
+        BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
+        BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
+
+        BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::string marker;
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "bdb");
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    {
+        // Full reported scenario: bdb marker, an existing wallet.dat, and a
+        // real LMDB environment left in wallet/.
+        const std::filesystem::path dir = MakeTempDir(tag + "_stale");
+        BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
+        {
+            std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
+            BOOST_REQUIRE(wallet.good());
+            wallet << "berkeley db wallet";
+        }
+        {
+            CLMDBDatabase stale;
+            BOOST_REQUIRE(stale.Open((dir / "wallet").string()));
+            WriteValue(stale, Key("canary"), Value("stale lmdb wallet"));
+            stale.Close();
+        }
+        BOOST_REQUIRE(HasLMDBWallet(dir));
+
+        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::string marker;
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "bdb");
+
+        // The stale environment was neither adopted nor modified.
+        {
+            CLMDBDatabase stale;
+            BOOST_REQUIRE(stale.Open((dir / "wallet").string()));
+            CDBValue value;
+            BOOST_REQUIRE(ReadValue(stale, Key("canary"), value));
+            BOOST_CHECK(value == Value("stale lmdb wallet"));
+            stale.Close();
+        }
 
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
@@ -1284,6 +1328,11 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_backend)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
 {
     RunWalletLMDBStartupRefusal("wallet_lmdb_startup_refusal");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_bdb_marker_authority)
+{
+    RunWalletBDBMarkerAuthority("wallet_bdb_marker_authority");
 }
 
 BOOST_AUTO_TEST_SUITE_END()
