@@ -4,8 +4,10 @@ Phoenixcoin stores the block index and the transaction/UTXO index in the chain
 database.  Berkeley DB (`blkindex.dat`) remains the default backend; LMDB can be
 selected explicitly with `-dbbackend=lmdb`.
 
-Wallet and address storage are not affected.  `wallet.dat` stays on Berkeley DB
-and is not migrated.
+The wallet has a separate backend switch.  `wallet.dat` remains the default and
+Berkeley DB is still used unless `-walletbackend=lmdb` is given; see
+[Wallet backend](#wallet-backend-optional-lmdb) below.  Address storage
+(`peers.dat`) is unaffected.
 
 ## Enabling LMDB
 
@@ -41,6 +43,45 @@ use the untouched `blkindex.dat`.  Any blocks imported while LMDB was active
 must be re-downloaded or re-imported, because that work only exists in the LMDB
 index.
 
+## Wallet backend (optional, LMDB)
+
+The wallet backend is independent of the chain index backend.  Both defaults
+remain Berkeley DB, and the wallet is only moved when explicitly requested:
+
+1. Stop Phoenixcoin and back up the data directory.
+2. Start with `-walletbackend=lmdb` (or put `walletbackend=lmdb` in
+   `phoenixcoin.conf`).
+
+The LMDB wallet lives in `<datadir>/wallet/`.  A successful start writes
+`<datadir>/wallet.backend` containing `lmdb`.  The marker makes ownership
+explicit:
+
+- starting without `-walletbackend=lmdb` fails instead of silently opening a
+  stale `wallet.dat`;
+- a non-empty `<datadir>/wallet/data.mdb` without a marker is treated as an
+  LMDB wallet for the same reason;
+- a marker that says `lmdb` requires a non-empty LMDB wallet, so a missing or
+  deleted `wallet/` fails rather than creating an empty wallet;
+- Berkeley DB `wallet.dat` is left untouched while LMDB is active.
+
+This release does not convert `wallet.dat` to LMDB.  If `-walletbackend=lmdb`
+is selected and no LMDB wallet exists yet, startup refuses to proceed when
+`wallet.dat` exists.  Berkeley DB to LMDB wallet migration is a separate step;
+start without `-walletbackend=lmdb` until then.
+
+`-salvagewallet` is Berkeley DB specific and is rejected together with
+`-walletbackend=lmdb`.  An LMDB wallet is an environment directory, so
+`backupwallet <destination>` writes a directory, not a single file.  If
+`<destination>` is an existing directory the copy is written to
+`<destination>/wallet`; otherwise `<destination>` names the new backup
+directory.  The target must not exist yet or must be empty; an existing
+non-empty target is refused instead of being overwritten.
+
+To return to Berkeley DB, stop the node, back up the data directory, and remove
+both `<datadir>/wallet` and `<datadir>/wallet.backend`.  The untouched
+`wallet.dat` is then used again.  Any keys or transactions created while the
+LMDB wallet was active exist only in the LMDB copy.
+
 ## Options
 
 - `-dbbackend=lmdb|bdb` — chain index backend, default `bdb`.
@@ -54,6 +95,11 @@ index.
   DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per block during
   initial sync.  Transactions remain atomic and consistent.  Set to `0` for
   per-commit durability.  A clean shutdown always flushes the environment.
+  This option applies to both LMDB environments.
+- `-walletbackend=lmdb|bdb` — wallet backend, default `bdb`.
+- `-lmdbwalletsize=<MiB>` — maximum size of the LMDB wallet map, default
+  512 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
+  `-lmdbmapsize` and enlarged automatically when the existing wallet needs it.
 
 ## Map usage and growth
 
@@ -100,15 +146,17 @@ made after the original migration, so prefer a backup when one exists.
 
 ## Validation
 
-The backend was validated on Linux x86-64 with a build configured with
-`-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
+The chain-index backend was validated on Linux x86-64 with a build configured
+with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 
-- `kvdb_tests` passed 24/24 test cases (1238 assertions) with no sanitizer
-  reports.
+- `kvdb_tests` passed 30/30 test cases in the normal build.  The chain-index
+  subset that existed at the time (24 cases, 1238 assertions) also passed under
+  AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- The full unit suite passed 140/141 test cases (40534/40535 assertions).
-  The only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
+- The full unit suite passed 147 test cases with no errors in the normal build.
+  Under sanitizers it passed 140/141 test cases (40534/40535 assertions).  The
+  only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
   sanitizer slowdown.  There were no AddressSanitizer errors.  The eight
   UndefinedBehaviorSanitizer reports were all in pre-existing non-LMDB code
   (`Hash160` on an empty vector, base32/base64 decoding, and empty-vector
@@ -129,3 +177,23 @@ A full BDB chain at height 202135 (588001 records: 202136 `blockindex` and
 385861 `tx`) was migrated in about three seconds.  LMDB contained exactly
 588001 entries in a 72118272-byte `data.mdb`, and the BDB and LMDB tips had the
 same hash.  The migrated node then continued syncing normally.
+
+The wallet tests in `kvdb_tests` cover the wallet backend marker, the startup
+action matrix, `CWalletDB` routing, commit/abort, persistence across an
+environment restart, and prefix scans through `CDBScan`.  They pass in the
+normal build together with the rest of the unit suite.  The first stage does not
+include BDB to LMDB wallet migration; an existing `wallet.dat` is deliberately
+rejected when LMDB is requested without an LMDB wallet.
+
+A daemon smoke test on a temporary data directory covered the remaining wiring:
+
+- the first start created `wallet/` and `wallet.backend` and printed
+  `Wallet database: LMDB`;
+- `getnewaddress` worked, the address survived a clean restart, and the
+  keypool was refilled through the LMDB wallet;
+- `backupwallet` produced an environment that loaded the same addresses when
+  restored into a fresh data directory;
+- `encryptwallet` compacted and rewrote the environment, and the encrypted
+  wallet reopened and unlocked after the restart;
+- an existing `wallet.dat`, and a `wallet.backend` marker with no LMDB wallet,
+  both stopped startup without creating an empty wallet.
