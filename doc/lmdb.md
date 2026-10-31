@@ -62,6 +62,9 @@ explicit:
   LMDB wallet for the same reason;
 - a marker that says `lmdb` requires a non-empty LMDB wallet, so a missing or
   deleted `wallet/` fails rather than creating an empty wallet;
+- a marker that says `bdb` refuses `-walletbackend=lmdb`, even when a leftover
+  `wallet/` directory exists, because BDB to LMDB migration is an explicit
+  operation and not a backend switch;
 - Berkeley DB `wallet.dat` is left untouched while LMDB is active.
 
 This release does not convert `wallet.dat` to LMDB.  If `-walletbackend=lmdb`

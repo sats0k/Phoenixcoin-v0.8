@@ -321,6 +321,14 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
                          "Start with -walletbackend=lmdb. To revert to Berkeley DB, "
                          "back up the data directory and remove both 'wallet' "
                          "and 'wallet.backend'.");
+
+        // The marker is authoritative in both directions.  In particular, a
+        // leftover wallet/ directory must not let an LMDB start adopt a data
+        // directory whose marker still says Berkeley DB owns the wallet.
+        if (strMarker == "bdb" && configured == DB_BACKEND_LMDB)
+            return error("This data directory uses the Berkeley DB wallet. "
+                         "Berkeley DB to LMDB wallet migration is not available "
+                         "yet; start without -walletbackend=lmdb to use it.");
         return true;
     }
 
@@ -1103,6 +1111,12 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
                               bool fNoSync)
 {
     const std::filesystem::path pathWallet = dir / "wallet";
+
+    // Re-check the marker here as well, so the test entry point (and any
+    // future caller) cannot bypass the authority rules enforced by
+    // InitLMDBWalletDB().
+    if (!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB))
+        return false;
 
     std::string strMarker;
     const bool fMarkerLMDB = ReadWalletBackendMarker(dir, strMarker) &&

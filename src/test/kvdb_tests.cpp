@@ -925,7 +925,19 @@ void RunWalletBackendMarker(const std::string &tag)
     BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "bdb");
     BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // A bdb marker is authoritative too: even a leftover wallet/ directory
+    // must not let an LMDB start adopt the data directory without an explicit
+    // migration.
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
+    {
+        std::ofstream data(dir / "wallet" / "data.mdb", std::ios::trunc);
+        BOOST_REQUIRE(data.good());
+        data << "stale lmdb wallet";
+    }
+    BOOST_CHECK(HasLMDBWallet(dir));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
 
     // Switching to LMDB must block a later default BDB start.
     BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
@@ -1069,6 +1081,30 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
         BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
         BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
         BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    {
+        // A bdb marker is authoritative in the other direction too: a stale
+        // wallet/ directory must not let -walletbackend=lmdb adopt the data
+        // directory without an explicit migration.
+        const std::filesystem::path dir = MakeTempDir(tag + "_bdb_marker");
+        BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
+        BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
+        {
+            std::ofstream data(dir / "wallet" / "data.mdb", std::ios::trunc);
+            BOOST_REQUIRE(data.good());
+            data << "stale lmdb wallet";
+        }
+
+        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::string marker;
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "bdb");
 
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
