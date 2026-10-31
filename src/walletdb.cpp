@@ -21,6 +21,18 @@ using namespace std;
 
 static uint64 nAccountingEntryNumber = 0;
 
+namespace {
+
+CDataStream StreamFromBytes(const std::vector<unsigned char>& data)
+{
+    CDataStream stream(SER_DISK, CLIENT_VERSION);
+    if (!data.empty())
+        stream.write((const char*)&data[0], data.size());
+    return stream;
+}
+
+} // namespace
+
 //
 // CWalletDB
 //
@@ -76,25 +88,21 @@ void CWalletDB::ListAccountCreditDebit(const string& strAccount, list<CAccountin
 {
     bool fAllAccounts = (strAccount == "*");
 
-    Dbc* pcursor = GetCursor();
-    if (!pcursor)
-        throw runtime_error("CWalletDB::ListAccountCreditDebit() : cannot create DB cursor");
-    unsigned int fFlags = DB_SET_RANGE;
-    while(true) {
+    std::unique_ptr<CDBScan> scan = GetScan();
+    if (!scan)
+        throw runtime_error("CWalletDB::ListAccountCreditDebit() : cannot create DB scan");
+
+    CDataStream ssSeek(SER_DISK, CLIENT_VERSION);
+    ssSeek << std::make_tuple(string("acentry"), (fAllAccounts? string("") : strAccount), uint64(0));
+    scan->Seek(CDBKey(ssSeek.begin(), ssSeek.end()));
+
+    while(scan->Valid()) {
         // Read next record
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
-        if (fFlags == DB_SET_RANGE)
-            ssKey << std::make_tuple(string("acentry"), (fAllAccounts? string("") : strAccount), uint64(0));
-        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
-        int ret = ReadAtCursor(pcursor, ssKey, ssValue, fFlags);
-        fFlags = DB_NEXT;
-        if (ret == DB_NOTFOUND)
-            break;
-        else if (ret != 0)
-        {
-            pcursor->close();
-            throw runtime_error("CWalletDB::ListAccountCreditDebit() : error scanning DB");
-        }
+        CDBKey key = scan->Key();
+        CDBValue value = scan->Value();
+        CDataStream ssKey = StreamFromBytes(key);
+        CDataStream ssValue = StreamFromBytes(value);
+        scan->Next();
 
         // Unserialize
         string strType;
@@ -111,7 +119,8 @@ void CWalletDB::ListAccountCreditDebit(const string& strAccount, list<CAccountin
         entries.push_back(acentry);
     }
 
-    pcursor->close();
+    if (scan->Error())
+        throw runtime_error("CWalletDB::ListAccountCreditDebit() : error scanning DB");
 }
 
 
@@ -436,26 +445,22 @@ DBErrors CWalletDB::LoadWallet(CWallet *pwallet) {
             pwallet->LoadMinVersion(nMinVersion);
         }
 
-        // Get cursor
-        Dbc* pcursor = GetCursor();
-        if (!pcursor)
+        // Get scan
+        std::unique_ptr<CDBScan> scan = GetScan();
+        if (!scan)
         {
-            printf("Error getting wallet database cursor\n");
+            printf("Error getting wallet database scan\n");
             return DB_CORRUPT;
         }
 
-        while(true) {
+        scan->SeekToFirst();
+        while(scan->Valid()) {
             // Read next record
-            CDataStream ssKey(SER_DISK, CLIENT_VERSION);
-            CDataStream ssValue(SER_DISK, CLIENT_VERSION);
-            int ret = ReadAtCursor(pcursor, ssKey, ssValue);
-            if (ret == DB_NOTFOUND)
-                break;
-            else if (ret != 0)
-            {
-                printf("Error reading next record from wallet database\n");
-                return DB_CORRUPT;
-            }
+            CDBKey key = scan->Key();
+            CDBValue value = scan->Value();
+            CDataStream ssKey = StreamFromBytes(key);
+            CDataStream ssValue = StreamFromBytes(value);
+            scan->Next();
 
             // Try to be tolerant of single corrupt records:
             string strType, strErr;
@@ -476,7 +481,12 @@ DBErrors CWalletDB::LoadWallet(CWallet *pwallet) {
             if (!strErr.empty())
                 printf("%s\n", strErr.c_str());
         }
-        pcursor->close();
+
+        if (scan->Error())
+        {
+            printf("Error reading next record from wallet database\n");
+            return DB_CORRUPT;
+        }
     }
     catch (...)
     {
@@ -544,6 +554,13 @@ void ThreadFlushWalletDB(void* parg)
 
         if (nLastFlushed != nWalletDBUpdated && GetTime() - nLastWalletUpdate >= 2)
         {
+            if (IsLMDBWalletEnabled())
+            {
+                nLastFlushed = nWalletDBUpdated;
+                FlushLMDBWallet(true);
+                continue;
+            }
+
             TRY_LOCK(bitdb.cs_db,lockDb);
             if (lockDb)
             {
@@ -582,6 +599,8 @@ bool BackupWallet(const CWallet& wallet, const string& strDest)
 {
     if (!wallet.fFileBacked)
         return false;
+    if (IsLMDBWalletEnabled())
+        return BackupLMDBWallet(strDest);
     while (!fShutdown)
     {
         {

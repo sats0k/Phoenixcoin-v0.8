@@ -38,6 +38,9 @@ extern unsigned int nWalletDBUpdated;
 void ThreadFlushWalletDB(void* parg);
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
+/** Copies the active LMDB wallet to strDest with mdb_env_copy2(). */
+bool BackupLMDBWallet(const std::string& strDest);
+
 bool ExportWallet(CWallet *pwallet, const std::string &strDst);
 bool ImportWallet(CWallet *pwallet, const std::string &strSrc);
 
@@ -169,6 +172,66 @@ void CloseLMDBChainDB();
 std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly);
 
 
+/** Startup action for the LMDB wallet once its environment is open. */
+enum WalletStartupAction
+{
+    WALLET_USE_EXISTING,
+    WALLET_INIT_NEW,
+    WALLET_FAIL_MISSING,
+};
+
+/** Returns the wallet backend selected by -walletbackend (default: BDB). */
+DBBackend GetConfiguredWalletBackend();
+
+/**
+ * Decides what startup should do with the LMDB wallet.  A marker saying LMDB
+ * is authoritative forbids silently starting from an empty wallet; that is
+ * data loss, not an invitation to create a fresh wallet.
+ */
+WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty);
+
+/** Reads the wallet.backend marker from dir.  Returns false when it is absent. */
+bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
+
+/** Atomically writes the wallet.backend marker in dir. */
+bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
+
+/** Returns true when dir contains a non-empty LMDB wallet. */
+bool HasLMDBWallet(const std::filesystem::path& dir);
+
+/**
+ * Checks that the configured wallet backend can use the wallet in dir.  A
+ * marker records which backend owns the wallet, and a legacy LMDB wallet
+ * without a marker is still treated as authoritative.  This prevents a
+ * default BDB start from silently creating or loading a stale wallet.dat after
+ * an LMDB migration.
+ */
+bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
+
+/**
+ * Validates the configured wallet backend and opens the LMDB wallet when it is
+ * selected.  The Berkeley DB wallet.dat is left untouched.
+ *
+ * A wallet.backend marker records that the data directory has moved to LMDB so
+ * that a later default BDB start cannot silently open a stale wallet.dat.
+ */
+bool InitLMDBWalletDB();
+void CloseLMDBWalletDB();
+bool IsLMDBWalletEnabled();
+
+/** Flushes pending LMDB wallet commits to disk.  No-op for a BDB wallet. */
+bool FlushLMDBWallet(bool fForce = true);
+
+/** Begins a transaction on the active wallet backend (LMDB). */
+std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly);
+
+/**
+ * Test hook: initializes the LMDB wallet rooted at dir, bypassing the mock
+ * guard so tests can use a temporary directory instead of the real datadir.
+ */
+bool InitLMDBWalletDBForTest(const std::filesystem::path& dir);
+
+
 /** RAII class that provides access to a Berkeley database */
 class CDB
 {
@@ -178,10 +241,18 @@ protected:
     DbTxn *activeTxn;
     bool fReadOnly;
 
-    // When the LMDB chain backend is active this database delegates to it and
-    // pdb stays null.  Wallet and address databases always use Berkeley DB.
+    // When an LMDB backend is active this database delegates to it and pdb
+    // stays null.  The chain index and the wallet each have their own LMDB
+    // environment, so remember which one this handle belongs to.
     std::unique_ptr<CDBTransaction> kvTxn;
     bool fUseKV;
+    bool fUseKVWallet;
+
+    std::unique_ptr<CDBTransaction> BeginKVTransaction(bool fReadOnly)
+    {
+        return fUseKVWallet ? BeginWalletTransaction(fReadOnly)
+                            : BeginChainTransaction(fReadOnly);
+    }
 
     bool ReadKV(const CDBKey& key, CDBValue& value);
     bool WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite);
@@ -204,17 +275,25 @@ protected:
         {
             CDataStream ssKey(SER_DISK, CLIENT_VERSION);
             ssKey << key;
-            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            CDBKey kvKey(ssKey.begin(), ssKey.end());
             CDBValue kvValue;
             if (!ReadKV(kvKey, kvValue))
                 return false;
+            CDataStream ssValue(SER_DISK, CLIENT_VERSION);
             try {
-                CDataStream ssValue(SER_DISK, CLIENT_VERSION);
                 if (!kvValue.empty())
                     ssValue.write((const char*)kvValue.data(), kvValue.size());
                 ssValue >> value;
+                if (!kvValue.empty())
+                    OPENSSL_cleanse(kvValue.data(), kvValue.size());
+                if (ssValue.size() > 0)
+                    OPENSSL_cleanse(&ssValue[0], ssValue.size());
                 return true;
             } catch (const std::exception&) {
+                if (!kvValue.empty())
+                    OPENSSL_cleanse(kvValue.data(), kvValue.size());
+                if (ssValue.size() > 0)
+                    OPENSSL_cleanse(&ssValue[0], ssValue.size());
                 return false;
             }
         }
@@ -271,9 +350,14 @@ protected:
 
         if (fUseKV)
         {
-            const CDBKey kvKey(ssKey.begin(), ssKey.end());
-            const CDBValue kvValue(ssValue.begin(), ssValue.end());
-            return WriteKV(kvKey, kvValue, fOverwrite);
+            CDBKey kvKey(ssKey.begin(), ssKey.end());
+            CDBValue kvValue(ssValue.begin(), ssValue.end());
+            bool fResult = WriteKV(kvKey, kvValue, fOverwrite);
+            if (!kvValue.empty())
+                OPENSSL_cleanse(kvValue.data(), kvValue.size());
+            if (ssValue.size() > 0)
+                OPENSSL_cleanse(&ssValue[0], ssValue.size());
+            return fResult;
         }
 
         Dbt datKey(&ssKey[0], ssKey.size());
@@ -345,6 +429,9 @@ protected:
         return (ret == 0);
     }
 
+    /** Opens a forward/backward scan on either backend. */
+    std::unique_ptr<CDBScan> GetScan(const CDBKey& prefix = CDBKey());
+
     Dbc* GetCursor()
     {
         if (!pdb)
@@ -402,7 +489,7 @@ public:
         {
             if (kvTxn)
                 return false;
-            kvTxn = BeginChainTransaction(false);
+            kvTxn = BeginKVTransaction(false);
             return kvTxn.get() != nullptr;
         }
 

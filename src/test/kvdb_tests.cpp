@@ -22,6 +22,8 @@
 #include "lmdb_kv.h"
 #include "main.h"
 #include "util.h"
+#include "wallet.h"
+#include "walletdb.h"
 
 BOOST_AUTO_TEST_SUITE(kvdb_tests)
 
@@ -244,6 +246,7 @@ void RunIteration(const std::string &tag)
         it->Next();
         BOOST_REQUIRE(it->Valid());
         BOOST_CHECK(it->Key() == Key("c"));
+        BOOST_CHECK(!it->Error());
     }
     BOOST_REQUIRE_MESSAGE(txn->Commit(), "read transaction commit failed");
 }
@@ -856,6 +859,243 @@ void RunChainBackendMarker(const std::string &tag)
     std::filesystem::remove_all(legacy, ec);
 }
 
+CDataStream TestStreamFromBytes(const CDBKey& data)
+{
+    CDataStream stream(SER_DISK, CLIENT_VERSION);
+    if (!data.empty())
+        stream.write((const char*)&data[0], data.size());
+    return stream;
+}
+
+std::string TestDecodeString(const CDBValue& value)
+{
+    CDataStream stream = TestStreamFromBytes(value);
+    std::string decoded;
+    stream >> decoded;
+    return decoded;
+}
+
+/** Test-only access to the protected CDB read/write/scan helpers. */
+class WalletDBTestAccess : public CWalletDB
+{
+public:
+    WalletDBTestAccess(const char* file, const char* mode) : CWalletDB(file, mode) {}
+    using CDB::Read;
+    using CDB::Write;
+    using CDB::Erase;
+    using CDB::Exists;
+    using CDB::GetScan;
+};
+
+template <typename DBType>
+void RunLargeValueIteration(const std::string &tag)
+{
+    DBGuard<DBType> guard(tag);
+
+    CDBValue large(20000);
+    for (size_t i = 0; i < large.size(); ++i)
+        large[i] = static_cast<unsigned char>((i * 31 + 7) & 0xff);
+    WriteValue(guard.db, Key("large"), large);
+
+    std::unique_ptr<CDBTransaction> txn = BeginRead(guard.db);
+    {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator();
+        BOOST_REQUIRE(it.get() != nullptr);
+        it->SeekToFirst();
+        BOOST_REQUIRE(it->Valid());
+        BOOST_CHECK(it->Key() == Key("large"));
+        BOOST_CHECK(it->Value() == large);
+        it->Next();
+        BOOST_CHECK(!it->Valid());
+    }
+    BOOST_REQUIRE_MESSAGE(txn->Commit(), "read transaction commit failed");
+}
+
+void RunWalletBackendMarker(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    std::string marker;
+
+    BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK(!HasLMDBWallet(dir));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "bdb");
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // Switching to LMDB must block a later default BDB start.
+    BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // Unknown markers are rejected instead of guessing.
+    BOOST_REQUIRE(WriteWalletBackendMarker(dir, "sqlite"));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    BOOST_REQUIRE(!ec);
+
+    // Legacy LMDB wallets have no marker; a non-empty data.mdb is authoritative.
+    const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
+    BOOST_REQUIRE(std::filesystem::create_directories(legacy / "wallet"));
+    {
+        std::ofstream data(legacy / "wallet" / "data.mdb", std::ios::trunc);
+        BOOST_REQUIRE(data.good());
+        data << "lmdb";
+    }
+    BOOST_CHECK(HasLMDBWallet(legacy));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(legacy, DB_BACKEND_LMDB));
+
+    // An empty placeholder is not a wallet and must not block BDB.
+    std::filesystem::resize_file(legacy / "wallet" / "data.mdb", 0, ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_CHECK(!HasLMDBWallet(legacy));
+    BOOST_CHECK(CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
+
+    std::filesystem::remove_all(legacy, ec);
+}
+
+void RunWalletStartupAction(const std::string & /*tag*/)
+{
+    BOOST_CHECK(GetWalletStartupAction(false, false) == WALLET_USE_EXISTING);
+    BOOST_CHECK(GetWalletStartupAction(false, true) == WALLET_INIT_NEW);
+    BOOST_CHECK(GetWalletStartupAction(true, false) == WALLET_USE_EXISTING);
+    BOOST_CHECK(GetWalletStartupAction(true, true) == WALLET_FAIL_MISSING);
+}
+
+void RunWalletLMDBBackend(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            CloseLMDBWalletDB();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+
+    std::string marker;
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(HasLMDBWallet(dir));
+
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_CHECK_MESSAGE(db.Write(std::string("probe"), std::string("one")),
+                            "wallet write failed");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("probe"), value));
+        BOOST_CHECK_EQUAL(value, "one");
+        BOOST_CHECK(db.Exists(std::string("probe")));
+    }
+
+    {
+        // An aborted transaction must not become visible.
+        WalletDBTestAccess db("wallet.dat", "r+");
+        BOOST_REQUIRE(db.TxnBegin());
+        BOOST_CHECK(db.Write(std::string("aborted"), std::string("no")));
+        BOOST_REQUIRE(db.TxnAbort());
+        BOOST_CHECK(!db.Exists(std::string("aborted")));
+    }
+
+    {
+        WalletDBTestAccess db("wallet.dat", "r+");
+        BOOST_REQUIRE(db.TxnBegin());
+        BOOST_CHECK(db.Write(std::string("committed"), std::string("yes")));
+        BOOST_REQUIRE(db.TxnCommit());
+    }
+
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+        ssPrefix << std::string("probe");
+        std::unique_ptr<CDBScan> scan =
+            db.GetScan(CDBKey(ssPrefix.begin(), ssPrefix.end()));
+        BOOST_REQUIRE(scan.get() != nullptr);
+        scan->SeekToFirst();
+        BOOST_REQUIRE(scan->Valid());
+        BOOST_CHECK(scan->Key() == CDBKey(ssPrefix.begin(), ssPrefix.end()));
+        BOOST_CHECK_EQUAL(TestDecodeString(scan->Value()), "one");
+        scan->Next();
+        BOOST_CHECK(!scan->Valid());
+    }
+
+    // The records must survive closing and reopening the environment.
+    CloseLMDBWalletDB();
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("probe"), value));
+        BOOST_CHECK_EQUAL(value, "one");
+        BOOST_REQUIRE(db.Read(std::string("committed"), value));
+        BOOST_CHECK_EQUAL(value, "yes");
+        BOOST_CHECK(!db.Exists(std::string("aborted")));
+    }
+    {
+        WalletDBTestAccess db("wallet.dat", "r+");
+        BOOST_CHECK(db.Erase(std::string("probe")));
+    }
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        BOOST_CHECK(!db.Exists(std::string("probe")));
+    }
+}
+
+void RunWalletLMDBStartupRefusal(const std::string &tag)
+{
+    struct Guard {
+        ~Guard() { CloseLMDBWalletDB(); }
+    } guard;
+
+    {
+        // A marker that says LMDB is authoritative must not fall back to an
+        // empty wallet.
+        const std::filesystem::path dir = MakeTempDir(tag + "_missing");
+        BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
+        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+
+    {
+        // Stage 3 has no BDB to LMDB wallet migration.  An existing wallet.dat
+        // must be refused before an empty LMDB wallet is created next to it.
+        const std::filesystem::path dir = MakeTempDir(tag + "_legacy");
+        {
+            std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
+            BOOST_REQUIRE(wallet.good());
+            wallet << "berkeley db wallet";
+        }
+
+        BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(!IsLMDBWalletEnabled());
+
+        std::string marker;
+        BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet"));
+
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -978,6 +1218,36 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_crash_consistency)
 BOOST_AUTO_TEST_CASE(chain_backend_marker)
 {
     RunChainBackendMarker("chain_backend_marker");
+}
+
+BOOST_AUTO_TEST_CASE(bdb_kvdb_large_value_iteration)
+{
+    RunLargeValueIteration<CBDBDatabase>("bdb_large_values");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_large_value_iteration)
+{
+    RunLargeValueIteration<CLMDBDatabase>("lmdb_large_values");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_backend_marker)
+{
+    RunWalletBackendMarker("wallet_backend_marker");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_startup_action)
+{
+    RunWalletStartupAction("wallet_startup_action");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_backend)
+{
+    RunWalletLMDBBackend("wallet_lmdb_backend");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
+{
+    RunWalletLMDBStartupRefusal("wallet_lmdb_startup_refusal");
 }
 
 BOOST_AUTO_TEST_SUITE_END()

@@ -24,6 +24,7 @@ Checkpoints_tests.cpp
 DoS_tests.cpp
 getarg_tests.cpp
 key_tests.cpp
+kvdb_tests.cpp
 miner_tests.cpp
 mruset_tests.cpp
 multisig_tests.cpp

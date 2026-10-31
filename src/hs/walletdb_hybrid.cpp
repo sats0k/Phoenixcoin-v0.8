@@ -17,17 +17,31 @@
 
 using namespace std;
 
+namespace {
+
+CDataStream StreamFromBytes(const std::vector<unsigned char>& data)
+{
+    CDataStream stream(SER_DISK, CLIENT_VERSION);
+    if (!data.empty())
+        stream.write((const char*)&data[0], data.size());
+    return stream;
+}
+
+} // namespace
+
 bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &vKeys)
 {
     vKeys.clear();
-    Dbc* pcursor = GetCursor();
-    if (!pcursor) return false;
+    std::unique_ptr<CDBScan> scan = GetScan();
+    if (!scan) return false;
 
-    while (true) {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION), ssValue(SER_DISK, CLIENT_VERSION);
-        int ret = ReadAtCursor(pcursor, ssKey, ssValue);
-        if (ret == DB_NOTFOUND) break;
-        if (ret != 0) return false;
+    scan->SeekToFirst();
+    while (scan->Valid()) {
+        CDBKey key = scan->Key();
+        CDBValue value = scan->Value();
+        CDataStream ssKey = StreamFromBytes(key);
+        CDataStream ssValue = StreamFromBytes(value);
+        scan->Next();
 
         std::string strType;
         ssKey >> strType;
@@ -40,7 +54,7 @@ bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &v
         bool fParsed = false;
         try {
             // Newest layout: the first field is the record's own nVersion.
-            CDataStream ssCopy(ssValue.begin(), ssValue.end(), SER_DISK, CLIENT_VERSION);
+            CDataStream ssCopy = StreamFromBytes(value);
             ssCopy >> disk;
             if (disk.nVersion == HYBRIDKEY_DISK_VERSION ||
                 disk.nVersion == HYBRIDKEY_DISK_VERSION_ENCRYPTED)
@@ -59,7 +73,9 @@ bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &v
         vKeys.push_back(make_pair(hybridID, disk));
     }
 
-    pcursor->close();
+    if (scan->Error())
+        return false;
+
     return true;
 }
 
@@ -114,17 +130,16 @@ bool CWalletDB::LoadHybridUsedKeys(std::set<CHybridKeyID>& setUsed)
 bool CWalletDB::LoadAllHybridAddresses(map<CHybridKeyID, CHybridAddressEntry>& mapAddresses)
 {
     mapAddresses.clear();
-    Dbc* pcursor = GetCursor();
-    if (!pcursor) return false;
+    std::unique_ptr<CDBScan> scan = GetScan();
+    if (!scan) return false;
 
-    while (true) {
-        CDataStream ssKey(SER_DISK, CLIENT_VERSION), ssValue(SER_DISK, CLIENT_VERSION);
-        int ret = ReadAtCursor(pcursor, ssKey, ssValue);
-        if (ret == DB_NOTFOUND) break;
-        if (ret != 0) {
-            pcursor->close();
-            return false;
-        }
+    scan->SeekToFirst();
+    while (scan->Valid()) {
+        CDBKey key = scan->Key();
+        CDBValue value = scan->Value();
+        CDataStream ssKey = StreamFromBytes(key);
+        CDataStream ssValue = StreamFromBytes(value);
+        scan->Next();
 
         std::string strType;
         ssKey >> strType;
@@ -139,6 +154,8 @@ bool CWalletDB::LoadAllHybridAddresses(map<CHybridKeyID, CHybridAddressEntry>& m
         mapAddresses[keyID] = entry;
     }
 
-    pcursor->close();
+    if (scan->Error())
+        return false;
+
     return true;
 }
