@@ -81,7 +81,9 @@ constexpr const char* CHAIN_BACKEND_MARKER = "blkindex.backend";
 constexpr const char* WALLET_BACKEND_MARKER = "wallet.backend";
 
 #if defined(__LP64__) || defined(_WIN64)
-constexpr int64 LMDB_DEFAULT_WALLET_MAPSIZE_MIB = 512;
+// A wallet map is virtual address space, not a preallocation.  Match the chain
+// index default so a large wallet does not need a flag just to start.
+constexpr int64 LMDB_DEFAULT_WALLET_MAPSIZE_MIB = 4096;
 #else
 constexpr int64 LMDB_DEFAULT_WALLET_MAPSIZE_MIB = 256;
 #endif
@@ -431,6 +433,39 @@ bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& 
 
     nBytes = nCandidate;
     return true;
+}
+
+size_t GetLMDBWalletMapSizeForMigration(size_t nConfigured, uintmax_t nSourceBytes)
+{
+    // Berkeley DB's file already includes its own page overhead, so its size
+    // bounds the record data that migration will copy.  Double it to leave
+    // room for LMDB branch pages and for the pages a single copy transaction
+    // dirties before it commits, then add a small fixed margin.
+    const uintmax_t nMargin = 16ULL * 1024ULL * 1024ULL;
+    uintmax_t nNeeded;
+    if (nSourceBytes > ((std::numeric_limits<uintmax_t>::max)() - nMargin) / 2)
+        nNeeded = (std::numeric_limits<uintmax_t>::max)();
+    else
+        nNeeded = nSourceBytes * 2 + nMargin;
+
+    const uintmax_t nPlatformMax =
+        static_cast<uintmax_t>(LMDB_MAX_MAPSIZE_MIB) * 1024ULL * 1024ULL;
+    if (nNeeded > nPlatformMax)
+        nNeeded = nPlatformMax;
+
+    // Keep the derived size page aligned, like ParseLMDBMapSize does for
+    // explicit values.  The maximum is MiB aligned, so clamping to it cannot
+    // leave an unaligned result behind.
+    const size_t nPageSize = GetSystemPageSize();
+    if (nPageSize > 0 && nNeeded < nPlatformMax) {
+        const uintmax_t nRound = static_cast<uintmax_t>(nPageSize) - 1;
+        if (nNeeded <= nPlatformMax - nRound)
+            nNeeded = ((nNeeded + nRound) / nPageSize) * nPageSize;
+        else
+            nNeeded = nPlatformMax;
+    }
+
+    return nNeeded > nConfigured ? static_cast<size_t>(nNeeded) : nConfigured;
 }
 
 std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly)
@@ -1236,6 +1271,26 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     // wallet is data loss, not an invitation to create a fresh wallet.
     if (fMarkerLMDB && !HasLMDBWallet(dir))
         return MissingLMDBWalletError(pathWallet);
+
+    // The first LMDB start copies wallet.dat inside one transaction.  The
+    // environment is new, so CLMDBEnv::Open() has no data.mdb whose size could
+    // raise the map automatically.  Derive the map from the source file here;
+    // otherwise a wallet larger than -lmdbwalletsize fails with MDB_MAP_FULL.
+    if (!fMarkerLMDB) {
+        std::error_code ec;
+        const uintmax_t nSourceBytes =
+            std::filesystem::file_size(dir / "wallet.dat", ec);
+        if (!ec && nSourceBytes > 0) {
+            const size_t nMigrationSize =
+                GetLMDBWalletMapSizeForMigration(nMapSize, nSourceBytes);
+            if (nMigrationSize > nMapSize) {
+                printf("LMDB wallet map size increased from %" PRIszu
+                       " to %" PRIszu " bytes to fit the wallet.dat migration\n",
+                       nMapSize, nMigrationSize);
+                nMapSize = nMigrationSize;
+            }
+        }
+    }
 
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync,
                               "-lmdbwalletsize"))

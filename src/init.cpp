@@ -273,7 +273,7 @@ std::string HelpMessage()
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
         "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
         "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit; values above the platform limit are rejected)") + "\n" +
-        "  -lmdbwalletsize=<n>    " + _("LMDB wallet memory map size in MiB (default: 512 on 64-bit, 256 on 32-bit)") + "\n" +
+        "  -lmdbwalletsize=<n>    " + _("LMDB wallet memory map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
         "  -walletbackend=<b>     " + _("Wallet backend: bdb or lmdb (default: bdb)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +

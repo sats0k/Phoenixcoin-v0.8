@@ -66,8 +66,11 @@ again retries the migration.  A crash after the commit but before the marker is
 written is also safe: the populated `wallet/` is used on the next LMDB start and
 the marker is written then.
 
-If the wallet reaches its map limit, writes fail with an `LMDB map is full`
-message naming `-lmdbwalletsize`; restart with a larger value.
+The map for the one-shot copy is sized from `wallet.dat` itself, so a wallet
+larger than `-lmdbwalletsize` still migrates; the startup log reports
+`LMDB wallet map size increased ... to fit the wallet.dat migration`.  After
+that, if the wallet reaches its map limit, writes fail with an `LMDB map is
+full` message naming `-lmdbwalletsize`; restart with a larger value.
 
 The marker makes ownership explicit:
 
@@ -114,8 +117,9 @@ LMDB wallet was active exist only in the LMDB copy.
   This option applies to both LMDB environments.
 - `-walletbackend=lmdb|bdb` — wallet backend, default `bdb`.
 - `-lmdbwalletsize=<MiB>` — maximum size of the LMDB wallet map, default
-  512 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
-  `-lmdbmapsize` and enlarged automatically when the existing wallet needs it.
+  4096 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
+  `-lmdbmapsize` and enlarged automatically when the existing wallet or a
+  pending `wallet.dat` migration needs more room.
 
 ## Map usage and growth
 
@@ -127,9 +131,12 @@ LMDB chain index: 123.4 of 4096.0 MiB used
 
 When the mapped file is already larger than the configured map size, the map is
 enlarged automatically, so a datadir created with a larger `-lmdbmapsize` can be
-started without repeating the option.  If the index reaches the map limit,
-writes fail with an `LMDB map is full` message; stop the node and restart with a
-larger `-lmdbmapsize`.
+started without repeating the option.  The wallet behaves the same way: an
+existing `wallet/` is reopened large enough for `data.mdb`, and a pending
+`wallet.dat` migration reserves space from the source file before the copy
+starts.  If the index or wallet reaches the map limit, writes fail with an
+`LMDB map is full` message; stop the node and restart with a larger
+`-lmdbmapsize` or `-lmdbwalletsize`.
 
 Online resizing while the node is running is not implemented.
 
@@ -206,7 +213,7 @@ environment left in `wallet/`, an LMDB start is refused, the marker stays
 `bdb`, and the stale environment is not adopted or modified.  They pass in the
 normal build together with the rest of the unit suite.
 
-`regression_lmdb_wallet_migration.sh` passed 45/45 checks.  It starts from a
+`regression_lmdb_wallet_migration.sh` passed 46/46 checks.  It starts from a
 real Berkeley DB wallet and verifies the complete handoff:
 
 - `wallet.dat` is byte-for-byte unchanged before and after the switch, and the
@@ -219,7 +226,10 @@ real Berkeley DB wallet and verifies the complete handoff:
 - `backupwallet` produces a restorable LMDB environment;
 - a deliberately unreadable `wallet.dat` fails startup without writing a
   marker or leaving `wallet/` behind, the untouched BDB wallet still starts,
-  and a retry after restoring the file migrates successfully.
+  and a retry after restoring the file migrates successfully;
+- the retry deliberately starts with `-lmdbwalletsize=1`; the map is enlarged
+  from `wallet.dat` before the copy and the migration completes instead of
+  failing with `MDB_MAP_FULL`.
 
 A daemon smoke test on a temporary data directory also covered the stage-3
 wiring: the first start created `wallet/` and `wallet.backend` and printed

@@ -140,6 +140,14 @@ int64 GetLMDBMaxMapSizeMiB();
  */
 bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError);
 
+/**
+ * Returns the map size to use for a migration from a wallet.dat of
+ * nSourceBytes.  The configured value is kept unless the source file needs
+ * more room, so an explicit small -lmdbwalletsize cannot make the one-shot
+ * copy fail with MDB_MAP_FULL.
+ */
+size_t GetLMDBWalletMapSizeForMigration(size_t nConfigured, uintmax_t nSourceBytes);
+
 /** Reads the blkindex.backend marker from dir.  Returns false when it is absent. */
 bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
 

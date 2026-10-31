@@ -5,6 +5,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <memory>
 #include <string>
 #include <thread>
@@ -17,6 +18,7 @@
 #include <unistd.h>
 #endif
 
+#include "allocators.h"
 #include "bdb_kv.h"
 #include "db.h"
 #include "lmdb_kv.h"
@@ -783,6 +785,42 @@ void RunLMDBMapSizeParsing(const std::string & /*tag*/)
         BOOST_REQUIRE(ParseLMDBMapSize("4096", nBytes, strError));
 }
 
+void RunLMDBWalletMigrationMapSize(const std::string & /*tag*/)
+{
+    const size_t nMiB = 1024ULL * 1024ULL;
+    const size_t nMaxBytes =
+        static_cast<size_t>(GetLMDBMaxMapSizeMiB()) * nMiB;
+    const size_t nConfigured = 512ULL * nMiB;
+
+    // A small source fits in the configured map, so nothing changes.
+    BOOST_CHECK_EQUAL(
+        GetLMDBWalletMapSizeForMigration(nConfigured, 128ULL * nMiB),
+        nConfigured);
+
+    // A wallet larger than the configured map gets room for the copy.  This
+    // is the size that failed with MDB_MAP_FULL before migration pre-sizing.
+    const uintmax_t nHeavyWallet = 1186258944ULL;
+    const size_t nSized =
+        GetLMDBWalletMapSizeForMigration(nConfigured, nHeavyWallet);
+    BOOST_CHECK_GT(nSized, nConfigured);
+    BOOST_CHECK_GT(nSized, nHeavyWallet);
+    BOOST_CHECK_LE(nSized, nMaxBytes);
+    const size_t nPageSize = GetSystemPageSize();
+    if (nPageSize > 0)
+        BOOST_CHECK_EQUAL(nSized % nPageSize, 0);
+
+    // An explicit map that is already large enough is never reduced.
+    BOOST_CHECK_EQUAL(
+        GetLMDBWalletMapSizeForMigration(nMaxBytes, 128ULL * nMiB),
+        nMaxBytes);
+
+    // The result is capped at the platform's LMDB address-space limit, even
+    // for a source that cannot possibly fit.
+    BOOST_CHECK_EQUAL(
+        GetLMDBWalletMapSizeForMigration(0, (std::numeric_limits<uintmax_t>::max)()),
+        nMaxBytes);
+}
+
 void RunBlockIndexRollback(const std::string & /*tag*/)
 {
     const uint256 hash("0x00000000000000000000000000000000000000000000000000000000deadbeef");
@@ -1347,6 +1385,11 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_map_size_adjust)
 BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)
 {
     RunLMDBMapSizeParsing("lmdb_mapsize_parse");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_wallet_migration_mapsize)
+{
+    RunLMDBWalletMigrationMapSize("lmdb_wallet_migration_mapsize");
 }
 
 BOOST_AUTO_TEST_CASE(chain_index_startup_action)

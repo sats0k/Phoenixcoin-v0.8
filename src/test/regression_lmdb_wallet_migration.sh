@@ -343,9 +343,13 @@ stop_at "$FAIL_DIR" "$FAIL_PORT" || {
     echo "FAILED: fallback daemon did not stop"; exit 1;
 }
 
-start_at "$FAIL_DIR" "$FAIL_PORT" -walletbackend=lmdb || {
+# Deliberately under-size the map (1 MiB).  The migration must derive enough
+# room from wallet.dat instead of failing with MDB_MAP_FULL.
+start_at "$FAIL_DIR" "$FAIL_PORT" -walletbackend=lmdb -lmdbwalletsize=1 || {
     echo "FAILED: retry after failure did not start"; exit 1;
 }
+check "retry pre-sized the map for wallet.dat" \
+    "$(grep -q 'LMDB wallet map size increased' "$FAIL_DIR/debug.log"; echo $?)"
 check "retry wrote the LMDB marker" \
     "$([ "$(cat "$FAIL_DIR/wallet.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
 key_roundtrip_dir "$FAIL_DIR" "$FAIL_PORT" "$FAIL_ADDR" "$FAIL_WIF" \
