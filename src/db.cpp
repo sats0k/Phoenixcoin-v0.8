@@ -62,6 +62,10 @@ std::mutex g_mutexWalletKV;
 std::atomic<int> g_nWalletKVHandles(0);
 size_t g_nWalletMapSize = 0;
 bool g_fWalletNoSync = true;
+// Directory that owns the open LMDB wallet.  The production startup path uses
+// GetDataDir(), but tests open the wallet in a temporary directory; rewrite
+// must follow the environment it is compacting, not the configured datadir.
+std::filesystem::path g_pathLMDBWalletDir;
 
 #if defined(__LP64__) || defined(_WIN64)
 constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 4096;
@@ -1195,11 +1199,19 @@ bool MigrateWalletToLMDB(const std::filesystem::path& dir)
         const CDBKey key(ssKey.begin(), ssKey.end());
         const CDBValue value(ssValue.begin(), ssValue.end());
         const bool fWritten = txn->Write(key, value, true);
+
+        // Read the record back inside the same transaction so a write that
+        // silently stored a different value cannot pass the final count check.
+        // This is a byte comparison of the serialized record; wallet-level
+        // semantics are covered by the migration tests.
+        CDBValue stored;
+        const bool fVerified = fWritten && txn->Read(key, stored) && stored == value;
+
         // Values can contain private keys; do not leave them in the staging
         // stream once the LMDB transaction owns its own copy.
         if (ssValue.size() > 0)
             OPENSSL_cleanse(&ssValue[0], ssValue.size());
-        if (!fWritten) {
+        if (!fVerified) {
             fSuccess = false;
             break;
         }
@@ -1237,7 +1249,8 @@ bool MigrateWalletToLMDB(const std::filesystem::path& dir)
     if (!txn->Commit())
         return error("MigrateWalletToLMDB(): failed to commit LMDB wallet");
 
-    printf("Wallet migration complete (%" PRIszu " records)\n", nRecords);
+    printf("Wallet migration complete (%" PRIszu " records verified)\n",
+           nRecords);
     return true;
 }
 
@@ -1353,6 +1366,7 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     g_fLMDBWalletEnabled = true;
     g_nWalletMapSize = nMapSize;
     g_fWalletNoSync = fNoSync;
+    g_pathLMDBWalletDir = dir;
     printf("Wallet database: LMDB (%s%s)\n", pathWallet.string().c_str(),
            fNoSync ? ", nosync" : "");
     return true;
@@ -1373,7 +1387,8 @@ bool RewriteWalletLMDB()
     if (fShutdown)
         return false;
 
-    const std::filesystem::path dir = GetDataDir();
+    const std::filesystem::path dir = g_pathLMDBWalletDir.empty()
+        ? GetDataDir() : g_pathLMDBWalletDir;
     const std::filesystem::path pathWallet = dir / "wallet";
     const std::filesystem::path pathNew = dir / "wallet.rewrite";
     const std::filesystem::path pathOld = dir / "wallet.old";
@@ -1414,6 +1429,7 @@ bool RewriteWalletLMDB()
     {
         std::filesystem::remove_all(pathNew, ec);
         g_fLMDBWalletEnabled = false;
+        g_pathLMDBWalletDir.clear();
         return error("RewriteWalletLMDB(): cannot move the old wallet aside");
     }
 
@@ -1428,6 +1444,7 @@ bool RewriteWalletLMDB()
             g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true);
         } else {
             g_fLMDBWalletEnabled = false;
+            g_pathLMDBWalletDir.clear();
         }
         return error("RewriteWalletLMDB(): cannot install the compacted wallet");
     }
@@ -1436,12 +1453,14 @@ bool RewriteWalletLMDB()
                               g_fWalletNoSync, "-lmdbwalletsize"))
     {
         g_fLMDBWalletEnabled = false;
+        g_pathLMDBWalletDir.clear();
         return error("RewriteWalletLMDB(): cannot reopen the compacted wallet");
     }
     if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
     {
         g_lmdbWalletEnv.Close();
         g_fLMDBWalletEnabled = false;
+        g_pathLMDBWalletDir.clear();
         return error("RewriteWalletLMDB(): cannot reopen the compacted wallet");
     }
 
@@ -1494,6 +1513,7 @@ void CloseLMDBWalletDB()
     g_fLMDBWalletEnabled = false;
     g_lmdbWalletDb.Close();
     g_lmdbWalletEnv.Close();
+    g_pathLMDBWalletDir.clear();
 }
 
 bool IsLMDBWalletEnabled()
