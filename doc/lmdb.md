@@ -54,8 +54,9 @@ remain Berkeley DB, and the wallet is only moved when explicitly requested:
 
 The LMDB wallet lives in `<datadir>/wallet/`.  The first LMDB start converts an
 existing `wallet.dat`: every record is copied into the new environment inside a
-single write transaction, the copy is verified and committed, and only then is
-`<datadir>/wallet.backend` written with `lmdb`.  `wallet.dat` is opened
+single write transaction, read back and compared byte-for-byte before the
+transaction commits, and the final record count must match the source.  Only
+then is `<datadir>/wallet.backend` written with `lmdb`.  `wallet.dat` is opened
 read-only and is left unchanged, so the Berkeley DB wallet remains available
 until you deliberately remove it.
 
@@ -172,12 +173,12 @@ made after the original migration, so prefer a backup when one exists.
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 
-- `kvdb_tests` passed 31/31 test cases in the normal build.  The chain-index
+- `kvdb_tests` passed 33/33 test cases in the normal build.  The chain-index
   subset that existed at the time (24 cases, 1238 assertions) also passed under
   AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- The full unit suite passed 148 test cases with no errors in the normal build.
+- The full unit suite passed 153 test cases with no errors in the normal build.
   Under sanitizers it passed 140/141 test cases (40534/40535 assertions).  The
   only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
   sanitizer slowdown.  There were no AddressSanitizer errors.  The eight
@@ -204,14 +205,42 @@ same hash.  The migrated node then continued syncing normally.
 The wallet tests in `kvdb_tests` cover the wallet backend marker, the startup
 action matrix (including migration), `CWalletDB` routing, commit/abort,
 persistence across an environment restart, and prefix scans through `CDBScan`.
-The migration test starts from records in a Berkeley DB wallet, copies them into
-an empty LMDB environment, verifies that the marker appears only after the
-source is intact and the copy is committed, and checks that a restart uses the
-LMDB wallet without migrating again.  A dedicated regression covers the reverse
-authority case: with a `bdb` marker, an existing `wallet.dat`, and a real LMDB
-environment left in `wallet/`, an LMDB start is refused, the marker stays
-`bdb`, and the stale environment is not adopted or modified.  They pass in the
-normal build together with the rest of the unit suite.
+They check that the marker appears only after the source is intact and the copy
+is committed, and that a restart uses the LMDB wallet without migrating again.
+A dedicated regression covers the reverse authority case: with a `bdb` marker,
+an existing `wallet.dat`, and a real LMDB environment left in `wallet/`, an LMDB
+start is refused, the marker stays `bdb`, and the stale environment is not
+adopted or modified.
+
+`wallet_migration_tests` compares wallet semantics, not record counts.  It
+builds a wallet containing compressed and uncompressed keys, key metadata,
+watch-only and redeem scripts, address labels, a default key, a populated
+keypool, and transactions with block association, timestamps, order positions,
+labels, spent outputs and abandoned/conflicted metadata.  After migration it
+requires:
+
+- every raw record to survive byte-for-byte, including encrypted key material;
+- key IDs, public keys, private keys, metadata, default key and scripts to be
+  unchanged;
+- every transaction's txid, block hash and index, merkle branch, timestamps,
+  order position, `mapValue` metadata and per-output spent/change state to be
+  unchanged;
+- address-book labels and watch-only state to be unchanged;
+- the single keypool's indices and records to match, every pool key to be owned
+  by the wallet, `GetAllReserveKeys` to agree with the pool, and the next index
+  to continue sequentially;
+- keypool reserve, return, keep, refill and `GetKeyFromPool` to behave the same
+  after the migration and after a restart.
+
+The encryption lifecycle test migrates an unencrypted wallet, signs with it,
+encrypts it, and checks that no plaintext `key` or `wkey` records remain while
+`ckey` and `mkey` records exist.  It then restarts twice: the wallet must still
+load encrypted and locked, reject a wrong passphrase, unlock with the right one,
+sign, lock, and sign again after another restart.  It also scans the compacted
+`wallet/data.mdb` for the pre-encryption private-key bytes and fails if any
+plaintext secret leaked into the LMDB environment.
+
+These suites pass in the normal build together with the rest of the unit suite.
 
 `regression_lmdb_wallet_migration.sh` passed 46/46 checks.  It starts from a
 real Berkeley DB wallet and verifies the complete handoff:
