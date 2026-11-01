@@ -430,6 +430,42 @@ so a materialised, spendable key always wins a tie.
 path on a real `CWallet`, including the `mapHybridKeys` clear that only the
 size comparison can notice.
 
+## Wallet write atomicity tests
+
+`wallet_migration_tests` also contains three failure-injection tests that
+pin the wallet write transaction boundaries. They rely on the test-only
+hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
+`SetTestWalletCommitFailure()`, `ClearTestWalletWriteFailures()` — which
+fail one matching LMDB wallet write or the next wallet commit. The hooks are
+one-shot, inert until armed, and apply only to the LMDB wallet database
+(never Berkeley DB or the chain index).
+
+- `wallet_atomic_write_boundaries` fails every existing wallet record write
+  inside one explicit transaction (`WriteKey`'s `keymeta` and `key`,
+  `WriteCryptedKey`'s `keymeta` and `ckey`, `WriteTx`, `WriteName`,
+  `WriteBestBlock`, `WritePool`, `WriteCScript`, `WriteWatchOnly`,
+  `WriteDefaultKey`, `WriteOrderPosNext`, `WriteHybridKey`,
+  `WriteHybridAddressEntry`, `WriteHybridUsedKeys`, `WriteMasterKey`,
+  `WriteSetting`, `WriteAccount`, `WriteAccountingEntry`, `WriteMinVersion`
+  and `WriteVersion`). Each aborted transaction must leave the whole record
+  set unchanged, including a prefix and suffix write, immediately and after
+  an LMDB-only restart. A final uninjected transaction proves the injection
+  is one-shot. This wallet format has no HD-chain or descriptor records.
+- `wallet_atomic_hybrid_import_rollback` injects a failure at each write of
+  the `importhybridkey` transaction (ECDSA key, `hyb` record, `hybaddr`
+  label) and at the commit. The failed import must leave no key, hybrid
+  record or label in memory or on disk after a restart, and the identical
+  retry must then succeed.
+- `wallet_atomic_hybrid_keypool_rollback` fails the first, second and third
+  `hyb` write of a keypool top-up and requires the pool and database to be
+  unchanged after each abort and restart; the next top-up must commit the
+  whole pool.
+
+`CWallet::EnsureHybridKeyPool` was reworked to make the second test possible:
+it stages and encrypts the entire batch, writes the ECDSA and hybrid records
+in a single transaction, and registers the keys in memory only after that
+transaction commits.
+
 ## Shell regression scripts
 
 In addition to the Boost unit suite, this directory contains shell

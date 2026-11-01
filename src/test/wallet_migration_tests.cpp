@@ -6,6 +6,7 @@
 #include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -150,6 +151,33 @@ static size_t CountRecordsOfType(const std::map<CDBKey, CDBValue> &records,
         if (RecordType(record.first) == type)
             ++n;
     return n;
+}
+
+/**
+ * Summarizes how two wallet record sets differ, by record type.  Used in test
+ * failure messages so an unexpected write names the record family that leaked
+ * instead of dumping raw keys.
+ */
+static std::string DescribeRecordDelta(
+    const std::map<CDBKey, CDBValue> &before,
+    const std::map<CDBKey, CDBValue> &after)
+{
+    std::map<std::string, std::pair<size_t, size_t>> counts;
+    for (const auto &record : before)
+        ++counts[RecordType(record.first)].first;
+    for (const auto &record : after)
+        ++counts[RecordType(record.first)].second;
+
+    std::string delta;
+    for (const auto &entry : counts) {
+        if (entry.second.first == entry.second.second)
+            continue;
+        if (!delta.empty())
+            delta += ", ";
+        delta += entry.first + " " + std::to_string(entry.second.first) +
+                 "->" + std::to_string(entry.second.second);
+    }
+    return delta.empty() ? std::string("no record-count change") : delta;
 }
 
 /** Returns the key IDs carried by "key"/"ckey" records. */
@@ -1333,6 +1361,443 @@ BOOST_AUTO_TEST_CASE(wallet_migration_hybrid_import_roundtrip)
 
     CheckHybridSigningWorks(*restarted, sourceHybridID,
                             "imported wallet after restart");
+}
+
+struct ExportedHybridKey
+{
+    CHybridKeyID hybridID;
+    CKeyID legacyID;
+    std::string address;
+    std::string wif;
+    std::string derBase64;
+};
+
+/** Creates a hybrid key outside the wallet and exports it through the RPC. */
+static ExportedHybridKey MakeExportedHybridKey()
+{
+    CWallet source;
+    CHybridKey sourceKey;
+    GenerateHybridKey(sourceKey);
+
+    ExportedHybridKey exported;
+    exported.hybridID = sourceKey.GetHybridID();
+    exported.legacyID = sourceKey.GetKeyID();
+
+    BOOST_REQUIRE(source.AddKey(sourceKey.GetCKey()));
+    source.mapHybridKeys.emplace(exported.hybridID, std::move(sourceKey));
+
+    exported.address = CCoinAddress(exported.hybridID).ToString();
+    const json_spirit::Object dumped =
+        DumpHybridKeyRPC(source, exported.address);
+    exported.wif = JsonStringField(dumped, "secp_wif");
+    exported.derBase64 = JsonStringField(dumped, "mldsa_priv_der_b64");
+    BOOST_REQUIRE(!exported.wif.empty());
+    BOOST_REQUIRE(!exported.derBase64.empty());
+    return exported;
+}
+
+/**
+ * Runs one hybrid import with a failure injected at failureType (or at the
+ * commit when fFailCommit is set), then proves that the aborted transaction
+ * left neither in-memory nor on-disk state behind.  The one-shot injection is
+ * consumed by the failed attempt, so the identical retry must succeed.
+ */
+static void RunHybridImportRollback(const std::string &tag,
+                                    const std::string &failureType,
+                                    bool fFailCommit)
+{
+    TempDirGuard guard("hybrid_atomic_" + tag);
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    const ExportedHybridKey imported = MakeExportedHybridKey();
+
+    // Load first: opening the wallet may normalise/backfill records (for
+    // example the used-hybrid-key set), and those load-time writes are not
+    // part of the import transaction under test.
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    const WalletSnapshot before = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> beforeRecords = CaptureRecords();
+
+    if (fFailCommit)
+        SetTestWalletCommitFailure();
+    else
+        SetTestWalletWriteFailure(failureType);
+
+    bool fFailed = false;
+    try {
+        ImportHybridKeyRPC(*wallet, imported.wif, imported.derBase64,
+                           "atomic import");
+    } catch (const json_spirit::Object &) {
+        fFailed = true;
+    } catch (const std::exception &) {
+        fFailed = true;
+    }
+    ClearTestWalletWriteFailures();
+
+    BOOST_CHECK_MESSAGE(fFailed,
+                        tag << ": injected failure did not fail the import");
+    BOOST_CHECK_MESSAGE(!wallet->HaveHybridKey(imported.hybridID),
+                        tag << ": failed import left the hybrid key in memory");
+    BOOST_CHECK_MESSAGE(!wallet->HaveKey(imported.legacyID),
+                        tag << ": failed import left the ECDSA key in memory");
+    BOOST_CHECK_MESSAGE(
+        wallet->mapHybridAddressBook.count(imported.hybridID) == 0,
+        tag << ": failed import left the label in memory");
+    BOOST_CHECK_MESSAGE(
+        CaptureRecords() == beforeRecords,
+        tag << ": failed import wrote records to the wallet ("
+            << DescribeRecordDelta(beforeRecords, CaptureRecords()) << ")");
+    wallet.reset();
+
+    // Restart from LMDB only: the aborted transaction must have left no trace.
+    RestartLMDBWallet(guard.dir);
+    std::unique_ptr<CWallet> restarted(LoadWalletOrFail());
+    BOOST_CHECK(!restarted->HaveHybridKey(imported.hybridID));
+    BOOST_CHECK(!restarted->HaveKey(imported.legacyID));
+    BOOST_CHECK(restarted->mapHybridAddressBook.count(imported.hybridID) == 0);
+    CheckSnapshotsEqual(before,
+                        CaptureWalletSnapshot(*restarted, built.scripts,
+                                              built.watchScripts),
+                        tag + " after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == beforeRecords,
+                        tag << ": restart sees records from the failed import ("
+                            << DescribeRecordDelta(beforeRecords,
+                                                   CaptureRecords())
+                            << ")");
+
+    // The injection is one-shot and now disarmed: the retry must persist.
+    const std::string address = ImportHybridKeyRPC(
+        *restarted, imported.wif, imported.derBase64, "atomic import");
+    BOOST_CHECK_EQUAL(address, imported.address);
+    CheckHybridKeyInvariants(*restarted, tag + " retry");
+    restarted.reset();
+
+    RestartLMDBWallet(guard.dir);
+    std::unique_ptr<CWallet> finalWallet(LoadWalletOrFail());
+    CheckHybridKeyInvariants(*finalWallet, tag + " retry after restart");
+    BOOST_CHECK(finalWallet->HaveHybridKey(imported.hybridID));
+    BOOST_CHECK(finalWallet->HaveKey(imported.legacyID));
+    BOOST_CHECK(finalWallet->mapHybridAddressBook.count(imported.hybridID) == 1);
+}
+
+/**
+ * importhybridkey writes the ECDSA key, the hybrid record and the label in one
+ * transaction.  A failure at each individual write, and at the commit itself,
+ * must leave the wallet byte-for-byte unchanged after a restart.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_import_rollback)
+{
+    RunHybridImportRollback("keymeta", "keymeta", false);
+    RunHybridImportRollback("key", "key", false);
+    RunHybridImportRollback("hyb", "hyb", false);
+    RunHybridImportRollback("hybaddr", "hybaddr", false);
+    RunHybridImportRollback("commit", "", true);
+}
+
+/**
+ * Exercises every wallet write boundary inside an explicit transaction:
+ * a successful prefix (a key record and a label), a deliberately failed
+ * write, and a successful suffix.  Aborting must roll all three back, and a
+ * restart must see the wallet exactly as it was before the transaction.
+ *
+ * This format has no HD chain or descriptor records, so the boundaries that
+ * exist here are the ones covered below.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_write_boundaries)
+{
+    TempDirGuard guard("wallet_write_boundaries");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    // Load once so any top-up triggered by opening the wallet is out of the way.
+    {
+        std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    }
+    const std::map<CDBKey, CDBValue> baseline = CaptureRecords();
+
+    uint64_t nSerial = 0;
+
+    CHybridKey atomicHybrid;
+    GenerateHybridKey(atomicHybrid);
+    const CHybridKeyID atomicHybridID = atomicHybrid.GetHybridID();
+    const CHybridKeyDisk atomicHybridDisk =
+        CHybridKeyDisk::FromMemory(atomicHybrid);
+
+    struct BoundaryWrite
+    {
+        std::string phase;
+        std::string type;
+        std::function<bool(CWalletDB &)> write;
+    };
+
+    std::vector<BoundaryWrite> boundaries;
+
+    auto writeKey = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        return db.WriteKey(key.GetPubKey(), key.GetPrivKey(),
+                           CKeyMetadata(GetTime() + (int64)nSerial++));
+    };
+    auto writeCryptedKey = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        const std::vector<unsigned char> crypted(48, 0xA5);
+        return db.WriteCryptedKey(key.GetPubKey(), crypted,
+                                  CKeyMetadata(GetTime() + (int64)nSerial++));
+    };
+    auto writeTx = [&nSerial](CWalletDB &db) {
+        CWalletTx wtx;
+        wtx.nTimeReceived = (unsigned int)GetTime();
+        wtx.nOrderPos = (int64)nSerial;
+        const uint256 hash = SerializeHash(
+            std::string("atomic-write-tx-") + std::to_string(nSerial++));
+        return db.WriteTx(hash, wtx);
+    };
+    auto writeName = [&nSerial](CWalletDB &db) {
+        return db.WriteName("atomic-name-" + std::to_string(nSerial++),
+                            "atomic");
+    };
+    auto writeBestBlock = [&nSerial](CWalletDB &db) {
+        const uint256 hash = SerializeHash(
+            std::string("atomic-best-block-") + std::to_string(nSerial++));
+        const CBlockLocator locator(std::vector<uint256>(1, hash));
+        return db.WriteBestBlock(locator);
+    };
+    auto writePool = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        return db.WritePool((int64)(1000000 + nSerial++), CKeyPool(key.GetPubKey()));
+    };
+    auto writeCScript = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        CScript script;
+        script.SetDestination(key.GetPubKey().GetID());
+        return db.WriteCScript(Hash160(script), script);
+    };
+    auto writeWatchOnly = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        CScript script;
+        script.SetDestination(key.GetPubKey().GetID());
+        return db.WriteWatchOnly(script);
+    };
+    auto writeDefaultKey = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        return db.WriteDefaultKey(key.GetPubKey());
+    };
+    auto writeOrderPosNext = [&nSerial](CWalletDB &db) {
+        return db.WriteOrderPosNext((int64)(900000 + nSerial++));
+    };
+    auto writeHybridKey = [&atomicHybridID, &atomicHybridDisk](CWalletDB &db) {
+        return db.WriteHybridKey(atomicHybridID, atomicHybridDisk);
+    };
+    auto writeHybridAddress = [&atomicHybridID](CWalletDB &db) {
+        return db.WriteHybridAddressEntry(atomicHybridID,
+                                          CHybridAddressEntry("atomic label"));
+    };
+    auto writeHybridUsed = [&atomicHybridID](CWalletDB &db) {
+        std::set<CHybridKeyID> used;
+        used.insert(atomicHybridID);
+        return db.WriteHybridUsedKeys(used);
+    };
+    auto writeMasterKey = [&nSerial](CWalletDB &db) {
+        CMasterKey master;
+        master.vchCryptedKey.assign(32, 0x11);
+        master.vchSalt.assign(8, 0x22);
+        return db.WriteMasterKey((unsigned int)(1000 + nSerial++), master);
+    };
+    auto writeSetting = [&nSerial](CWalletDB &db) {
+        const uint64_t serial = nSerial++;
+        return db.WriteSetting("atomic-setting-" + std::to_string(serial),
+                               (int64)serial);
+    };
+    auto writeAccount = [&nSerial](CWalletDB &db) {
+        CKey key;
+        key.MakeNewKey(true);
+        CAccount account;
+        account.vchPubKey = key.GetPubKey();
+        return db.WriteAccount("atomic-account-" + std::to_string(nSerial++),
+                               account);
+    };
+    auto writeAccountingEntry = [&nSerial](CWalletDB &db) {
+        CAccountingEntry entry;
+        entry.strAccount = "atomic-account-" + std::to_string(nSerial++);
+        entry.nCreditDebit = -1;
+        entry.nTime = GetTime();
+        entry.nOrderPos = (int64)nSerial;
+        entry.nEntryNo = 100000 + nSerial++;
+        return db.WriteAccountingEntry(entry);
+    };
+    auto writeMinVersion = [](CWalletDB &db) {
+        return db.WriteMinVersion(CLIENT_VERSION);
+    };
+    auto writeVersion = [](CWalletDB &db) {
+        return db.WriteVersion(CLIENT_VERSION);
+    };
+
+    boundaries.push_back({"WriteKey/keymeta", "keymeta", writeKey});
+    boundaries.push_back({"WriteKey/key", "key", writeKey});
+    boundaries.push_back({"WriteCryptedKey/keymeta", "keymeta", writeCryptedKey});
+    boundaries.push_back({"WriteCryptedKey/ckey", "ckey", writeCryptedKey});
+    boundaries.push_back({"WriteTx", "tx", writeTx});
+    boundaries.push_back({"WriteName", "name", writeName});
+    boundaries.push_back({"WriteBestBlock", "bestblock", writeBestBlock});
+    boundaries.push_back({"WritePool", "pool", writePool});
+    boundaries.push_back({"WriteCScript", "cscript", writeCScript});
+    boundaries.push_back({"WriteWatchOnly", "watch", writeWatchOnly});
+    boundaries.push_back({"WriteDefaultKey", "defaultkey", writeDefaultKey});
+    boundaries.push_back({"WriteOrderPosNext", "orderposnext", writeOrderPosNext});
+    boundaries.push_back({"WriteHybridKey", "hyb", writeHybridKey});
+    boundaries.push_back({"WriteHybridAddressEntry", "hybaddr", writeHybridAddress});
+    boundaries.push_back({"WriteHybridUsedKeys", "hybused", writeHybridUsed});
+    boundaries.push_back({"WriteMasterKey", "mkey", writeMasterKey});
+    boundaries.push_back({"WriteSetting", "setting", writeSetting});
+    boundaries.push_back({"WriteAccount", "acc", writeAccount});
+    boundaries.push_back({"WriteAccountingEntry", "acentry", writeAccountingEntry});
+    boundaries.push_back({"WriteMinVersion", "minversion", writeMinVersion});
+    boundaries.push_back({"WriteVersion", "version", writeVersion});
+
+    for (const BoundaryWrite &boundary : boundaries)
+    {
+        {
+            CWalletDB db("wallet.dat");
+            BOOST_REQUIRE_MESSAGE(db.TxnBegin(),
+                                  boundary.phase << ": could not begin a "
+                                                    "transaction");
+
+            // Prefix writes that must roll back with the target.
+            CKey prefixKey;
+            prefixKey.MakeNewKey(true);
+            BOOST_REQUIRE(db.WriteKey(prefixKey.GetPubKey(),
+                                      prefixKey.GetPrivKey(),
+                                      CKeyMetadata(GetTime())));
+            BOOST_REQUIRE(db.WriteName("atomic-prefix-" + boundary.type,
+                                       "prefix"));
+
+            SetTestWalletWriteFailure(boundary.type);
+            const bool fWritten = boundary.write(db);
+            ClearTestWalletWriteFailures();
+
+            BOOST_CHECK_MESSAGE(!fWritten,
+                                boundary.phase << ": injected failure did not "
+                                                  "reach the write boundary");
+
+            // A later write in the same transaction must disappear too.
+            BOOST_CHECK(db.WriteName("atomic-suffix-" + boundary.type,
+                                     "suffix"));
+
+            BOOST_REQUIRE_MESSAGE(db.TxnAbort(),
+                                  boundary.phase << ": abort failed");
+        }
+
+        BOOST_CHECK_MESSAGE(CaptureRecords() == baseline,
+                            boundary.phase << ": aborted transaction changed "
+                                              "the live wallet ("
+                                           << DescribeRecordDelta(
+                                                  baseline, CaptureRecords())
+                                           << ")");
+        RestartLMDBWallet(guard.dir);
+        BOOST_CHECK_MESSAGE(CaptureRecords() == baseline,
+                            boundary.phase << ": aborted transaction survived "
+                                              "a restart ("
+                                           << DescribeRecordDelta(
+                                                  baseline, CaptureRecords())
+                                           << ")");
+    }
+
+    // A normal transaction must still commit and persist: the injection is
+    // one-shot and must not leak into later transactions.
+    {
+        CWalletDB db("wallet.dat");
+        BOOST_REQUIRE(db.TxnBegin());
+        BOOST_REQUIRE(db.WriteName("atomic-committed", "committed"));
+        BOOST_REQUIRE(db.TxnCommit());
+    }
+    RestartLMDBWallet(guard.dir);
+    const std::map<CDBKey, CDBValue> afterCommit = CaptureRecords();
+    BOOST_CHECK_EQUAL(CountRecordsOfType(afterCommit, "name"),
+                      CountRecordsOfType(baseline, "name") + 1);
+}
+
+/**
+ * A hybrid keypool top-up writes several ECDSA keys and hybrid records in one
+ * transaction.  Failing the first, second or third hybrid write must leave the
+ * pool and the database exactly as they were.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_keypool_rollback)
+{
+    TempDirGuard guard("wallet_hybrid_pool_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    const std::map<CDBKey, CDBValue> baseline = CaptureRecords();
+    const size_t existing = wallet->mapHybridKeys.size();
+    const size_t unusedBefore = wallet->setUnusedHybridKeys.size();
+    const size_t target = existing + 3;
+
+    for (int nSkip = 0; nSkip < 3; ++nSkip)
+    {
+        SetTestWalletWriteFailure("hyb", nSkip);
+        BOOST_CHECK_MESSAGE(!wallet->EnsureHybridKeyPool(target),
+                            "injected hybrid write " << nSkip
+                                                     << " did not fail the "
+                                                        "top-up");
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_EQUAL(wallet->mapHybridKeys.size(), existing);
+        BOOST_CHECK_EQUAL(wallet->setUnusedHybridKeys.size(), unusedBefore);
+        BOOST_CHECK_MESSAGE(CaptureRecords() == baseline,
+                            "failed hybrid top-up " << nSkip
+                                                    << " changed the live "
+                                                       "wallet ("
+                                                    << DescribeRecordDelta(
+                                                           baseline,
+                                                           CaptureRecords())
+                                                    << ")");
+        RestartLMDBWallet(guard.dir);
+        BOOST_CHECK_MESSAGE(CaptureRecords() == baseline,
+                            "failed hybrid top-up " << nSkip
+                                                    << " survived a restart ("
+                                                    << DescribeRecordDelta(
+                                                           baseline,
+                                                           CaptureRecords())
+                                                    << ")");
+    }
+
+    // The next top-up is no longer injected and must persist atomically.
+    BOOST_REQUIRE(wallet->EnsureHybridKeyPool(target));
+    BOOST_CHECK_EQUAL(wallet->mapHybridKeys.size(), target);
+    BOOST_CHECK_EQUAL(wallet->setUnusedHybridKeys.size(), unusedBefore + 3);
+    CheckHybridKeyInvariants(*wallet, "hybrid keypool retry");
+    wallet.reset();
+
+    RestartLMDBWallet(guard.dir);
+    std::unique_ptr<CWallet> restarted(LoadWalletOrFail());
+    BOOST_CHECK_EQUAL(restarted->mapHybridKeys.size(), target);
+    CheckHybridKeyInvariants(*restarted, "hybrid keypool retry after restart");
 }
 
 /**

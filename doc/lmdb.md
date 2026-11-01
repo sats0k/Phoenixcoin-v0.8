@@ -254,6 +254,33 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
+Wallet write atomicity is covered by three failure-injection tests in
+`wallet_migration_tests`.  They use the test-only hooks
+`SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
+matching LMDB wallet write (after an optional skip count) or the next wallet
+commit fail.  The hooks are one-shot, inert until armed, and never affect
+Berkeley DB or the chain index.  `wallet_atomic_write_boundaries` fails every
+existing `CWalletDB` write boundary inside one explicit transaction -- `keymeta`
+and `key`, `ckey`, `tx`, `name`, `bestblock`, `pool`, `cscript`, `watch`,
+`defaultkey`, `orderposnext`, `hyb`, `hybaddr`, `hybused`, `mkey`, `setting`,
+`acc`, `acentry`, `minversion` and `version` -- and requires the aborted
+transaction, including a successful prefix and suffix write, to leave the
+wallet record set unchanged both immediately and after an LMDB-only restart.
+This wallet format has no HD-chain or descriptor records, so those boundaries
+do not exist.  `wallet_atomic_hybrid_import_rollback` repeats the hybrid
+`importhybridkey` transaction (ECDSA key, `hyb` record, label) with the failure
+injected at each write and at the commit, then proves none of the new state is
+visible in memory or after a restart and that the identical retry succeeds.
+`wallet_atomic_hybrid_keypool_rollback` does the same for a keypool top-up,
+failing the first, second and third `hyb` write; a final uninjected top-up must
+commit the whole pool.
+
+The keypool top-up path itself was made atomic for these tests:
+`CWallet::EnsureHybridKeyPool` now generates and encrypts the whole batch
+first, writes the ECDSA records and hybrid records in one database transaction,
+and only registers the keys in memory after that transaction commits.  A
+failure at any point leaves no partial pool behind.
+
 These suites pass in the normal build together with the rest of the unit suite.
 
 `regression_lmdb_wallet_migration.sh` passed 46/46 checks.  It starts from a
