@@ -529,6 +529,18 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   `PHOENIX_TEST_COINBASE_MATURITY=0` so those coinbases are spendable
   without mining 101 blocks; the `LoadBlockIndex` override is test-only,
   accepts only values from 0 to `BASE_MATURITY`, and is inert unless set.
+- `regression_lmdb_wallet_crash.sh` — `SIGKILL` crash safety for the LMDB
+  wallet, mirroring the chain-index validations.  A test-only hook
+  (`TestWalletCrashPoint`, armed by `PHOENIX_TEST_CRASH_FILE`) kills the
+  daemon at every durable boundary: during migration, around the
+  `wallet.backend` marker, around every per-record write and wallet
+  transaction, and around the encryption rewrite.  Each case requires the
+  restarted wallet to be either the pre-operation state or the fully
+  committed state, a partial migration to be discarded and re-run, a
+  committed environment without a marker to be adopted deterministically,
+  and `wallet.dat` to stay byte-for-byte unchanged.  Set `PXC_ONLY=<regex>`
+  to filter cases and `PXC_KEEP_WORK=1` to keep the temporary datadirs while
+  debugging.
 
 Run a single script with:
 

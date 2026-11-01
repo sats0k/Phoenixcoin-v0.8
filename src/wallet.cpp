@@ -948,10 +948,45 @@ void CWallet::ReacceptWalletTransactions()
 {
     CTxDB txdb("r");
     bool fRepeat = true;
+    bool fRepairedSpent = false;
     while (fRepeat)
     {
         LOCK(cs_wallet);
         fRepeat = false;
+
+        if (!fRepairedSpent)
+        {
+            fRepairedSpent = true;
+
+            // A crash can land between writing a wallet transaction and
+            // persisting the spent flags of the outputs it consumes.  The
+            // transaction record is the durable unit, so rebuild those flags
+            // from the wallet's own transactions before consulting the chain
+            // index.  Only inconsistent records are rewritten, and a wallet
+            // that was shut down cleanly takes the no-op path.
+            for (PAIRTYPE(const uint256, CWalletTx)& item : mapWallet)
+            {
+                CWalletTx& wtx = item.second;
+                for (const CTxIn& txin : wtx.vin)
+                {
+                    map<uint256, CWalletTx>::iterator mi =
+                        mapWallet.find(txin.prevout.hash);
+                    if (mi == mapWallet.end())
+                        continue;
+                    CWalletTx& prev = mi->second;
+                    if (txin.prevout.n >= prev.vout.size() ||
+                        prev.IsSpent(txin.prevout.n))
+                        continue;
+                    if (!IsMine(prev.vout[txin.prevout.n]))
+                        continue;
+                    prev.MarkSpent(txin.prevout.n);
+                    prev.MarkDirty();
+                    prev.WriteToDisk();
+                    NotifyTransactionChanged(this, prev.GetHash(), CT_UPDATED);
+                }
+            }
+        }
+
         vector<CDiskTxPos> vMissingTx;
         for (PAIRTYPE(const uint256, CWalletTx)& item : mapWallet)
         {

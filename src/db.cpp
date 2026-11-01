@@ -29,12 +29,65 @@
 #include "lmdb_kv.h"
 
 #include <cctype>
+#include <csignal>
 
 using namespace std;
 using namespace boost;
 
 
 unsigned int nWalletDBUpdated;
+
+// Test-only crash injection (see TestWalletCrashPoint in db.h).  A test arms
+// one named point in a control file; skip counts let it pick an exact record
+// or transaction boundary.  Nothing here runs unless the environment variable
+// is set and the control file names the point being reached.
+void TestWalletCrashPoint(const char* pszPoint)
+{
+    const char* pszFile = std::getenv("PHOENIX_TEST_CRASH_FILE");
+    if (pszFile == nullptr || *pszFile == '\0')
+        return;
+
+    std::ifstream in(pszFile);
+    std::string strPoint;
+    int nSkip = 0;
+    if (!(in >> strPoint >> nSkip) || strPoint != pszPoint)
+        return;
+
+    if (nSkip > 0)
+    {
+        std::ofstream out(pszFile, std::ios::trunc);
+        if (out)
+            out << strPoint << " " << (nSkip - 1) << "\n";
+        return;
+    }
+
+    fflush(nullptr);
+#ifndef WIN32
+    raise(SIGKILL);
+#endif
+    // SIGKILL cannot be caught, so this is only reached on platforms without
+    // it (or if raise() fails); keep the same observable exit status.
+    std::_Exit(137);
+}
+
+namespace {
+
+// The first serialized field of every wallet record is its record type
+// ("tx", "name", "key", "pool", "hyb", ...).  Crash points include it so a
+// test can arm an exact record class instead of counting unrelated writes.
+std::string TestWalletRecordType(const CDBKey& key)
+{
+    try {
+        CDataStream ssKey(key, SER_DISK, CLIENT_VERSION);
+        std::string strType;
+        ssKey >> strType;
+        return strType;
+    } catch (...) {
+        return std::string();
+    }
+}
+
+} // namespace
 
 
 
@@ -282,13 +335,15 @@ bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::strin
         if (!file)
             return error("WriteWalletBackendMarker(): cannot create %s",
                          pathTmp.string().c_str());
-        file << strBackend << "\n";
+        file.write(strBackend.c_str(), strBackend.size());
+        file << "\n";
         file.flush();
         if (!file)
             return error("WriteWalletBackendMarker(): cannot write %s",
                          pathTmp.string().c_str());
     }
 
+    TestWalletCrashPoint("wallet-marker-before-rename");
     std::error_code ec;
     std::filesystem::rename(pathTmp, pathMarker, ec);
     if (ec) {
@@ -301,6 +356,7 @@ bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::strin
         return error("WriteWalletBackendMarker(): cannot rename %s to %s",
                      pathTmp.string().c_str(), pathMarker.string().c_str());
     }
+    TestWalletCrashPoint("wallet-marker-after-rename");
     return true;
 }
 
@@ -858,7 +914,13 @@ bool CDB::WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite)
     if (!txn)
         return false;
     bool fWritten = txn->Write(key, value, fOverwrite);
+    if (fUseKVWallet)
+        TestWalletCrashPoint(("wallet-write-before-commit:" +
+                              TestWalletRecordType(key)).c_str());
     bool fCommitted = txn->Commit();
+    if (fUseKVWallet && fWritten && fCommitted)
+        TestWalletCrashPoint(("wallet-write-after-commit:" +
+                              TestWalletRecordType(key)).c_str());
     return fWritten && fCommitted;
 }
 
@@ -871,7 +933,13 @@ bool CDB::EraseKV(const CDBKey& key)
     if (!txn)
         return false;
     bool fErased = txn->Erase(key);
+    if (fUseKVWallet)
+        TestWalletCrashPoint(("wallet-write-before-commit:" +
+                              TestWalletRecordType(key)).c_str());
     bool fCommitted = txn->Commit();
+    if (fUseKVWallet && fCommitted)
+        TestWalletCrashPoint(("wallet-write-after-commit:" +
+                              TestWalletRecordType(key)).c_str());
     return fErased && fCommitted;
 }
 
@@ -1216,6 +1284,7 @@ bool MigrateWalletToLMDB(const std::filesystem::path& dir)
             break;
         }
         ++nRecords;
+        TestWalletCrashPoint("wallet-migrate-record");
     }
     pcursor->close();
 
@@ -1246,11 +1315,12 @@ bool MigrateWalletToLMDB(const std::filesystem::path& dir)
         txn->Abort();
         return error("MigrateWalletToLMDB(): failed to copy wallet.dat");
     }
+    TestWalletCrashPoint("wallet-migrate-before-commit");
     if (!txn->Commit())
         return error("MigrateWalletToLMDB(): failed to commit LMDB wallet");
-
     printf("Wallet migration complete (%" PRIszu " records verified)\n",
            nRecords);
+    TestWalletCrashPoint("wallet-migrate-after-commit");
     return true;
 }
 
@@ -1261,6 +1331,52 @@ bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
                  "backup, or remove wallet.backend to deliberately start from "
                  "wallet.dat.",
                  pathWallet.string().c_str());
+}
+
+// RewriteWalletLMDB() stages the compacted environment in wallet.rewrite,
+// moves the active environment to wallet.old and then installs the staged one.
+// A crash between those renames leaves no wallet/ directory at all, which the
+// startup state machine would otherwise report as data loss.  Finish or undo
+// the rewrite before the marker and emptiness checks look at the directory.
+void RecoverInterruptedWalletRewrite(const std::filesystem::path& dir)
+{
+    const std::filesystem::path pathWallet = dir / "wallet";
+    const std::filesystem::path pathNew = dir / "wallet.rewrite";
+    const std::filesystem::path pathOld = dir / "wallet.old";
+    std::error_code ec;
+
+    // A marker temp file without a marker means the process died between
+    // write() and rename().  The committed wallet is authoritative and the
+    // startup path will write the marker again.
+    std::filesystem::remove(dir / "wallet.backend.tmp", ec);
+
+    const bool fWallet = std::filesystem::exists(pathWallet, ec) && !ec;
+    const bool fNew = std::filesystem::exists(pathNew, ec) && !ec;
+    const bool fOld = std::filesystem::exists(pathOld, ec) && !ec;
+
+    if (!fWallet && (fNew || fOld))
+    {
+        // Prefer the compacted copy: it is complete by the time the old
+        // environment is renamed.  Fall back to the old environment if the
+        // copy is missing.
+        const std::filesystem::path& pathRestore = fNew ? pathNew : pathOld;
+        std::filesystem::rename(pathRestore, pathWallet, ec);
+        if (ec)
+            error("RecoverInterruptedWalletRewrite(): cannot restore %s: %s",
+                  pathRestore.string().c_str(), ec.message().c_str());
+        else
+            printf("Recovered interrupted LMDB wallet rewrite from %s\n",
+                   pathRestore.string().c_str());
+    }
+
+    if (std::filesystem::exists(pathWallet, ec) && !ec)
+    {
+        // Any remaining staging directory is superseded.  wallet.old may
+        // still contain the plaintext keys encryption was compacting away, so
+        // it must not be left behind.
+        std::filesystem::remove_all(pathNew, ec);
+        std::filesystem::remove_all(pathOld, ec);
+    }
 }
 
 bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
@@ -1274,6 +1390,8 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     // InitLMDBWalletDB().
     if (!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB))
         return false;
+
+    RecoverInterruptedWalletRewrite(dir);
 
     std::string strMarker;
     const bool fMarkerLMDB = ReadWalletBackendMarker(dir, strMarker) &&
@@ -1420,6 +1538,7 @@ bool RewriteWalletLMDB()
         return error("RewriteWalletLMDB(): mdb_env_copy2 failed: %s",
                      mdb_strerror(rc));
     }
+    TestWalletCrashPoint("wallet-rewrite-after-copy");
 
     g_lmdbWalletDb.Close();
     g_lmdbWalletEnv.Close();
@@ -1432,6 +1551,7 @@ bool RewriteWalletLMDB()
         g_pathLMDBWalletDir.clear();
         return error("RewriteWalletLMDB(): cannot move the old wallet aside");
     }
+    TestWalletCrashPoint("wallet-rewrite-after-old-rename");
 
     std::filesystem::rename(pathNew, pathWallet, ec);
     if (ec)
@@ -1448,6 +1568,7 @@ bool RewriteWalletLMDB()
         }
         return error("RewriteWalletLMDB(): cannot install the compacted wallet");
     }
+    TestWalletCrashPoint("wallet-rewrite-after-install");
 
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
                               g_fWalletNoSync, "-lmdbwalletsize"))

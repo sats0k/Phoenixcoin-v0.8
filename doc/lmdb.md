@@ -337,3 +337,64 @@ restart, and the keypool was refilled through the LMDB wallet; `backupwallet`
 produced an environment that loaded the same addresses when restored into a
 fresh data directory; and `encryptwallet` compacted and rewrote the
 environment, with the encrypted wallet reopening and unlocking after restart.
+
+## Wallet crash safety
+
+The chain-index validations above were mirrored for the wallet:
+`regression_lmdb_wallet_crash.sh` kills a real daemon with `SIGKILL` at
+every durable boundary and requires the restarted wallet to be either
+exactly the pre-operation state or the fully committed state, never
+anything in between.  It passed 359/359 checks.  The kill is injected by a
+test-only hook, `TestWalletCrashPoint` (`src/db.cpp`), controlled by
+`PHOENIX_TEST_CRASH_FILE`.  The file contains `<point> <skip>`; each matching
+call decrements the skip and the call that finds it at zero raises
+`SIGKILL` (falling back to `std::_Exit(137)`), after flushing stdio so
+`debug.log` records how far the operation got.  With no file or no
+environment variable the hook is inert, and it applies only to the LMDB
+wallet, never to Berkeley DB or the chain index.
+
+The crash points cover the whole wallet lifecycle:
+
+- per-record writes: `wallet-write-{before,after}-commit:<type>`, where the
+  type is the record family (`tx`, `name`, `key`, `pool`, `hyb`, ...), so a
+  case can target one write without counting unrelated records;
+- explicit transactions: `wallet-txn-{before,after}-commit` (hybrid import,
+  keypool top-up, encryption rewrite);
+- migration: `wallet-migrate-record` (copying one exact record),
+  `wallet-migrate-{before,after}-commit`;
+- the backend marker: `wallet-marker-{before,after}-rename`;
+- the encryption rewrite: `wallet-rewrite-{after-copy,after-old-rename,
+  after-install}`.
+
+The script builds a Berkeley DB wallet on the same fixed mainnet fragment,
+migrates a reference copy to LMDB, and gives every case its own datadir
+copy, so no case can influence another and the user's real datadir is never
+touched.  The cases fall into three groups:
+
+- **A. Migration.**  Killed mid-copy, just before the commit, just after the
+  commit but before the marker, before the marker temp file is renamed, and
+  after the marker is written.  A partial migration is empty from LMDB's
+  view because the transaction never committed, so startup discards it and
+  repeats the migration; an LMDB environment committed without a marker is
+  adopted and gets the marker written.  In every case the migration runs
+  exactly once to completion, `wallet.dat` stays byte-for-byte unchanged,
+  and the recovered wallet matches a clean migration record for record.
+- **B. Normal operation.**  Sends, receiving (`importprivkey`), labels,
+  keypool refills, hybrid imports and `encryptwallet` are killed on either
+  side of their commit.  Before the commit the operation must be absent
+  after restart and remain repeatable; after it the operation and its
+  effects must be complete and intact.
+- **C. Marker creation.**  The three marker/rewrite boundaries above must
+  take a deterministic startup path: a leftover `wallet.backend.tmp` is
+  removed, a committed environment is adopted, and an interrupted
+  encryption rewrite is completed.
+
+Interrupted `RewriteWalletLMDB` is repaired by
+`RecoverInterruptedWalletRewrite`, called from
+`InitLMDBWalletDBInternal`: if `wallet/` is missing it installs the staged
+`wallet.rewrite` environment or restores `wallet.old`, otherwise it removes
+the staging directories, and it removes a stale `wallet.backend.tmp`.
+`CWallet::ReacceptWalletTransactions` also repairs spent flags from the
+wallet's own transactions before consulting the chain index, so a wallet
+that committed a send but was killed before that bookkeeping still reports
+the correct balance.

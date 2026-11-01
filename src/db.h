@@ -264,6 +264,17 @@ bool TestWalletWriteFailureArmed();
 bool TestWalletWriteFailureMatches(const std::string& strType);
 bool ConsumeTestWalletCommitFailure();
 
+/**
+ * Test-only crash injection.  PHOENIX_TEST_CRASH_FILE names a small control
+ * file containing "<point> <skip>".  When the named point is reached, skip
+ * matching calls are released and the next one kills the process with
+ * SIGKILL, leaving the same on-disk state a power loss would.  The file is
+ * rewritten after each skip so a test can arm an exact write.  The hook is
+ * inert when the variable or file is absent and is never armed by a normal
+ * startup path.
+ */
+void TestWalletCrashPoint(const char* pszPoint);
+
 
 /** RAII class that provides access to a Berkeley database */
 class CDB
@@ -555,6 +566,8 @@ public:
         {
             if (!kvTxn)
                 return false;
+            if (fUseKVWallet)
+                TestWalletCrashPoint("wallet-txn-before-commit");
             if (fUseKVWallet && ConsumeTestWalletCommitFailure())
             {
                 kvTxn->Abort();
@@ -563,6 +576,8 @@ public:
             }
             bool fSuccess = kvTxn->Commit();
             kvTxn.reset();
+            if (fUseKVWallet && fSuccess)
+                TestWalletCrashPoint("wallet-txn-after-commit");
             return fSuccess;
         }
 
