@@ -14,6 +14,7 @@
 #include <set>
 #include <limits>
 #include <tuple>
+#include <cstdlib>
 
 #include <filesystem>
 #include <fstream>
@@ -2495,6 +2496,18 @@ bool LoadBlockIndex(bool fAllowNew) {
         pchMessageStart[3] = 0xD4;
         hashGenesisBlock = uint256("0xecd47eee16536f7d03d64643cfc8c61b22093f8bf2c9358bf8b6f4dcb5f13192");
         nBaseMaturity = BASE_MATURITY_TESTNET;
+    }
+
+    // Test-only coinbase maturity override.  The wallet end-to-end regression
+    // has no way to mine the 101 blocks normally needed before a coinbase can
+    // be spent, so it submits a small fixed chain fragment and asks this
+    // daemon to treat those coinbases as mature.  The override is inert
+    // unless the environment variable is explicitly set to a valid value.
+    if(const char *psMaturity = std::getenv("PHOENIX_TEST_COINBASE_MATURITY")) {
+        char *pEnd = nullptr;
+        const long nMaturity = std::strtol(psMaturity, &pEnd, 10);
+        if(pEnd && *pEnd == '\0' && nMaturity >= 0 && nMaturity <= BASE_MATURITY)
+            nBaseMaturity = (int) nMaturity;
     }
 
     //

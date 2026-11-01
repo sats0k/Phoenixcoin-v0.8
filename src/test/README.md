@@ -511,6 +511,24 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   `mdb_dump` when those tools are installed; otherwise those particular
   checks are skipped. The RPC port is allocated dynamically, so concurrent
   runs do not collide, and can be pinned with `PXC_REGTEST_PORT`.
+- `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
+  handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
+  copied, keys and labels survive, the migration runs once, a default BDB
+  start is refused while the marker says LMDB, `backupwallet` produces a
+  restorable environment, and a failed migration leaves no marker so it can
+  be retried.
+- `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on real
+  daemons: populate a BDB wallet with imported keys, labels, watch-only and
+  multisig scripts, signed messages, keypool entries and hybrid keys; send
+  real hybrid-signed transactions; encrypt, restart and unlock the wallet;
+  migrate to LMDB and verify every key, label, transaction, signature,
+  hybrid key and keypool path; then use the migrated wallet normally with
+  new keys, labels, signatures and another hybrid-signed transaction before
+  a final restart. The fixed chain fragment includes blocks 5 and 6, whose
+  coinbases pay embedded WIFs. The test starts its daemons with
+  `PHOENIX_TEST_COINBASE_MATURITY=0` so those coinbases are spendable
+  without mining 101 blocks; the `LoadBlockIndex` override is test-only,
+  accepts only values from 0 to `BASE_MATURITY`, and is inert unless set.
 
 Run a single script with:
 

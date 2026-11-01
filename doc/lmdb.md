@@ -301,6 +301,35 @@ real Berkeley DB wallet and verifies the complete handoff:
   from `wallet.dat` before the copy and the migration completes instead of
   failing with `MDB_MAP_FULL`.
 
+`regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It is the full
+lifecycle counterpart to the migration regression and drives real daemons
+through:
+
+- a populated Berkeley DB wallet: imported coinbase keys, labelled receiving
+  addresses, a watch-only address, a multisig script, a signed message,
+  keypool state and labelled hybrid keys;
+- real wallet transactions before the switch, including a hybrid-signed spend
+  that reaches the mempool;
+- `encryptwallet`, the shutdown it triggers, and an encrypted restart with
+  wrong-passphrase, lock and unlock checks;
+- additional keypool and hybrid state while the wallet is unlocked;
+- the LMDB migration, a restart, and verification of every key, label,
+  transaction, signature, hybrid key and keypool path through RPC;
+- normal use of the migrated wallet: new addresses and labels, message
+  signing, new hybrid keys, a keypool refill and a brand new hybrid-signed
+  transaction;
+- one final restart that proves the new state persisted, while `wallet.dat`
+  stays byte-for-byte unchanged and no second migration runs.
+
+This codebase has no regtest mode, and spending a mainnet coinbase normally
+needs 101 confirmations.  The test therefore submits a fixed six-block chain
+fragment.  Blocks 5 and 6 were mined once under the same consensus rules and
+pay keys whose WIFs are embedded in the test; the test daemons are started
+with `PHOENIX_TEST_COINBASE_MATURITY=0`.  The hook in `LoadBlockIndex` changes
+`nBaseMaturity` only when that environment variable is present and parses as a
+value between 0 and `BASE_MATURITY`; it is inert otherwise, applies only to the
+test daemon process, and is not set by any normal startup path.
+
 A daemon smoke test on a temporary data directory also covered the stage-3
 wiring: the first start created `wallet/` and `wallet.backend` and printed
 `Wallet database: LMDB`; `getnewaddress` worked, the address survived a clean
