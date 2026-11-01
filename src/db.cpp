@@ -1471,6 +1471,86 @@ bool RewriteWalletLMDB()
 
 } // namespace
 
+namespace {
+
+// Test-only failure injection for wallet write transactions (see db.h).
+struct TestWalletFailureState
+{
+    CCriticalSection cs;
+    bool fWriteArmed = false;
+    bool fCommitArmed = false;
+    std::string strType;
+    int nSkip = 0;
+};
+
+TestWalletFailureState g_testWalletFailure;
+std::atomic<bool> g_fTestWalletFailureArmed(false);
+
+} // namespace
+
+void SetTestWalletWriteFailure(const std::string& strType, int nSkip)
+{
+    LOCK(g_testWalletFailure.cs);
+    g_testWalletFailure.fWriteArmed = true;
+    g_testWalletFailure.fCommitArmed = false;
+    g_testWalletFailure.strType = strType;
+    g_testWalletFailure.nSkip = std::max(nSkip, 0);
+    g_fTestWalletFailureArmed.store(true);
+}
+
+void SetTestWalletCommitFailure()
+{
+    LOCK(g_testWalletFailure.cs);
+    g_testWalletFailure.fWriteArmed = false;
+    g_testWalletFailure.fCommitArmed = true;
+    g_testWalletFailure.strType.clear();
+    g_testWalletFailure.nSkip = 0;
+    g_fTestWalletFailureArmed.store(true);
+}
+
+void ClearTestWalletWriteFailures()
+{
+    {
+        LOCK(g_testWalletFailure.cs);
+        g_testWalletFailure.fWriteArmed = false;
+        g_testWalletFailure.fCommitArmed = false;
+        g_testWalletFailure.strType.clear();
+        g_testWalletFailure.nSkip = 0;
+    }
+    g_fTestWalletFailureArmed.store(false);
+}
+
+bool TestWalletWriteFailureArmed()
+{
+    return g_fTestWalletFailureArmed.load();
+}
+
+bool TestWalletWriteFailureMatches(const std::string& strType)
+{
+    LOCK(g_testWalletFailure.cs);
+    if (!g_testWalletFailure.fWriteArmed ||
+        strType != g_testWalletFailure.strType)
+        return false;
+    if (g_testWalletFailure.nSkip > 0)
+    {
+        --g_testWalletFailure.nSkip;
+        return false;
+    }
+    g_testWalletFailure.fWriteArmed = false;
+    g_fTestWalletFailureArmed.store(false);
+    return true;
+}
+
+bool ConsumeTestWalletCommitFailure()
+{
+    LOCK(g_testWalletFailure.cs);
+    if (!g_testWalletFailure.fCommitArmed)
+        return false;
+    g_testWalletFailure.fCommitArmed = false;
+    g_fTestWalletFailureArmed.store(false);
+    return true;
+}
+
 bool InitLMDBWalletDB()
 {
     // Tests run with a mocked Berkeley environment and must not touch the

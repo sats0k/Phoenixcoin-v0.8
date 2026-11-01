@@ -245,6 +245,25 @@ std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly);
  */
 bool InitLMDBWalletDBForTest(const std::filesystem::path& dir);
 
+/**
+ * Test-only failure injection for wallet write transactions.
+ *
+ * SetTestWalletWriteFailure arms the next wallet write whose serialized record
+ * type matches strType (for example "key", "tx" or "hyb"); after nSkip matches
+ * have succeeded the matching write returns false.  The caller must then abort
+ * the surrounding transaction, which is what the atomicity tests exercise.
+ *
+ * SetTestWalletCommitFailure makes the next wallet transaction commit fail and
+ * abort instead.  Both hooks are one-shot, apply only to wallet databases and
+ * are inert until armed.  They are used by the failure-injection tests only.
+ */
+void SetTestWalletWriteFailure(const std::string& strType, int nSkip = 0);
+void SetTestWalletCommitFailure();
+void ClearTestWalletWriteFailures();
+bool TestWalletWriteFailureArmed();
+bool TestWalletWriteFailureMatches(const std::string& strType);
+bool ConsumeTestWalletCommitFailure();
+
 
 /** RAII class that provides access to a Berkeley database */
 class CDB
@@ -356,6 +375,20 @@ protected:
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
         ssKey << key;
+
+        // Test-only failure injection: see SetTestWalletWriteFailure.
+        if (fUseKV && fUseKVWallet && TestWalletWriteFailureArmed())
+        {
+            std::string strTestType;
+            try {
+                CDataStream ssType(ssKey.begin(), ssKey.end(),
+                                   SER_DISK, CLIENT_VERSION);
+                ssType >> strTestType;
+            } catch (...) {
+            }
+            if (TestWalletWriteFailureMatches(strTestType))
+                return false;
+        }
 
         // Value
         CDataStream ssValue(SER_DISK, CLIENT_VERSION);
@@ -522,6 +555,12 @@ public:
         {
             if (!kvTxn)
                 return false;
+            if (fUseKVWallet && ConsumeTestWalletCommitFailure())
+            {
+                kvTxn->Abort();
+                kvTxn.reset();
+                return false;
+            }
             bool fSuccess = kvTxn->Commit();
             kvTxn.reset();
             return fSuccess;
