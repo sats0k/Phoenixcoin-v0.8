@@ -888,49 +888,102 @@ bool CWallet::EnsureHybridKeyPool(unsigned int nTarget)
     if (mapHybridKeys.size() >= nTarget)
         return true;
 
-    CWalletDB walletdb(strWalletFile);
-
-    while (mapHybridKeys.size() < nTarget)
+    // Build every key and encrypt the private material that has to be stored
+    // before opening a database transaction.  The whole top-up then commits as
+    // one unit: a failure at any write leaves neither the hybrid records nor
+    // their legacy ECDSA keys behind.
+    struct StagedHybridKey
     {
-        CHybridKey hybridKey;
+        CHybridKeyID hybridID;
+        CHybridKey key;
+        CHybridKeyDisk disk;
+        CKey ecdsa;
+        CKeyMetadata metadata;
+        std::vector<unsigned char> cryptedSecret;
+        bool fPersistKey = false;
+    };
+
+    std::vector<StagedHybridKey> staged;
+    try
+    {
+        while (mapHybridKeys.size() + staged.size() < nTarget)
+        {
+            StagedHybridKey entry;
+            GenerateHybridKey(entry.key);
+
+            if (!ValidateHybridKey(entry.key))
+                throw std::runtime_error("invalid hybrid key");
+
+            entry.hybridID = entry.key.GetHybridID();
+            entry.ecdsa = entry.key.GetCKey();
+            entry.metadata = CKeyMetadata(entry.key.nCreateTime);
+
+            // Recover from a partially imported key by reusing an ECDSA half
+            // that is already present instead of failing the whole top-up.
+            const CKeyID keyID = entry.ecdsa.GetPubKey().GetID();
+            entry.fPersistKey = !HaveKey(keyID);
+            if (entry.fPersistKey && IsCrypted() &&
+                !EncryptKeySecret(entry.ecdsa, entry.cryptedSecret))
+                throw std::runtime_error("failed to encrypt ECDSA key");
+
+            entry.disk = MakeHybridKeyDisk(entry.key);
+            staged.push_back(std::move(entry));
+        }
+    }
+    catch (const std::exception& e)
+    {
+        printf("EnsureHybridKeyPool(): %s\n", e.what());
+        return false;
+    }
+
+    // Persist in one database transaction when the wallet is file-backed.
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        if (!walletdb.TxnBegin())
+            return false;
 
         try
         {
-            GenerateHybridKey(hybridKey);
+            for (const StagedHybridKey& entry : staged)
+            {
+                if (entry.fPersistKey &&
+                    !StageKeyRecord(walletdb, entry.ecdsa, entry.metadata,
+                                    entry.cryptedSecret))
+                    throw std::runtime_error(
+                        "failed to write ECDSA key record");
 
-            if (!ValidateHybridKey(hybridKey))
-                throw std::runtime_error("invalid hybrid key");
+                if (!walletdb.WriteHybridKey(entry.hybridID, entry.disk))
+                    throw std::runtime_error("failed to write hybrid key");
+            }
+
+            if (!walletdb.TxnCommit())
+                throw std::runtime_error("failed to commit hybrid key pool");
         }
         catch (const std::exception& e)
         {
+            walletdb.TxnAbort();
             printf("EnsureHybridKeyPool(): %s\n", e.what());
             return false;
         }
+    }
 
-        // Store legacy ECDSA key
-        if (!AddKey(hybridKey.GetCKey()))
-            return false;
-
-        CHybridKeyID hybridID = hybridKey.GetHybridID();
-
-        mapHybridKeys.emplace(hybridID, std::move(hybridKey));
-
-        auto it = mapHybridKeys.find(hybridID);
-
-        // The key carries its own signer; there is no separate copy.
-        if (!it->second.mldsaSigner)
-            return false;
-
-        try {
-            CHybridKeyDisk disk = MakeHybridKeyDisk(it->second);
-
-            if (!walletdb.WriteHybridKey(hybridID, disk))
-                return false;
-        } catch (const std::exception& e) {
-            printf("EnsureHybridKeyPool(): %s\n", e.what());
-            return false;
+    // Register in memory only after the transaction commits.
+    for (StagedHybridKey& entry : staged)
+    {
+        if (entry.fPersistKey)
+        {
+            if (IsCrypted())
+                LoadCryptedKey(entry.ecdsa.GetPubKey(), entry.cryptedSecret);
+            else
+                LoadKey(entry.ecdsa);
+            mapKeyMetadata[entry.ecdsa.GetPubKey().GetID()] = entry.metadata;
         }
 
+        const CHybridKeyID hybridID = entry.hybridID;
+        mapHybridKeys.emplace(hybridID, std::move(entry.key));
+        if (fFileBacked && IsCrypted())
+            mapHybridKeyDisk[hybridID] = entry.disk;
         setUnusedHybridKeys.insert(hybridID);
     }
 
