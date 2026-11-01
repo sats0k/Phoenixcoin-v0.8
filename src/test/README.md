@@ -541,6 +541,22 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   and `wallet.dat` to stay byte-for-byte unchanged.  Set `PXC_ONLY=<regex>`
   to filter cases and `PXC_KEEP_WORK=1` to keep the temporary datadirs while
   debugging.
+- `regression_lmdb_wallet_parity.sh` — logical backend parity, not raw
+  record counts: it stops a populated BDB wallet at a known state, copies
+  the datadir twice, migrates exactly one copy to LMDB, and then runs the
+  two wallets as independent daemons on separate ports.  At each checkpoint
+  it canonicalizes the whole wallet view (`dumpwallet`, `dumphybridkeys`,
+  transaction history, accounts, received-by tallies, address groupings,
+  unspent outputs, hybrid address book, balances, selected
+  `gettransaction` results) and requires the two sides to match.  It
+  compares full key material before encryption and structural state after
+  it, performs equivalent deterministic operations on both sides,
+  cross-verifies signatures between the backends, checks that the shared
+  hybrid pool allocates identically, grows the legacy keypool, and
+  re-compares after a restart.  The only discarded fields are timestamps
+  plus, in structural mode, txids, addresses, scripts/public keys, output
+  positions, and ECDSA-DER-dependent size/fee ratios.  `PXC_KEEP_WORK=1`
+  keeps both snapshots and per-checkpoint diffs.
 
 Run a single script with:
 

@@ -338,6 +338,43 @@ produced an environment that loaded the same addresses when restored into a
 fresh data directory; and `encryptwallet` compacted and rewrote the
 environment, with the encrypted wallet reopening and unlocking after restart.
 
+## Wallet backend parity
+
+Record counts and byte-identical copies prove that migration moved data; they
+do not prove that the two backends interpret it the same way.
+`regression_lmdb_wallet_parity.sh` (passed 118/118 checks) closes that gap by
+comparing the *logical* wallet state of a BDB wallet and an independently
+migrated LMDB wallet:
+
+- one populated BDB wallet is stopped at a known state, its datadir is copied
+  twice, and exactly one copy is migrated to LMDB;
+- both copies then run as independent daemons on separate datadirs and RPC
+  ports, so neither side can answer for the other;
+- at every checkpoint the test canonicalizes `dumpwallet`, `dumphybridkeys`,
+  `listtransactions`, `listaccounts`, `listreceivedbyaccount` and
+  `...byaddress`, `listaddressgroupings`, `listunspent`,
+  `listhybridaddresses`, balances, and selected `gettransaction` results, and
+  requires the two canonical documents to be equal.
+
+Before encryption the comparison is `full`: every WIF, address, label, script,
+txid, hybrid key and pool tag must match.  `encryptwallet` intentionally
+regenerates the legacy keypool with fresh random keys, so later checkpoints
+compare `structural` state: key material and address identities are reduced to
+their shape (per-tag counts, labels, amounts), while transactions, account
+entries, hybrid keys, balances and unspent values are still compared exactly.
+Only timestamps are always dropped; structural mode also drops identity fields
+and the ECDSA-DER-dependent `size_bytes`/`fee_per_kb` values, which vary by a
+byte between independently created equivalent transactions.
+
+The checkpoints cover the migration itself, equivalent deterministic
+operations (`importprivkey`, `importhybridkey`, `setaccount`, `move`,
+`gethybridaddress`, and cross-backend `signmessage`/`verifymessage`), an
+encrypted restart followed by a real 40 PXC hybrid-signed spend, legacy
+keypool growth from 50 to 81 entries plus fresh address allocation, and a final
+restart.  The deterministic phase deliberately consumes no legacy keypool
+keys, so the full comparison really covers the whole pool, and the shared
+hybrid pool must allocate the same address on both branches.
+
 ## Wallet crash safety
 
 The chain-index validations above were mirrored for the wallet:
