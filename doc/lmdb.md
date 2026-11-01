@@ -215,13 +215,17 @@ adopted or modified.
 `wallet_migration_tests` compares wallet semantics, not record counts.  It
 builds a wallet containing compressed and uncompressed keys, key metadata,
 watch-only and redeem scripts, address labels, a default key, a populated
-keypool, and transactions with block association, timestamps, order positions,
-labels, spent outputs and abandoned/conflicted metadata.  After migration it
-requires:
+keypool, hybrid keys, hybrid address labels, and transactions with block
+association, timestamps, order positions, labels, spent outputs and
+abandoned/conflicted metadata.  After migration it requires:
 
 - every raw record to survive byte-for-byte, including encrypted key material;
 - key IDs, public keys, private keys, metadata, default key and scripts to be
   unchanged;
+- every hybrid `CHybridKey` (its legacy ECDSA half and embedded ML-DSA signer),
+  every at-rest `hyb` record, every legacy ECDSA key record and every `hybaddr`
+  label to match; the ECDSA key, hybrid record and signer must all agree, and
+  all three must still agree after a restart;
 - every transaction's txid, block hash and index, merkle branch, timestamps,
   order position, `mapValue` metadata and per-output spent/change state to be
   unchanged;
@@ -232,13 +236,23 @@ requires:
 - keypool reserve, return, keep, refill and `GetKeyFromPool` to behave the same
   after the migration and after a restart.
 
+The hybrid import round-trip test runs
+`importhybridkey` -> `dumphybridkey` -> restart -> `dumphybridkey` -> sign ->
+verify on the LMDB wallet.  It checks that the imported key creates the legacy
+ECDSA record, the `hyb` record and the labelled `hybaddr` record, that the dump
+reproduces the original WIF and ML-DSA material before and after the restart,
+and that both halves still sign and verify afterwards.
+
 The encryption lifecycle test migrates an unencrypted wallet, signs with it,
 encrypts it, and checks that no plaintext `key` or `wkey` records remain while
-`ckey` and `mkey` records exist.  It then restarts twice: the wallet must still
-load encrypted and locked, reject a wrong passphrase, unlock with the right one,
-sign, lock, and sign again after another restart.  It also scans the compacted
-`wallet/data.mdb` for the pre-encryption private-key bytes and fails if any
-plaintext secret leaked into the LMDB environment.
+`ckey` and `mkey` records exist.  Hybrid `hyb` records must switch to their
+encrypted form: the ECDSA and ML-DSA private bytes are gone and replaced by the
+ciphertext, while the public key and checksum stay verifiable.  It then restarts
+twice: the wallet must still load encrypted and locked, reject a wrong
+passphrase, unlock with the right one, sign with both the legacy and hybrid
+keys, lock, and sign again after another restart.  It also scans the compacted
+`wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
+fails if any plaintext secret leaked into the LMDB environment.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
