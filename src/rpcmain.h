@@ -120,6 +120,9 @@ public:
 
 extern const CRPCTable tableRPC;
 
+/* in rpcmain.cpp */
+extern json_spirit::Value getdbinfo(const json_spirit::Array &params, bool fHelp);
+
 extern int64 nWalletUnlockTime;
 extern int64 AmountFromValue(const json_spirit::Value& value);
 extern json_spirit::Value ValueFromAmount(int64 amount);

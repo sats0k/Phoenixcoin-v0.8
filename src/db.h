@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "db_kv.h"
+#include "lmdbdb.h"
 #include "sync.h"
 #include "serialize.h"
 #include "bignum.h"
@@ -111,6 +112,43 @@ enum DBBackend
     DB_BACKEND_BDB = 0,
     DB_BACKEND_LMDB = 1,
 };
+
+/**
+ * Health of one database backend (chain index or wallet) for getdbinfo.
+ *
+ * The configured value comes from the command line, the active value from the
+ * environment that startup actually opened, and the marker values from the
+ * on-disk authority markers.  LMDB fields are only meaningful when
+ * fLMDBEnabled is true; a BDB backend reports no environment or database
+ * statistics.
+ */
+struct DBBackendDiagnostics
+{
+    std::string strRole;              // "chain" or "wallet"
+    std::string strConfiguredBackend; // "bdb" or "lmdb"
+    std::string strActiveBackend;     // "bdb" or "lmdb"
+    bool fLMDBEnabled = false;
+    bool fOpenedCleanly = false;
+    bool fEnvironmentOpen = false;
+    bool fDatabaseOpen = false;
+    bool fMarkerPresent = false;
+    std::string strMarker;
+    bool fMarkerMatchesBackend = false;
+    std::string strPath;
+    std::string strError;
+    CLMDBStats env;
+    CLMDBDBStats db;
+};
+
+/** Snapshot of both database backends for getdbinfo. */
+struct DBDiagnostics
+{
+    DBBackendDiagnostics chain;
+    DBBackendDiagnostics wallet;
+};
+
+/** Returns true when the LMDB chain index is the active backend. */
+bool IsLMDBChainEnabled();
 
 /** Startup action for the LMDB chain index once the environment is open. */
 enum ChainIndexStartupAction
@@ -238,6 +276,22 @@ bool FlushLMDBWallet(bool fForce = true);
 
 /** Begins a transaction on the active wallet backend (LMDB). */
 std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly);
+
+/**
+ * Collects backend, marker, environment and database statistics for the
+ * configured data directory.  The wallet directory follows the open LMDB
+ * wallet when there is one, so tests and migration tooling can inspect a
+ * temporary environment.
+ */
+DBDiagnostics GetDBDiagnostics();
+
+/**
+ * Collects diagnostics for explicit chain and wallet directories.  Used by
+ * tests to inspect temporary environments without touching the configured
+ * data directory.
+ */
+DBDiagnostics GetDBDiagnostics(const std::filesystem::path& chainDir,
+                               const std::filesystem::path& walletDir);
 
 /**
  * Test hook: initializes the LMDB wallet rooted at dir, bypassing the mock

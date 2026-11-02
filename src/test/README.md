@@ -511,6 +511,32 @@ uses the same hooks to force a post-encryption rewrite failure.  It requires
 in `wallet/data.mdb`, then verifies that a successful rewrite removes them
 and the encrypted wallet still restarts, unlocks and signs.
 
+## Database health diagnostics
+
+`kvdb_tests/lmdb_kvdb_stats` checks the statistics layer directly:
+`CLMDBEnv::GetStats()` reports the map size, page size, copy-on-write
+footprint, free map space, utilization percentage, last transaction id,
+reader/writer state and open flags; `CLMDBDatabase::GetStats()` reports the
+`mdb_stat()` entry, depth and page counters.  The case writes three records
+inside a transaction, confirms `writer_active` is only true while it is
+open, reopens the environment read-only and requires the same counters and
+three entries.  `kvdb_tests/wallet_lmdb_diagnostics` opens a temporary LMDB
+wallet through `InitLMDBWalletDBForTest`, calls
+`GetDBDiagnostics(chainDir, walletDir)` with explicit directories so the
+real datadir is never touched, and requires a healthy wallet with a matching
+`lmdb` marker and live counters.  A probe write must increase the entry
+count, and closing the environment must turn `opened_cleanly`,
+`environment_open`, `database_open` and `marker.matches_backend` false
+instead of reporting stale health.
+
+The RPC surface is `getdbinfo` (safe mode allowed and not wallet-locked),
+which returns a `chain` and `wallet` object with the same fields.  The
+`regression_lmdb_wallet_migration.sh` run asserts on a real daemon that the
+migrated wallet reports `active_backend == "lmdb"`, a matching marker,
+positive map/page counters, a nonzero entry count, `writer_active == false`,
+`read_only == false`, `nosync == true` and an empty `error`.  Field
+definitions and a sample result are in `doc/lmdb.md`, "Health diagnostics".
+
 ## Shell regression scripts
 
 In addition to the Boost unit suite, this directory contains shell
@@ -560,8 +586,8 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
   copied, keys and labels survive, the migration runs once, a default BDB
   start is refused while the marker says LMDB, `backupwallet` produces a
-  restorable environment, and a failed migration leaves no marker so it can
-  be retried.
+  restorable environment, a failed migration leaves no marker so it can
+  be retried, and `getdbinfo` reports the migrated wallet as healthy.
 - `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on real
   daemons: populate a BDB wallet with imported keys, labels, watch-only and
   multisig scripts, signed messages, keypool entries and hybrid keys; send

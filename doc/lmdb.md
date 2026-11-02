@@ -141,6 +141,92 @@ starts.  If the index or wallet reaches the map limit, writes fail with an
 
 Online resizing while the node is running is not implemented.
 
+## Health diagnostics
+
+`getdbinfo` reports the state of both database backends without inspecting
+`data.mdb` by hand:
+
+```
+phoenixcoind getdbinfo
+```
+
+The result has a `chain` and a `wallet` object with the same shape:
+
+```
+{
+  "chain" : {
+    "configured_backend" : "lmdb",
+    "active_backend" : "lmdb",
+    "lmdb_enabled" : true,
+    "opened_cleanly" : true,
+    "environment_open" : true,
+    "database_open" : true,
+    "path" : "/home/user/.phoenixcoin/blkindex",
+    "marker" : {
+      "present" : true,
+      "value" : "lmdb",
+      "matches_backend" : true
+    },
+    "environment" : {
+      "map_size" : 4294967296,
+      "page_size" : 4096,
+      "used_bytes" : 184549376,
+      "free_bytes" : 4110417920,
+      "utilization_percent" : 4.29,
+      "last_page" : 45055,
+      "last_txn_id" : 918273,
+      "max_readers" : 126,
+      "readers" : 0,
+      "writer_active" : false,
+      "read_only" : false,
+      "nosync" : true
+    },
+    "database" : {
+      "entries" : 128439,
+      "depth" : 2,
+      "branch_pages" : 12,
+      "leaf_pages" : 3102,
+      "overflow_pages" : 0,
+      "page_size" : 4096
+    },
+    "error" : ""
+  },
+  "wallet" : { ... }
+}
+```
+
+Field meanings:
+
+- `configured_backend` is what the command line selected; `active_backend`
+  and `lmdb_enabled` describe what startup actually opened.
+- `marker` reports the `blkindex.backend` / `wallet.backend` file.  A missing
+  marker matches Berkeley DB; `marker.matches_backend` is false if the marker
+  and the active backend disagree, which is a migration or startup problem
+  rather than a healthy state.
+- `opened_cleanly` is true when both the LMDB environment and its main
+  database handle opened successfully.  `environment_open`, `database_open`
+  and `error` narrow down a false value.  Berkeley DB reports `opened_cleanly`
+  as true and leaves the LMDB counters at zero.
+- `environment.map_size` is the configured or automatically enlarged map
+  limit, not a preallocated file size.  `used_bytes` is the copy-on-write
+  file footprint, `(last_page + 1) * page_size`.  `free_bytes` is the
+  remaining map space before writes fail with `MDB_MAP_FULL`, and
+  `utilization_percent` is `used_bytes / map_size`.
+- `environment.readers`, `max_readers` and `writer_active` show current LMDB
+  transaction state.  `read_only` and `nosync` report the environment open
+  flags.
+- `database` contains the `mdb_stat()` counters for the main sub-database:
+  live entries, B-tree depth, and branch, leaf and overflow page counts.
+
+The free-space figure is an estimate: LMDB reuses free pages inside the file
+before extending it, so `used_bytes` tracks the high-water mark rather than
+the sum of live records.  A growing `utilization_percent` with a small
+`free_bytes` is the signal to stop the node and raise `-lmdbmapsize` or
+`-lmdbwalletsize`.
+
+`getdbinfo` only reads counters in a short-lived read transaction; it does not
+modify either environment.
+
 ## Write consistency
 
 Adding a block writes its block-index record and, when it becomes the best

@@ -198,6 +198,42 @@ key_roundtrip() {
     key_roundtrip_dir "$DATADIR" "$PORT" "$1" "$2" "$3"
 }
 
+# getdbinfo must report the wallet that is actually in use, including the
+# marker, map accounting and the open state of the environment.
+check_dbinfo_wallet_lmdb() {
+    printf '%s' "$1" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+w = d["wallet"]
+c = d["chain"]
+assert w["active_backend"] == "lmdb", w
+assert w["configured_backend"] == "lmdb", w
+assert w["lmdb_enabled"] is True, w
+assert w["opened_cleanly"] is True, w
+assert w["environment_open"] is True, w
+assert w["database_open"] is True, w
+assert w["error"] == "", w
+assert w["marker"]["present"] is True, w
+assert w["marker"]["value"] == "lmdb", w
+assert w["marker"]["matches_backend"] is True, w
+e = w["environment"]
+assert e["map_size"] > 0, e
+assert e["page_size"] > 0, e
+assert e["used_bytes"] > 0, e
+assert 0 <= e["free_bytes"] < e["map_size"], e
+assert 0 <= e["utilization_percent"] <= 100, e
+assert e["max_readers"] > 0, e
+assert e["writer_active"] is False, e
+assert e["read_only"] is False, e
+assert e["nosync"] is True, e
+assert w["database"]["entries"] > 0, w
+assert w["database"]["page_size"] == e["page_size"], w
+assert c["active_backend"] in ("bdb", "lmdb"), c
+assert c["opened_cleanly"] is True, c
+assert c["marker"]["matches_backend"] is True, c
+'
+}
+
 echo "== step 1: populate a Berkeley DB wallet =="
 start_node || { echo "FAILED: could not start the BDB daemon"; exit 1; }
 
@@ -231,6 +267,13 @@ check "hybrid key is unchanged after migration" \
     "$([ "$(rpc dumphybridkey "$HYB" 2>/dev/null)" = "$HYB_KEY" ]; echo $?)"
 check "address book entry survived migration" \
     "$(rpc getaddressesbyaccount alice 2>/dev/null | grep -qF "$ADDR"; echo $?)"
+
+DBINFO=$(rpc getdbinfo 2>/dev/null)
+if check_dbinfo_wallet_lmdb "$DBINFO"; then
+    check "getdbinfo reports a healthy LMDB wallet" 0
+else
+    check "getdbinfo reports a healthy LMDB wallet" 1
+fi
 
 stop_node || { echo "FAILED: LMDB daemon did not stop"; exit 1; }
 

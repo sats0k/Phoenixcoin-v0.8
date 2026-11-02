@@ -19,7 +19,7 @@ constexpr unsigned int LMDB_MAX_DBS = 64;
 
 CLMDBEnv::CLMDBEnv()
     : env(nullptr), strMapSizeFlag("-lmdbmapsize"), fWriterActive(false),
-      fNoSync(false)
+      fNoSync(false), fReadOnly(false)
 {
 }
 
@@ -29,7 +29,8 @@ CLMDBEnv::~CLMDBEnv()
 }
 
 bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
-                    bool fNoSync, const std::string &strMapSizeFlag)
+                    bool fNoSync, const std::string &strMapSizeFlag,
+                    bool fReadOnly)
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
     if (env)
@@ -41,7 +42,7 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
     std::error_code ec;
     const bool fPathExists = std::filesystem::exists(path, ec);
     if (!fPathExists) {
-        if (!fCreate)
+        if (!fCreate || fReadOnly)
             return false;
         if (!std::filesystem::create_directories(path, ec))
             return false;
@@ -101,6 +102,8 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
     unsigned int nFlags = MDB_NOTLS;
     if (fNoSync)
         nFlags |= MDB_NOSYNC;
+    if (fReadOnly)
+        nFlags |= MDB_RDONLY;
 
     rc = mdb_env_open(env, path.c_str(), nFlags, 0644);
     if (rc != 0) {
@@ -112,7 +115,67 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
 
     strPath = path;
     this->fNoSync = fNoSync;
+    this->fReadOnly = fReadOnly;
     this->strMapSizeFlag = strMapSizeFlag;
+    return true;
+}
+
+bool CLMDBEnv::GetStats(CLMDBStats &stats) const
+{
+    std::lock_guard<std::mutex> lock(mutexEnv);
+    stats = CLMDBStats();
+    if (!env)
+        return false;
+
+    MDB_envinfo info;
+    MDB_stat stat;
+    if (mdb_env_info(env, &info) != 0 || mdb_env_stat(env, &stat) != 0)
+        return false;
+
+    stats.fOpen = true;
+    stats.fReadOnly = fReadOnly;
+    stats.fNoSync = fNoSync;
+    stats.fWriterActive = fWriterActive.load();
+    stats.nMapSize = static_cast<size_t>(info.me_mapsize);
+    stats.nPageSize = static_cast<size_t>(stat.ms_psize);
+    stats.nLastPgno = static_cast<size_t>(info.me_last_pgno);
+    stats.nLastTxnId = static_cast<size_t>(info.me_last_txnid);
+    stats.nUsedBytes = (stats.nLastPgno + 1) * stats.nPageSize;
+    stats.nFreeBytes = stats.nMapSize > stats.nUsedBytes
+        ? stats.nMapSize - stats.nUsedBytes : 0;
+    stats.nUtilization = stats.nMapSize
+        ? 100.0 * static_cast<double>(stats.nUsedBytes) /
+          static_cast<double>(stats.nMapSize)
+        : 0.0;
+    stats.nMaxReaders = info.me_maxreaders;
+    stats.nReaders = info.me_numreaders;
+    return true;
+}
+
+bool CLMDBEnv::GetDbStats(MDB_dbi dbi, CLMDBDBStats &stats) const
+{
+    std::lock_guard<std::mutex> lock(mutexEnv);
+    stats = CLMDBDBStats();
+    if (!env)
+        return false;
+
+    MDB_txn *txn = nullptr;
+    if (mdb_txn_begin(env, nullptr, MDB_RDONLY, &txn) != 0)
+        return false;
+
+    MDB_stat stat;
+    const int rc = mdb_stat(txn, dbi, &stat);
+    mdb_txn_abort(txn);
+    if (rc != 0)
+        return false;
+
+    stats.fOpen = true;
+    stats.nEntries = static_cast<size_t>(stat.ms_entries);
+    stats.nDepth = static_cast<size_t>(stat.ms_depth);
+    stats.nBranchPages = static_cast<size_t>(stat.ms_branch_pages);
+    stats.nLeafPages = static_cast<size_t>(stat.ms_leaf_pages);
+    stats.nOverflowPages = static_cast<size_t>(stat.ms_overflow_pages);
+    stats.nPageSize = static_cast<size_t>(stat.ms_psize);
     return true;
 }
 
@@ -152,6 +215,7 @@ void CLMDBEnv::Close()
     }
     strPath.clear();
     fNoSync = false;
+    fReadOnly = false;
 }
 
 bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)
@@ -168,13 +232,14 @@ bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)
     }
 
     MDB_txn *txn = nullptr;
-    int rc = mdb_txn_begin(env, nullptr, 0, &txn);
+    const unsigned int nTxnFlags = fReadOnly ? MDB_RDONLY : 0;
+    int rc = mdb_txn_begin(env, nullptr, nTxnFlags, &txn);
     if (rc != 0) {
         printf("mdb_txn_begin failed: %s\n", mdb_strerror(rc));
         return false;
     }
 
-    unsigned int flags = fCreate ? MDB_CREATE : 0;
+    unsigned int flags = (fCreate && !fReadOnly) ? MDB_CREATE : 0;
     rc = mdb_dbi_open(txn, name.c_str(), flags, &dbi);
     if (rc != 0) {
         printf("mdb_dbi_open(%s) failed: %s\n", name.c_str(), mdb_strerror(rc));
@@ -182,6 +247,8 @@ bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)
         return false;
     }
 
+    // Commit even for a read-only transaction: aborting would discard the DBI
+    // handle instead of publishing it to the environment.
     rc = mdb_txn_commit(txn);
     if (rc != 0) {
         printf("mdb_txn_commit failed: %s\n", mdb_strerror(rc));

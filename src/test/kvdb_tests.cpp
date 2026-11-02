@@ -1117,6 +1117,143 @@ void RunWalletLMDBBackend(const std::string &tag)
     }
 }
 
+void RunLMDBEnvironmentStats(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    const size_t nMapSize = 8 * 1024 * 1024;
+    CLMDBEnv env;
+    BOOST_REQUIRE(env.Open(dir.string(), true, nMapSize, true));
+    CLMDBDatabase db;
+    BOOST_REQUIRE(db.Open(env, "main", true));
+
+    CLMDBStats envStats;
+    BOOST_REQUIRE(env.GetStats(envStats));
+    BOOST_CHECK(envStats.fOpen);
+    BOOST_CHECK(!envStats.fReadOnly);
+    BOOST_CHECK(envStats.fNoSync);
+    BOOST_CHECK(!envStats.fWriterActive);
+    BOOST_CHECK_EQUAL(envStats.nMapSize, nMapSize);
+    BOOST_CHECK_GT(envStats.nPageSize, 0U);
+    BOOST_CHECK_GT(envStats.nUsedBytes, 0U);
+    BOOST_CHECK_LT(envStats.nFreeBytes, envStats.nMapSize);
+    BOOST_CHECK_GE(envStats.nUtilization, 0.0);
+    BOOST_CHECK_LE(envStats.nUtilization, 100.0);
+    BOOST_CHECK_GT(envStats.nMaxReaders, 0U);
+
+    CLMDBDBStats dbStats;
+    BOOST_REQUIRE(db.GetStats(dbStats));
+    BOOST_CHECK(dbStats.fOpen);
+    BOOST_CHECK_EQUAL(dbStats.nEntries, 0U);
+    BOOST_CHECK_GT(dbStats.nPageSize, 0U);
+
+    {
+        std::unique_ptr<CDBTransaction> txn = db.BeginTransaction(false);
+        BOOST_REQUIRE(txn);
+        BOOST_CHECK(txn->Write(Key("one"), Value("1")));
+        BOOST_CHECK(txn->Write(Key("two"), Value("2")));
+        BOOST_CHECK(txn->Write(Key("three"), Value("3")));
+
+        // The writer slot is part of the transaction state diagnostics.
+        BOOST_REQUIRE(env.GetStats(envStats));
+        BOOST_CHECK(envStats.fWriterActive);
+
+        BOOST_REQUIRE(txn->Commit());
+    }
+
+    BOOST_REQUIRE(env.GetStats(envStats));
+    BOOST_CHECK(!envStats.fWriterActive);
+    BOOST_REQUIRE(db.GetStats(dbStats));
+    BOOST_CHECK_EQUAL(dbStats.nEntries, 3U);
+    BOOST_CHECK_GE(dbStats.nDepth, 1U);
+    BOOST_CHECK_GE(dbStats.nLeafPages, 1U);
+
+    db.Close();
+    env.Close();
+    BOOST_CHECK(!env.GetStats(envStats));
+    BOOST_CHECK(!db.GetStats(dbStats));
+
+    // Reopening read-only must report the mode and still expose the pages.
+    CLMDBEnv ro;
+    BOOST_REQUIRE(ro.Open(dir.string(), false, nMapSize, false,
+                          "-lmdbmapsize", true));
+    BOOST_REQUIRE(ro.GetStats(envStats));
+    BOOST_CHECK(envStats.fReadOnly);
+    BOOST_CHECK(!envStats.fNoSync);
+
+    MDB_dbi dbi = 0;
+    BOOST_REQUIRE(ro.OpenDbi("main", dbi, false));
+    BOOST_REQUIRE(ro.GetDbStats(dbi, dbStats));
+    BOOST_CHECK_EQUAL(dbStats.nEntries, 3U);
+    ro.Close();
+}
+
+void RunWalletLMDBDiagnostics(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            CloseLMDBWalletDB();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+
+    DBDiagnostics diag = GetDBDiagnostics(dir, dir);
+    BOOST_CHECK_EQUAL(diag.wallet.strRole, "wallet");
+    BOOST_CHECK_EQUAL(diag.wallet.strActiveBackend, "lmdb");
+    BOOST_CHECK(diag.wallet.fLMDBEnabled);
+    BOOST_CHECK(diag.wallet.fOpenedCleanly);
+    BOOST_CHECK(diag.wallet.fEnvironmentOpen);
+    BOOST_CHECK(diag.wallet.fDatabaseOpen);
+    BOOST_CHECK(diag.wallet.fMarkerPresent);
+    BOOST_CHECK_EQUAL(diag.wallet.strMarker, "lmdb");
+    BOOST_CHECK(diag.wallet.fMarkerMatchesBackend);
+    BOOST_CHECK(diag.wallet.strError.empty());
+    BOOST_CHECK_EQUAL(diag.wallet.strPath, (dir / "wallet").string());
+    BOOST_CHECK_GT(diag.wallet.env.nMapSize, 0U);
+    BOOST_CHECK_GT(diag.wallet.env.nPageSize, 0U);
+    BOOST_CHECK_GT(diag.wallet.env.nUsedBytes, 0U);
+    BOOST_CHECK_GE(diag.wallet.env.nUtilization, 0.0);
+    BOOST_CHECK_LE(diag.wallet.env.nUtilization, 100.0);
+    BOOST_CHECK_GT(diag.wallet.db.nPageSize, 0U);
+
+    const size_t nBefore = diag.wallet.db.nEntries;
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_CHECK(db.Write(std::string("diagnostic-probe"), std::string("1")));
+    }
+    diag = GetDBDiagnostics(dir, dir);
+    BOOST_CHECK_GT(diag.wallet.db.nEntries, nBefore);
+
+    // A BDB chain backend is reported without LMDB environment counters.
+    if (!IsLMDBChainEnabled()) {
+        BOOST_CHECK_EQUAL(diag.chain.strActiveBackend, "bdb");
+        BOOST_CHECK(!diag.chain.fLMDBEnabled);
+        BOOST_CHECK(diag.chain.fOpenedCleanly);
+        BOOST_CHECK_EQUAL(diag.chain.env.nMapSize, 0U);
+    }
+
+    // Closing the environment must show up as a problem instead of
+    // pretending the wallet is still healthy.
+    CloseLMDBWalletDB();
+    diag = GetDBDiagnostics(dir, dir);
+    BOOST_CHECK(!diag.wallet.fLMDBEnabled);
+    BOOST_CHECK(!diag.wallet.fEnvironmentOpen);
+    BOOST_CHECK(!diag.wallet.fDatabaseOpen);
+    BOOST_CHECK(!diag.wallet.fMarkerMatchesBackend);
+}
+
 void RunWalletLMDBStartupRefusal(const std::string &tag)
 {
     struct Guard {
@@ -1590,6 +1727,16 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_environment)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_map_size_adjust)
 {
     RunMapSizeAdjust("lmdb_mapsize");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_stats)
+{
+    RunLMDBEnvironmentStats("lmdb_stats");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_diagnostics)
+{
+    RunWalletLMDBDiagnostics("wallet_lmdb_diagnostics");
 }
 
 BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)

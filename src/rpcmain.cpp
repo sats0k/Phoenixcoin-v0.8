@@ -210,6 +210,67 @@ Value stop(const Array &params, bool fHelp) {
     return("Phoenixcoin server stopping");
 }
 
+static Object DBBackendDiagnosticsToJSON(const DBBackendDiagnostics& diag)
+{
+    Object marker;
+    marker.push_back(Pair("present", diag.fMarkerPresent));
+    marker.push_back(Pair("value", diag.strMarker));
+    marker.push_back(Pair("matches_backend", diag.fMarkerMatchesBackend));
+
+    Object env;
+    env.push_back(Pair("map_size", (int64_t)diag.env.nMapSize));
+    env.push_back(Pair("page_size", (int64_t)diag.env.nPageSize));
+    env.push_back(Pair("used_bytes", (int64_t)diag.env.nUsedBytes));
+    env.push_back(Pair("free_bytes", (int64_t)diag.env.nFreeBytes));
+    env.push_back(Pair("utilization_percent", diag.env.nUtilization));
+    env.push_back(Pair("last_page", (int64_t)diag.env.nLastPgno));
+    env.push_back(Pair("last_txn_id", (int64_t)diag.env.nLastTxnId));
+    env.push_back(Pair("max_readers", (int64_t)diag.env.nMaxReaders));
+    env.push_back(Pair("readers", (int64_t)diag.env.nReaders));
+    env.push_back(Pair("writer_active", diag.env.fWriterActive));
+    env.push_back(Pair("read_only", diag.env.fReadOnly));
+    env.push_back(Pair("nosync", diag.env.fNoSync));
+
+    Object db;
+    db.push_back(Pair("entries", (int64_t)diag.db.nEntries));
+    db.push_back(Pair("depth", (int64_t)diag.db.nDepth));
+    db.push_back(Pair("branch_pages", (int64_t)diag.db.nBranchPages));
+    db.push_back(Pair("leaf_pages", (int64_t)diag.db.nLeafPages));
+    db.push_back(Pair("overflow_pages", (int64_t)diag.db.nOverflowPages));
+    db.push_back(Pair("page_size", (int64_t)diag.db.nPageSize));
+
+    Object result;
+    result.push_back(Pair("configured_backend", diag.strConfiguredBackend));
+    result.push_back(Pair("active_backend", diag.strActiveBackend));
+    result.push_back(Pair("lmdb_enabled", diag.fLMDBEnabled));
+    result.push_back(Pair("opened_cleanly", diag.fOpenedCleanly));
+    result.push_back(Pair("environment_open", diag.fEnvironmentOpen));
+    result.push_back(Pair("database_open", diag.fDatabaseOpen));
+    result.push_back(Pair("path", diag.strPath));
+    result.push_back(Pair("marker", marker));
+    result.push_back(Pair("environment", env));
+    result.push_back(Pair("database", db));
+    result.push_back(Pair("error", diag.strError));
+    return result;
+}
+
+Value getdbinfo(const Array &params, bool fHelp)
+{
+    if (fHelp || (params.size() != 0)) {
+        string msg = "getdbinfo\n"
+          "Reports the active chain and wallet database backends, backend "
+          "markers, LMDB map size and utilization, page counters, reader and "
+          "writer state, and whether each environment opened cleanly.";
+        throw(runtime_error(msg));
+    }
+
+    const DBDiagnostics diag = GetDBDiagnostics();
+    Object result;
+    result.push_back(Pair("chain", DBBackendDiagnosticsToJSON(diag.chain)));
+    result.push_back(Pair("wallet", DBBackendDiagnosticsToJSON(diag.wallet)));
+    return result;
+}
+
 
 
 //
@@ -234,6 +295,7 @@ static const CRPCCommand vRPCCommands[] =
     { "setgenerate",            &setgenerate,            true,   false },
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "getinfo",                &getinfo,                true,   false },
+    { "getdbinfo",              &getdbinfo,              true,   true  },
     { "getmininginfo",          &getmininginfo,          true,   false },
     { "getnewaddress",          &getnewaddress,          true,   false },
     { "getaccountaddress",      &getaccountaddress,      true,   false },

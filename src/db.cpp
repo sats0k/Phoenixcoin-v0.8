@@ -1214,6 +1214,11 @@ void CloseLMDBChainDB()
     g_lmdbChainEnv.Close();
 }
 
+bool IsLMDBChainEnabled()
+{
+    return g_fLMDBChainEnabled;
+}
+
 namespace {
 
 bool IsWalletLMDBEmpty(bool& fEmpty)
@@ -2696,5 +2701,78 @@ bool CAddrDB::Read(CAddrMan& addr)
     }
 
     return true;
+}
+
+namespace {
+
+const char* DBBackendName(DBBackend backend)
+{
+    return backend == DB_BACKEND_LMDB ? "lmdb" : "bdb";
+}
+
+DBBackendDiagnostics CollectDBBackendDiagnostics(
+    const std::string& strRole, DBBackend configured, bool fLMDBEnabled,
+    const std::filesystem::path& dir, CLMDBEnv& env, CLMDBDatabase& db,
+    bool fWallet)
+{
+    DBBackendDiagnostics diag;
+    diag.strRole = strRole;
+    diag.strConfiguredBackend = DBBackendName(configured);
+    diag.strActiveBackend =
+        DBBackendName(fLMDBEnabled ? DB_BACKEND_LMDB : DB_BACKEND_BDB);
+    diag.fLMDBEnabled = fLMDBEnabled;
+    diag.strPath = (dir / (fWallet ? "wallet" : "blkindex")).string();
+
+    std::string strMarker;
+    diag.fMarkerPresent = fWallet
+        ? ReadWalletBackendMarker(dir, strMarker)
+        : ReadChainBackendMarker(dir, strMarker);
+    diag.strMarker = strMarker;
+    if (fLMDBEnabled)
+        diag.fMarkerMatchesBackend = diag.fMarkerPresent && strMarker == "lmdb";
+    else
+        diag.fMarkerMatchesBackend = !diag.fMarkerPresent || strMarker == "bdb";
+
+    if (!fLMDBEnabled) {
+        // BDB has no environment or page statistics to report.
+        diag.fOpenedCleanly = true;
+        if (!diag.fMarkerMatchesBackend)
+            diag.strError = "backend marker does not match the active backend";
+        return diag;
+    }
+
+    diag.fEnvironmentOpen = env.GetStats(diag.env);
+    diag.fDatabaseOpen = db.GetStats(diag.db);
+    diag.fOpenedCleanly = diag.fEnvironmentOpen && diag.fDatabaseOpen;
+
+    if (!diag.fEnvironmentOpen)
+        diag.strError = "LMDB environment is not open";
+    else if (!diag.fDatabaseOpen)
+        diag.strError = "LMDB database statistics are unavailable";
+    else if (!diag.fMarkerMatchesBackend)
+        diag.strError = "backend marker does not match the active backend";
+    return diag;
+}
+
+} // namespace
+
+DBDiagnostics GetDBDiagnostics(const std::filesystem::path& chainDir,
+                               const std::filesystem::path& walletDir)
+{
+    DBDiagnostics diag;
+    diag.chain = CollectDBBackendDiagnostics(
+        "chain", GetConfiguredDBBackend(), g_fLMDBChainEnabled, chainDir,
+        g_lmdbChainEnv, g_lmdbChainDb, false);
+    diag.wallet = CollectDBBackendDiagnostics(
+        "wallet", GetConfiguredWalletBackend(), g_fLMDBWalletEnabled, walletDir,
+        g_lmdbWalletEnv, g_lmdbWalletDb, true);
+    return diag;
+}
+
+DBDiagnostics GetDBDiagnostics()
+{
+    const std::filesystem::path walletDir = g_pathLMDBWalletDir.empty()
+        ? GetDataDir() : g_pathLMDBWalletDir;
+    return GetDBDiagnostics(GetDataDir(), walletDir);
 }
 

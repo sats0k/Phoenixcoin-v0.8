@@ -358,3 +358,12 @@ std::unique_ptr<CDBTransaction> CLMDBDatabase::BeginTransaction(bool fReadOnly)
     }
     return std::unique_ptr<CDBTransaction>(new CLMDBTransaction(txn, dbi, fReadOnly, writerEnv));
 }
+
+bool CLMDBDatabase::GetStats(CLMDBDBStats &stats) const
+{
+    if (!fInit || !env || !env->IsOpen()) {
+        stats = CLMDBDBStats();
+        return false;
+    }
+    return env->GetDbStats(dbi, stats);
+}

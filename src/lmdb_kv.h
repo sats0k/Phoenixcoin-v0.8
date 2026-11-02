@@ -72,6 +72,9 @@ public:
     bool Open(CLMDBEnv &sharedEnv, const std::string &strSubDb, bool fCreate = true);
     void Close() override;
     std::unique_ptr<CDBTransaction> BeginTransaction(bool fReadOnly = false) override;
+
+    /** Fills stats with the current counters for this database handle. */
+    bool GetStats(CLMDBDBStats &stats) const;
 };
 
 #endif // LMDB_KV_H
