@@ -466,6 +466,15 @@ it stages and encrypts the entire batch, writes the ECDSA and hybrid records
 in a single transaction, and registers the keys in memory only after that
 transaction commits.
 
+`kvdb_tests/wallet_lmdb_rewrite_failures` uses a separate rewrite hook,
+`SetTestWalletRewriteFailure(point, nSkip)`, to fail each directory step of
+`RewriteWalletLMDB()`: moving the old environment aside, installing the
+compacted copy, restoring it, reopening it, or removing `wallet.old`.  It
+also arms `SetTestWalletRewriteAbort(true)` so the fatal path with no usable
+environment returns instead of exiting.  Each case requires `wallet.backend`
+to remain `lmdb`, later writes to stay in LMDB, and a restart to repair the
+directory.
+
 ## Shell regression scripts
 
 In addition to the Boost unit suite, this directory contains shell

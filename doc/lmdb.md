@@ -375,6 +375,72 @@ restart.  The deterministic phase deliberately consumes no legacy keypool
 keys, so the full comparison really covers the whole pool, and the shared
 hybrid pool must allocate the same address on both branches.
 
+## Wallet rewrite failures
+
+`RewriteWalletLMDB()` closes the live environment before it moves `wallet/`
+aside, so every failure after that point must either reopen a usable
+environment or stop the process.  It never disables LMDB: `wallet.backend`
+still says `lmdb`, and a Berkeley DB fallback would accept writes that the
+next LMDB start could not see.  The failure paths are:
+
+- a failed rename of `wallet/` leaves the active environment in place and
+  reopens it;
+- a failed install of `wallet.rewrite` restores `wallet.old` and reopens it;
+- an installed copy that cannot be reopened is parked, `wallet.old` is
+  restored and reopened;
+- if the plaintext `wallet.old` copy cannot be removed, the new environment
+  stays live and the rewrite reports failure so callers that require
+  compaction can stop; startup recovery removes the leftover copy on the
+  next start;
+- only a failure with no recoverable environment exits the process.
+
+`CWallet::EncryptWallet()` treats a failed rewrite as fatal: encryption is
+already committed at that point, so continuing could leave plaintext key
+material in the old copy.
+
+`kvdb_tests/wallet_lmdb_rewrite_failures` injects each variant with the
+inert test-only `SetTestWalletRewriteFailure` hook.  It checks that the
+marker stays `lmdb`, that later writes still reach LMDB, that a write after
+an unrecoverable failure fails instead of landing in Berkeley DB, and that a
+restart repairs the directory.  `SetTestWalletRewriteAbort(true)` makes the
+fatal path return false instead of exiting, so the test can inspect the
+on-disk state; both hooks apply only to the LMDB wallet.
+
+## Wallet backend sanitizer validation
+
+The wallet backend matrix was validated on Linux x86-64 with separate
+AddressSanitizer and UndefinedBehaviorSanitizer builds
+(`-fsanitize=address` and `-fsanitize=undefined`, with
+`-fno-omit-frame-pointer -g` and LTO disabled).  Every entry passed in both
+builds:
+
+| Check | Result |
+| --- | --- |
+| `kvdb_tests/wallet_*`, `wallet_migration_tests`, `accounting_tests` | 15 cases, 12441 assertions |
+| `regression_lmdb_wallet_migration.sh` | 46/46 |
+| `regression_lmdb_wallet_e2e.sh` | 107/107 |
+| `regression_lmdb_wallet_crash.sh` | 359/359 |
+| `regression_lmdb_wallet_parity.sh` | 118/118 |
+| full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
+| full unit suite | 158 cases |
+
+The targeted unit runs used LeakSanitizer (`detect_leaks=1`) and reported no
+leaks.  Broad runs used `detect_leaks=0` because of pre-existing RPC/asio
+accepted-connection lifecycle leaks and the known test fixtures
+(`wallet_tests.cpp` `add_coin` and `rpc_tests::HybridSet`); those are reported
+separately and are not wallet-backend leaks.  No AddressSanitizer error
+occurred in any run.
+
+The full ASan suite passed 158/158.  A separate detailed rerun hit the
+pre-existing timing-sensitive `DoS_tests/DoS_checkSig` assertion once (2 of 3
+isolated reruns passed); it is unrelated to the wallet or LMDB code.
+UndefinedBehaviorSanitizer produced eight reports, all in pre-existing
+non-LMDB code: `Hash160` on the deliberately empty transaction written by
+`accounting_tests`, base32 and base64 decoding, base58 encoding of an empty
+vector, and empty-vector handling in `EvalScript`.  No report involved
+`db.cpp`, the LMDB wrappers, wallet serialization, record lengths, cursor
+iteration, map-size conversion, or version/enum conversion.
+
 ## Wallet crash safety
 
 The chain-index validations above were mirrored for the wallet:
