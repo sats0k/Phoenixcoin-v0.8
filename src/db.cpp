@@ -87,6 +87,38 @@ std::string TestWalletRecordType(const CDBKey& key)
     }
 }
 
+// Test-only fault injection for RewriteWalletLMDB().  Nothing is armed by a
+// normal startup or by any production code path.
+struct TestWalletRewriteState
+{
+    std::mutex mutex;
+    // Armed points, each with the number of matching calls to let pass first.
+    std::map<std::string, int> mapSkip;
+};
+
+TestWalletRewriteState g_testWalletRewrite;
+std::atomic<bool> g_fTestWalletRewriteAbort(false);
+std::atomic<bool> g_fTestWalletRewriteAborted(false);
+
+// Returns true when the named rewrite step is armed and its skip count has
+// been exhausted.  Different points can be armed at once, so a test can force
+// both the first install and the subsequent restore to fail.
+bool TestWalletRewriteFailureMatches(const char* pszPoint)
+{
+    std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+    std::map<std::string, int>::iterator it =
+        g_testWalletRewrite.mapSkip.find(pszPoint);
+    if (it == g_testWalletRewrite.mapSkip.end())
+        return false;
+    if (it->second > 0)
+    {
+        --it->second;
+        return false;
+    }
+    g_testWalletRewrite.mapSkip.erase(it);
+    return true;
+}
+
 } // namespace
 
 
@@ -1490,9 +1522,68 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
     return true;
 }
 
+// Opens the wallet environment after a rewrite step has closed it.
+// pszPoint names the operation for test-only failure injection; it is inert
+// unless a test has armed that exact point.
+bool ReopenLMDBWallet(const std::filesystem::path& pathWallet,
+                      const char* pszPoint)
+{
+    if (TestWalletRewriteFailureMatches(pszPoint))
+        return false;
+
+    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
+                              g_fWalletNoSync, "-lmdbwalletsize"))
+        return false;
+
+    if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
+    {
+        g_lmdbWalletEnv.Close();
+        return false;
+    }
+    return true;
+}
+
+// Renames a rewrite component, honouring the test-only failure injection.
+bool RewriteRename(const std::filesystem::path& pathFrom,
+                   const std::filesystem::path& pathTo,
+                   const char* pszPoint,
+                   std::error_code& ec)
+{
+    if (TestWalletRewriteFailureMatches(pszPoint))
+    {
+        ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+    std::filesystem::rename(pathFrom, pathTo, ec);
+    return !ec;
+}
+
+// A rewrite failure that leaves no usable LMDB environment cannot fall back
+// to Berkeley DB: wallet.backend still marks LMDB as authoritative, so any
+// BDB write would be invisible after the next restart.  Stop instead of
+// continuing with a split wallet.  Tests can arm TestWalletRewriteAbort to
+// observe the decision without terminating the test process.
+bool FatalWalletRewrite(const char* pszReason)
+{
+    error("RewriteWalletLMDB(): %s; LMDB remains authoritative, refusing to "
+          "fall back to Berkeley DB", pszReason);
+    if (g_fTestWalletRewriteAbort.load())
+    {
+        g_fTestWalletRewriteAborted.store(true);
+        return false;
+    }
+    exit(1);
+}
+
 // Compacts the LMDB wallet into a fresh environment.  LMDB is copy-on-write,
 // so overwritten pages (including the plaintext keys removed during wallet
 // encryption) stay in the file until the environment is copied or compacted.
+//
+// Once the live environment is closed it must be reopened before the caller
+// resumes, even when the rewrite fails: the marker still says "lmdb", so a
+// Berkeley DB fallback would accept writes that the next LMDB start could not
+// see.  g_fLMDBWalletEnabled and g_pathLMDBWalletDir therefore never change
+// here.
 bool RewriteWalletLMDB()
 {
     if (!g_fLMDBWalletEnabled)
@@ -1517,7 +1608,7 @@ bool RewriteWalletLMDB()
 
     MDB_env* env = g_lmdbWalletEnv.GetEnv();
     if (!env)
-        return false;
+        return error("RewriteWalletLMDB(): the LMDB environment is not open");
 
     if (!g_lmdbWalletEnv.Sync(true))
         return false;
@@ -1540,52 +1631,76 @@ bool RewriteWalletLMDB()
     }
     TestWalletCrashPoint("wallet-rewrite-after-copy");
 
+    // The copy is complete and synced.  From here on the environment has to
+    // be closed for the directory renames; every failure path below either
+    // reopens a usable environment or stops the process.
     g_lmdbWalletDb.Close();
     g_lmdbWalletEnv.Close();
 
-    std::filesystem::rename(pathWallet, pathOld, ec);
-    if (ec)
+    if (!RewriteRename(pathWallet, pathOld, "wallet-rewrite-rename-old", ec))
     {
+        // Nothing moved: wallet/ is still the active environment.
         std::filesystem::remove_all(pathNew, ec);
-        g_fLMDBWalletEnabled = false;
-        g_pathLMDBWalletDir.clear();
+        if (!ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-old"))
+            return FatalWalletRewrite("cannot move the old wallet aside and "
+                                      "cannot reopen it");
         return error("RewriteWalletLMDB(): cannot move the old wallet aside");
     }
     TestWalletCrashPoint("wallet-rewrite-after-old-rename");
 
-    std::filesystem::rename(pathNew, pathWallet, ec);
-    if (ec)
+    if (!RewriteRename(pathNew, pathWallet, "wallet-rewrite-install", ec))
     {
+        // Put the old environment back.  Do not continue writing into
+        // wallet.old: startup recovery prefers wallet.rewrite over wallet.old,
+        // so those writes could be lost if the process died now.
         std::error_code restoreEc;
-        std::filesystem::rename(pathOld, pathWallet, restoreEc);
-        if (!restoreEc) {
-            g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
-                                 g_fWalletNoSync, "-lmdbwalletsize");
-            g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true);
-        } else {
-            g_fLMDBWalletEnabled = false;
-            g_pathLMDBWalletDir.clear();
+        if (RewriteRename(pathOld, pathWallet, "wallet-rewrite-restore",
+                          restoreEc))
+        {
+            if (ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-restored"))
+            {
+                std::filesystem::remove_all(pathNew, restoreEc);
+                return error("RewriteWalletLMDB(): cannot install the "
+                             "compacted wallet; restored the old wallet");
+            }
         }
-        return error("RewriteWalletLMDB(): cannot install the compacted wallet");
+        return FatalWalletRewrite("cannot install the compacted wallet or "
+                                  "restore the old one");
     }
     TestWalletCrashPoint("wallet-rewrite-after-install");
 
-    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
-                              g_fWalletNoSync, "-lmdbwalletsize"))
+    if (!ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-installed"))
     {
-        g_fLMDBWalletEnabled = false;
-        g_pathLMDBWalletDir.clear();
-        return error("RewriteWalletLMDB(): cannot reopen the compacted wallet");
-    }
-    if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
-    {
-        g_lmdbWalletEnv.Close();
-        g_fLMDBWalletEnabled = false;
-        g_pathLMDBWalletDir.clear();
-        return error("RewriteWalletLMDB(): cannot reopen the compacted wallet");
+        // The compacted copy is installed but unusable.  Park it, restore the
+        // old environment and reopen that, so the process keeps using LMDB.
+        std::error_code rollbackEc;
+        std::filesystem::rename(pathWallet, pathNew, rollbackEc);
+        if (!rollbackEc)
+            std::filesystem::rename(pathOld, pathWallet, rollbackEc);
+
+        if (!rollbackEc &&
+            ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-restored"))
+        {
+            std::filesystem::remove_all(pathNew, rollbackEc);
+            return error("RewriteWalletLMDB(): cannot reopen the compacted "
+                         "wallet; restored the old wallet");
+        }
+        return FatalWalletRewrite("cannot reopen the compacted wallet or "
+                                  "restore the old one");
     }
 
-    std::filesystem::remove_all(pathOld, ec);
+    // The new environment is active.  If the plaintext old copy cannot be
+    // removed, report failure so callers that require compaction (wallet
+    // encryption) can stop; LMDB stays enabled and usable, and startup
+    // recovery removes the leftover copy on the next start.
+    if (TestWalletRewriteFailureMatches("wallet-rewrite-remove-old"))
+        ec = std::make_error_code(std::errc::io_error);
+    else
+        std::filesystem::remove_all(pathOld, ec);
+    if (ec)
+        return error("RewriteWalletLMDB(): cannot remove the old wallet %s: %s",
+                     pathOld.string().c_str(), ec.message().c_str());
+
     printf("Rewrote LMDB wallet %s\n", pathWallet.string().c_str());
     return true;
 }
@@ -1670,6 +1785,34 @@ bool ConsumeTestWalletCommitFailure()
     g_testWalletFailure.fCommitArmed = false;
     g_fTestWalletFailureArmed.store(false);
     return true;
+}
+
+void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip)
+{
+    std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+    g_testWalletRewrite.mapSkip[strPoint] = std::max(nSkip, 0);
+}
+
+void ClearTestWalletRewriteFailures()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+        g_testWalletRewrite.mapSkip.clear();
+    }
+    g_fTestWalletRewriteAbort.store(false);
+    g_fTestWalletRewriteAborted.store(false);
+}
+
+void SetTestWalletRewriteAbort(bool fAbort)
+{
+    g_fTestWalletRewriteAbort.store(fAbort);
+    if (!fAbort)
+        g_fTestWalletRewriteAborted.store(false);
+}
+
+bool TestWalletRewriteAborted()
+{
+    return g_fTestWalletRewriteAborted.load();
 }
 
 bool InitLMDBWalletDB()

@@ -435,7 +435,14 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
 
         // Need to completely rewrite the wallet file; if we don't, bdb might keep
         // bits of the unencrypted private key in slack space in the database file.
-        CDB::Rewrite(strWalletFile);
+        // The rewrite can fail after encryption was committed; continuing would
+        // leave plaintext key material behind, so stop and let the user reload
+        // the wallet (startup finishes or repairs an interrupted rewrite).
+        if (!CDB::Rewrite(strWalletFile))
+        {
+            printf("EncryptWallet() : failed to rewrite the wallet after encryption\n");
+            exit(1);
+        }
 
     }
     NotifyStatusChanged(this);

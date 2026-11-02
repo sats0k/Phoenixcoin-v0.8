@@ -265,6 +265,25 @@ bool TestWalletWriteFailureMatches(const std::string& strType);
 bool ConsumeTestWalletCommitFailure();
 
 /**
+ * Test-only failure injection for RewriteWalletLMDB().  The named point fails
+ * once (after nSkip successful hits), and no other rewrite is affected.  The
+ * points are "wallet-rewrite-rename-old", "wallet-rewrite-install",
+ * "wallet-rewrite-restore", "wallet-rewrite-reopen-old",
+ * "wallet-rewrite-reopen-installed", "wallet-rewrite-reopen-restored" and
+ * "wallet-rewrite-remove-old".
+ *
+ * Fatal rewrite errors normally terminate the process because no safe wallet
+ * backend remains.  SetTestWalletRewriteAbort(true) makes them return false
+ * instead and records the decision in TestWalletRewriteAborted(), so a unit
+ * test can inspect the on-disk state without exiting.  All hooks are inert
+ * until armed and apply only to the LMDB wallet.
+ */
+void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip = 0);
+void ClearTestWalletRewriteFailures();
+void SetTestWalletRewriteAbort(bool fAbort);
+bool TestWalletRewriteAborted();
+
+/**
  * Test-only crash injection.  PHOENIX_TEST_CRASH_FILE names a small control
  * file containing "<point> <skip>".  When the named point is reached, skip
  * matching calls are released and the next one kills the process with

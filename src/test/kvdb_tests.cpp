@@ -1285,6 +1285,173 @@ void RunWalletBDBMarkerAuthority(const std::string &tag)
     }
 }
 
+// Regression: a failed rewrite must never disable LMDB while wallet.backend
+// still marks it authoritative.  Otherwise CDB("wallet.dat") would silently
+// route later writes to Berkeley DB, where the next LMDB start could not see
+// them.  Every recoverable failure must leave a usable environment; an
+// unrecoverable one must stop instead of falling back.  The test abort hook
+// turns that stop into an observable failure so the on-disk state can be
+// checked without terminating the test process.
+void RunWalletLMDBRewriteFailureHandling(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            ClearTestWalletRewriteFailures();
+            CloseLMDBWalletDB();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    BOOST_REQUIRE(IsLMDBWalletEnabled());
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_REQUIRE(db.Write(std::string("rewrite-base"),
+                               std::string("one")));
+    }
+
+    auto expect_marker_lmdb = [&dir]() {
+        std::string marker;
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "lmdb");
+    };
+    auto read_wallet = [](const std::string &key) {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE_MESSAGE(db.Read(key, value), "cannot read " << key);
+        return value;
+    };
+    auto write_wallet = [](const std::string &key, const std::string &value) {
+        WalletDBTestAccess db("wallet.dat", "r+");
+        BOOST_CHECK_MESSAGE(db.Write(key, value), "cannot write " << key);
+    };
+    auto reopen = [&]() {
+        CloseLMDBWalletDB();
+        BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+    };
+
+    // Moving the live environment aside fails before anything moved: the
+    // original wallet must be reopened and stay writable.
+    {
+        ClearTestWalletRewriteFailures();
+        SetTestWalletRewriteAbort(true);
+        SetTestWalletRewriteFailure("wallet-rewrite-rename-old");
+
+        BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
+        BOOST_CHECK(!TestWalletRewriteAborted());
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+        BOOST_CHECK(std::filesystem::exists(dir / "wallet"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.old"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.rewrite"));
+
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        write_wallet("rewrite-after-rename-old", "lmdb");
+        reopen();
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-after-rename-old"), "lmdb");
+    }
+
+    // Installing the compacted copy fails: the old environment is restored
+    // and must remain the live one.
+    {
+        ClearTestWalletRewriteFailures();
+        SetTestWalletRewriteAbort(true);
+        SetTestWalletRewriteFailure("wallet-rewrite-install");
+
+        BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
+        BOOST_CHECK(!TestWalletRewriteAborted());
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+        BOOST_CHECK(std::filesystem::exists(dir / "wallet"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.old"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.rewrite"));
+
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        write_wallet("rewrite-after-install", "lmdb");
+        reopen();
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-after-install"), "lmdb");
+    }
+
+    // The installed copy cannot be reopened: the rewrite rolls back to the
+    // old environment and the process keeps using LMDB.
+    {
+        ClearTestWalletRewriteFailures();
+        SetTestWalletRewriteAbort(true);
+        SetTestWalletRewriteFailure("wallet-rewrite-reopen-installed");
+
+        BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
+        BOOST_CHECK(!TestWalletRewriteAborted());
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+        BOOST_CHECK(std::filesystem::exists(dir / "wallet"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.old"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.rewrite"));
+
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        write_wallet("rewrite-after-reopen-failure", "lmdb");
+        reopen();
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-after-reopen-failure"),
+                          "lmdb");
+    }
+
+    // The old plaintext copy cannot be removed.  The new wallet is active and
+    // must keep taking writes; startup recovery removes the copy next time.
+    {
+        ClearTestWalletRewriteFailures();
+        SetTestWalletRewriteAbort(true);
+        SetTestWalletRewriteFailure("wallet-rewrite-remove-old");
+
+        BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
+        BOOST_CHECK(!TestWalletRewriteAborted());
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+        BOOST_CHECK(std::filesystem::exists(dir / "wallet"));
+        BOOST_CHECK(std::filesystem::exists(dir / "wallet.old"));
+
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        write_wallet("rewrite-after-remove-old-failure", "lmdb");
+        reopen();
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.old"));
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-after-remove-old-failure"),
+                          "lmdb");
+    }
+
+    // Both installing the copy and restoring the old environment fail: no
+    // usable LMDB environment remains, so the rewrite must stop rather than
+    // fall back to Berkeley DB.  A write through the wallet handle must fail
+    // instead of landing in BDB, and a restart must recover the staged copy.
+    {
+        ClearTestWalletRewriteFailures();
+        SetTestWalletRewriteAbort(true);
+        SetTestWalletRewriteFailure("wallet-rewrite-install");
+        SetTestWalletRewriteFailure("wallet-rewrite-restore");
+
+        BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
+        BOOST_CHECK(TestWalletRewriteAborted());
+        BOOST_CHECK(IsLMDBWalletEnabled());
+        expect_marker_lmdb();
+
+        {
+            WalletDBTestAccess db("wallet.dat", "r+");
+            BOOST_CHECK(!db.Write(std::string("bdb-fallback"),
+                                  std::string("must-not-happen")));
+        }
+
+        reopen();
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.rewrite"));
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet.old"));
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-base"), "one");
+        BOOST_CHECK_EQUAL(read_wallet("rewrite-after-remove-old-failure"),
+                          "lmdb");
+    }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -1447,6 +1614,11 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_migration)
 {
     RunWalletLMDBMigration("wallet_lmdb_migration");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_rewrite_failures)
+{
+    RunWalletLMDBRewriteFailureHandling("wallet_lmdb_rewrite_failures");
 }
 
 BOOST_AUTO_TEST_CASE(wallet_bdb_marker_authority)
