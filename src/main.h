@@ -120,6 +120,14 @@ extern CCriticalSection cs_main;
 using BlockMap = std::unordered_map<uint256, CBlockIndex*, uint256Hasher>;
 
 extern BlockMap mapBlockIndex;
+
+/**
+ * Removes the in-memory block index entry created by AddToBlockIndex() when the
+ * corresponding database transaction fails.  The entry is erased only if it
+ * still points at pindex; pindex is deleted in either case.
+ */
+void RollbackBlockIndexEntry(const uint256& hash, CBlockIndex* pindex);
+
 extern uint256 hashGenesisBlock;
 extern CBlockIndex* pindexGenesisBlock;
 extern int nBestHeight;
@@ -1132,7 +1140,7 @@ public:
     bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex);
     bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
-    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew);
+    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive = false);
     bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos);
     bool CheckBlock(bool fCheckPOW=true, bool fCheckMerkleRoot=true) const;
     bool AcceptBlock();

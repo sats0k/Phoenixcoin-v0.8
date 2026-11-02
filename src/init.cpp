@@ -7,6 +7,9 @@
 #include <vector>
 #include <set>
 
+#include <algorithm>
+#include <cctype>
+
 #ifndef WINDOWS
 #include <signal.h>
 #endif
@@ -89,10 +92,13 @@ void Shutdown(void */*parg*/) {
         nTransactionsUpdated++;
         bitdb.Flush(false);
         StopNode();
+        CloseLMDBChainDB();
         bitdb.Flush(true);
         std::filesystem::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
+        FlushLMDBWallet(true);
+        CloseLMDBWalletDB();
         NewThread(ExitTimeout, nullptr);
         Sleep(50);
         printf("Phoenixcoin exited\n\n");
@@ -265,6 +271,11 @@ std::string HelpMessage()
 #endif
 #endif
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
+        "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
+        "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit; values above the platform limit are rejected)") + "\n" +
+        "  -lmdbwalletsize=<n>    " + _("LMDB wallet memory map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
+        "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
+        "  -walletbackend=<b>     " + _("Wallet backend: bdb or lmdb (default: bdb)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI
         "  -server                " + _("Accept command line and JSON-RPC commands") + "\n" +
@@ -379,6 +390,39 @@ bool AppInit2()
     if(strCpMode == "strict") CheckpointsMode = Checkpoints::STRICT;
     if(strCpMode == "advisory") CheckpointsMode = Checkpoints::ADVISORY;
     if(strCpMode == "permissive") CheckpointsMode = Checkpoints::PERMISSIVE;
+
+    std::string strDBBackend = GetArg("-dbbackend", "bdb");
+    std::transform(strDBBackend.begin(), strDBBackend.end(), strDBBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (strDBBackend != "bdb" && strDBBackend != "lmdb")
+        return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'bdb' or 'lmdb'"),
+                                   strDBBackend.c_str()));
+
+    if (mapArgs.count("-lmdbmapsize"))
+    {
+        size_t nMapSize = 0;
+        std::string strError;
+        if (!ParseLMDBMapSize(mapArgs["-lmdbmapsize"], nMapSize, strError))
+            return InitError(strprintf(_("Invalid -lmdbmapsize: %s"), strError.c_str()));
+    }
+
+    std::string strWalletBackend = GetArg("-walletbackend", "bdb");
+    std::transform(strWalletBackend.begin(), strWalletBackend.end(), strWalletBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    if (strWalletBackend != "bdb" && strWalletBackend != "lmdb")
+        return InitError(strprintf(_("Invalid -walletbackend '%s': expected 'bdb' or 'lmdb'"),
+                                   strWalletBackend.c_str()));
+
+    if (mapArgs.count("-lmdbwalletsize"))
+    {
+        size_t nMapSize = 0;
+        std::string strError;
+        if (!ParseLMDBMapSize(mapArgs["-lmdbwalletsize"], nMapSize, strError))
+            return InitError(strprintf(_("Invalid -lmdbwalletsize: %s"), strError.c_str()));
+    }
+
+    if (strWalletBackend == "lmdb" && GetBoolArg("-salvagewallet"))
+        return InitError(_("-salvagewallet is not supported with -walletbackend=lmdb"));
 
     if (mapArgs.count("-bind")) {
         // when specifying an explicit binding address, you want to listen on it
@@ -545,26 +589,32 @@ bool AppInit2()
         return InitError(msg);
     }
 
-    if (GetBoolArg("-salvagewallet"))
-    {
-        // Recover readable keypairs:
-        if (!CWalletDB::Recover(bitdb, "wallet.dat", true))
-            return false;
-    }
+    if (!InitLMDBWalletDB())
+        return InitError(_("Error initializing the wallet database"));
 
-    if(std::filesystem::exists(GetDataDir() / "wallet.dat")) {
-        CDBEnv::VerifyResult r = bitdb.Verify("wallet.dat", CWalletDB::Recover);
-        if (r == CDBEnv::RECOVER_OK)
+    if (!IsLMDBWalletEnabled())
+    {
+        if (GetBoolArg("-salvagewallet"))
         {
-            string msg = strprintf(_("Warning: wallet.dat corrupt, data salvaged!"
-                                     " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
-                                     " your balance or transactions are incorrect you should"
-                                     " restore from a backup."), strDataDir.c_str());
-            uiInterface.ThreadSafeMessageBox(msg, _("Phoenixcoin"),
-              CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+            // Recover readable keypairs:
+            if (!CWalletDB::Recover(bitdb, "wallet.dat", true))
+                return false;
         }
-        if (r == CDBEnv::RECOVER_FAIL)
-            return InitError(_("wallet.dat corrupt, salvage failed"));
+
+        if(std::filesystem::exists(GetDataDir() / "wallet.dat")) {
+            CDBEnv::VerifyResult r = bitdb.Verify("wallet.dat", CWalletDB::Recover);
+            if (r == CDBEnv::RECOVER_OK)
+            {
+                string msg = strprintf(_("Warning: wallet.dat corrupt, data salvaged!"
+                                         " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
+                                         " your balance or transactions are incorrect you should"
+                                         " restore from a backup."), strDataDir.c_str());
+                uiInterface.ThreadSafeMessageBox(msg, _("Phoenixcoin"),
+                  CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+            }
+            if (r == CDBEnv::RECOVER_FAIL)
+                return InitError(_("wallet.dat corrupt, salvage failed"));
+        }
     }
 
     // ********************************************************* Step 6: network initialization
@@ -689,6 +739,9 @@ bool AppInit2()
         return InitError(msg);
     }
 
+    if (!InitLMDBChainDB())
+        return InitError(_("Error initializing chain index database"));
+
     if (GetBoolArg("-loadblockindextest"))
     {
         CTxDB txdb("r");
@@ -701,7 +754,7 @@ bool AppInit2()
     printf("Loading block index...\n");
     nStart = GetTimeMillis();
     if (!LoadBlockIndex())
-        return InitError(_("Error loading blkindex.dat"));
+        return InitError(_("Error loading chain index database"));
 
     // as LoadBlockIndex can take several minutes, it's possible the user
     // requested to kill phoenixcoin-qt during the last operation. If so, exit.

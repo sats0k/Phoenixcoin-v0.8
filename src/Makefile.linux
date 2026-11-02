@@ -64,6 +64,7 @@ LIBS += \
     -l:libboost_thread.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_chrono.so$(BOOST_LIB_SUFFIX) \
     -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
+    -llmdb \
     -l:libssl.so$(OPENSSL_LIB_SUFFIX) \
     -l:libcrypto.so$(OPENSSL_LIB_SUFFIX)
 TESTDEFS += -DBOOST_TEST_DYN_LINK
@@ -73,6 +74,7 @@ LIBS += \
     -l:libboost_thread$(BOOST_LIB_SUFFIX).a \
     -l:libboost_chrono$(BOOST_LIB_SUFFIX).a \
     -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
+    -llmdb \
     -l:libssl$(OPENSSL_LIB_SUFFIX).a \
     -l:libcrypto$(OPENSSL_LIB_SUFFIX).a
 TESTLIBS += -l:libboost_unit_test_framework$(BOOST_LIB_SUFFIX).a
@@ -81,6 +83,7 @@ LIBS += \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
     -ldb_cxx$(BDB_LIB_SUFFIX) \
+    -llmdb \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
 endif
@@ -133,6 +136,9 @@ OBJS = \
     obj/version.o \
     obj/wallet.o \
     obj/walletdb.o \
+    obj/lmdbdb.o \
+    obj/bdb_kv.o \
+    obj/lmdb_kv.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
     obj/hybrid_message.o \
@@ -203,6 +209,7 @@ TESTOBJS := \
     obj-test/DoS_tests.o \
     obj-test/getarg_tests.o \
     obj-test/key_tests.o \
+    obj-test/kvdb_tests.o \
     obj-test/miner_tests.o \
     obj-test/mruset_tests.o \
     obj-test/multisig_tests.o \
@@ -217,6 +224,7 @@ TESTOBJS := \
     obj-test/util_tests.o \
     obj-test/testutil.o \
     obj-test/test_main.o \
+    obj-test/wallet_migration_tests.o \
     obj-test/wallet_tests.o
 
 obj-test/%.o: test/%.cpp
@@ -229,9 +237,14 @@ obj-test/%.o: test/%.cpp
 test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS) $(TESTLIBS)
 
+# On-disk wallet backend benchmark.  Kept separate from the Boost suite so the
+# default tests keep using the in-memory mock Berkeley DB environment.
+wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
+	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
+
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
 	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
-	-rm -f phoenixcoind test_phoenixcoin
+	-rm -f phoenixcoind test_phoenixcoin wallet_perf
 
 FORCE:

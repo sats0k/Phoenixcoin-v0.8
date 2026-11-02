@@ -24,6 +24,7 @@ Checkpoints_tests.cpp
 DoS_tests.cpp
 getarg_tests.cpp
 key_tests.cpp
+kvdb_tests.cpp
 miner_tests.cpp
 mruset_tests.cpp
 multisig_tests.cpp
@@ -429,12 +430,94 @@ so a materialised, spendable key always wins a tie.
 path on a real `CWallet`, including the `mapHybridKeys` clear that only the
 size comparison can notice.
 
+## Wallet backend benchmark
+
+`test/wallet_perf.cpp` builds a separate `wallet_perf` executable for
+on-disk wallet backend measurements. It is not part of `test_phoenixcoin`
+because the Boost fixture uses an in-memory Berkeley DB environment, where
+timings and database sizes would not reflect a real wallet.
+
+```
+cd src
+make -j4 DYNAMIC=1 -f Makefile.linux wallet_perf
+```
+
+Seed one realistic wallet, copy the seed once per backend so every run starts
+from the same records, then run the operations:
+
+```
+./wallet_perf seed /tmp/wallet-perf/seed --tx=10000 --keys=1000 --scripts=200
+cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/bdb
+cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/lmdb
+./wallet_perf bdb  /tmp/wallet-perf/bdb  --insert-tx=2000 --insert-keys=500 \
+    --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
+./wallet_perf lmdb /tmp/wallet-perf/lmdb --insert-tx=2000 --insert-keys=500 \
+    --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
+```
+
+Each mode prints CSV rows (`backend,metric,value,unit,note`) for startup,
+migration, shutdown, insertion and lookup latency, keypool refill, the
+script/address operations that stand in for descriptors in this wallet
+format, and database size. Methodology and measured results are in
+`doc/lmdb.md`, "Wallet backend performance".
+
+## Wallet write atomicity tests
+
+`wallet_migration_tests` also contains three failure-injection tests that
+pin the wallet write transaction boundaries. They rely on the test-only
+hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
+`SetTestWalletCommitFailure()`, `ClearTestWalletWriteFailures()` — which
+fail one matching LMDB wallet write or the next wallet commit. The hooks are
+one-shot, inert until armed, and apply only to the LMDB wallet database
+(never Berkeley DB or the chain index).
+
+- `wallet_atomic_write_boundaries` fails every existing wallet record write
+  inside one explicit transaction (`WriteKey`'s `keymeta` and `key`,
+  `WriteCryptedKey`'s `keymeta` and `ckey`, `WriteTx`, `WriteName`,
+  `WriteBestBlock`, `WritePool`, `WriteCScript`, `WriteWatchOnly`,
+  `WriteDefaultKey`, `WriteOrderPosNext`, `WriteHybridKey`,
+  `WriteHybridAddressEntry`, `WriteHybridUsedKeys`, `WriteMasterKey`,
+  `WriteSetting`, `WriteAccount`, `WriteAccountingEntry`, `WriteMinVersion`
+  and `WriteVersion`). Each aborted transaction must leave the whole record
+  set unchanged, including a prefix and suffix write, immediately and after
+  an LMDB-only restart. A final uninjected transaction proves the injection
+  is one-shot. This wallet format has no HD-chain or descriptor records.
+- `wallet_atomic_hybrid_import_rollback` injects a failure at each write of
+  the `importhybridkey` transaction (ECDSA key, `hyb` record, `hybaddr`
+  label) and at the commit. The failed import must leave no key, hybrid
+  record or label in memory or on disk after a restart, and the identical
+  retry must then succeed.
+- `wallet_atomic_hybrid_keypool_rollback` fails the first, second and third
+  `hyb` write of a keypool top-up and requires the pool and database to be
+  unchanged after each abort and restart; the next top-up must commit the
+  whole pool.
+
+`CWallet::EnsureHybridKeyPool` was reworked to make the second test possible:
+it stages and encrypts the entire batch, writes the ECDSA and hybrid records
+in a single transaction, and registers the keys in memory only after that
+transaction commits.
+
+`kvdb_tests` has four named rewrite-failure cases that use a separate hook,
+`SetTestWalletRewriteFailure(point, nSkip)`, to fail each directory step of
+`RewriteWalletLMDB()`: moving the old environment aside, installing the
+compacted copy, restoring it, reopening it, or removing `wallet.old`.  They
+also arm `SetTestWalletRewriteAbort(true)` so the fatal path with no usable
+environment returns instead of exiting.  Each case requires `wallet.backend`
+to remain `lmdb`, `wallet.dat` not to appear as a Berkeley DB file, later
+writes to stay in LMDB, and a restart to repair the directory.
+`wallet_migration_tests/wallet_encryption_rewrite_failure_is_not_success`
+uses the same hooks to force a post-encryption rewrite failure.  It requires
+`EncryptWallet()` to report failure while plaintext bytes are still present
+in `wallet/data.mdb`, then verifies that a successful rewrite removes them
+and the encrypted wallet still restarts, unlocks and signs.
+
 ## Shell regression scripts
 
 In addition to the Boost unit suite, this directory contains shell
 regression scripts that drive full `phoenixcoind` daemons end to end.
-They exercise the hybrid private-key export/import flows that need a real
-wallet and database. Each script takes an optional path to a
+They exercise the hybrid private-key export/import flows and the
+Berkeley DB to LMDB chain-index handoff that need a real wallet and
+database. Each script takes an optional path to a
 `phoenixcoind` binary (defaults to the freshly built `src/phoenixcoind`),
 prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
 
@@ -463,6 +546,62 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   too-few-fields lines, unparseable timestamps, timestamps with trailing
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
+- `regression_lmdb_chain_migration.sh` — full Berkeley DB to LMDB chain
+  index handoff: a BDB-backed daemon accepts real mainnet blocks 1-2,
+  the next start with `-dbbackend=lmdb` migrates every block-index and
+  transaction record and writes the `blkindex.backend` marker, the LMDB
+  daemon connects blocks 3-4 through the normal `submitblock` path, and
+  two further restarts preserve the tip, height, block bytes and
+  transaction lookups. Raw record counts are compared with `db_dump` and
+  `mdb_dump` when those tools are installed; otherwise those particular
+  checks are skipped. The RPC port is allocated dynamically, so concurrent
+  runs do not collide, and can be pinned with `PXC_REGTEST_PORT`.
+- `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
+  handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
+  copied, keys and labels survive, the migration runs once, a default BDB
+  start is refused while the marker says LMDB, `backupwallet` produces a
+  restorable environment, and a failed migration leaves no marker so it can
+  be retried.
+- `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on real
+  daemons: populate a BDB wallet with imported keys, labels, watch-only and
+  multisig scripts, signed messages, keypool entries and hybrid keys; send
+  real hybrid-signed transactions; encrypt, restart and unlock the wallet;
+  migrate to LMDB and verify every key, label, transaction, signature,
+  hybrid key and keypool path; then use the migrated wallet normally with
+  new keys, labels, signatures and another hybrid-signed transaction before
+  a final restart. The fixed chain fragment includes blocks 5 and 6, whose
+  coinbases pay embedded WIFs. The test starts its daemons with
+  `PHOENIX_TEST_COINBASE_MATURITY=0` so those coinbases are spendable
+  without mining 101 blocks; the `LoadBlockIndex` override is test-only,
+  accepts only values from 0 to `BASE_MATURITY`, and is inert unless set.
+- `regression_lmdb_wallet_crash.sh` — `SIGKILL` crash safety for the LMDB
+  wallet, mirroring the chain-index validations.  A test-only hook
+  (`TestWalletCrashPoint`, armed by `PHOENIX_TEST_CRASH_FILE`) kills the
+  daemon at every durable boundary: during migration, around the
+  `wallet.backend` marker, around every per-record write and wallet
+  transaction, and around the encryption rewrite.  Each case requires the
+  restarted wallet to be either the pre-operation state or the fully
+  committed state, a partial migration to be discarded and re-run, a
+  committed environment without a marker to be adopted deterministically,
+  and `wallet.dat` to stay byte-for-byte unchanged.  Set `PXC_ONLY=<regex>`
+  to filter cases and `PXC_KEEP_WORK=1` to keep the temporary datadirs while
+  debugging.
+- `regression_lmdb_wallet_parity.sh` — logical backend parity, not raw
+  record counts: it stops a populated BDB wallet at a known state, copies
+  the datadir twice, migrates exactly one copy to LMDB, and then runs the
+  two wallets as independent daemons on separate ports.  At each checkpoint
+  it canonicalizes the whole wallet view (`dumpwallet`, `dumphybridkeys`,
+  transaction history, accounts, received-by tallies, address groupings,
+  unspent outputs, hybrid address book, balances, selected
+  `gettransaction` results) and requires the two sides to match.  It
+  compares full key material before encryption and structural state after
+  it, performs equivalent deterministic operations on both sides,
+  cross-verifies signatures between the backends, checks that the shared
+  hybrid pool allocates identically, grows the legacy keypool, and
+  re-compares after a restart.  The only discarded fields are timestamps
+  plus, in structural mode, txids, addresses, scripts/public keys, output
+  positions, and ECDSA-DER-dependent size/fee ratios.  `PXC_KEEP_WORK=1`
+  keeps both snapshots and per-checkpoint diffs.
 
 Run a single script with:
 

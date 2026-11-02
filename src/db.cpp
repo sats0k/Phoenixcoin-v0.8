@@ -4,6 +4,11 @@
 // file LICENCE or http://opensource.org/license/mit
 
 #include <algorithm>
+#include <atomic>
+#include <cerrno>
+#include <cstdlib>
+#include <limits>
+#include <mutex>
 
 #ifndef WINDOWS
 #include "sys/stat.h"
@@ -13,17 +18,108 @@
 #include <filesystem>
 #include <fstream>
 #include <stdint.h>
+#include <openssl/crypto.h>
 
+#include "allocators.h" /* for GetSystemPageSize */
 #include "util.h"
 #include "main.h"
 #include "checkpoints.h" /* for hashSyncCheckpoint */
 #include "db.h"
+#include "bdb_kv.h"
+#include "lmdb_kv.h"
+
+#include <cctype>
+#include <csignal>
 
 using namespace std;
 using namespace boost;
 
 
 unsigned int nWalletDBUpdated;
+
+// Test-only crash injection (see TestWalletCrashPoint in db.h).  A test arms
+// one named point in a control file; skip counts let it pick an exact record
+// or transaction boundary.  Nothing here runs unless the environment variable
+// is set and the control file names the point being reached.
+void TestWalletCrashPoint(const char* pszPoint)
+{
+    const char* pszFile = std::getenv("PHOENIX_TEST_CRASH_FILE");
+    if (pszFile == nullptr || *pszFile == '\0')
+        return;
+
+    std::ifstream in(pszFile);
+    std::string strPoint;
+    int nSkip = 0;
+    if (!(in >> strPoint >> nSkip) || strPoint != pszPoint)
+        return;
+
+    if (nSkip > 0)
+    {
+        std::ofstream out(pszFile, std::ios::trunc);
+        if (out)
+            out << strPoint << " " << (nSkip - 1) << "\n";
+        return;
+    }
+
+    fflush(nullptr);
+#ifndef WIN32
+    raise(SIGKILL);
+#endif
+    // SIGKILL cannot be caught, so this is only reached on platforms without
+    // it (or if raise() fails); keep the same observable exit status.
+    std::_Exit(137);
+}
+
+namespace {
+
+// The first serialized field of every wallet record is its record type
+// ("tx", "name", "key", "pool", "hyb", ...).  Crash points include it so a
+// test can arm an exact record class instead of counting unrelated writes.
+std::string TestWalletRecordType(const CDBKey& key)
+{
+    try {
+        CDataStream ssKey(key, SER_DISK, CLIENT_VERSION);
+        std::string strType;
+        ssKey >> strType;
+        return strType;
+    } catch (...) {
+        return std::string();
+    }
+}
+
+// Test-only fault injection for RewriteWalletLMDB().  Nothing is armed by a
+// normal startup or by any production code path.
+struct TestWalletRewriteState
+{
+    std::mutex mutex;
+    // Armed points, each with the number of matching calls to let pass first.
+    std::map<std::string, int> mapSkip;
+};
+
+TestWalletRewriteState g_testWalletRewrite;
+std::atomic<bool> g_fTestWalletRewriteAbort(false);
+std::atomic<bool> g_fTestWalletRewriteAborted(false);
+
+// Returns true when the named rewrite step is armed and its skip count has
+// been exhausted.  Different points can be armed at once, so a test can force
+// both the first install and the subsequent restore to fail.
+bool TestWalletRewriteFailureMatches(const char* pszPoint)
+{
+    std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+    std::map<std::string, int>::iterator it =
+        g_testWalletRewrite.mapSkip.find(pszPoint);
+    if (it == g_testWalletRewrite.mapSkip.end())
+        return false;
+    if (it->second > 0)
+    {
+        --it->second;
+        return false;
+    }
+    g_testWalletRewrite.mapSkip.erase(it);
+    return true;
+}
+
+} // namespace
 
 
 
@@ -32,6 +128,458 @@ unsigned int nWalletDBUpdated;
 //
 
 CDBEnv bitdb;
+
+namespace {
+
+CLMDBEnv g_lmdbChainEnv;
+CLMDBDatabase g_lmdbChainDb;
+bool g_fLMDBChainEnabled = false;
+
+CLMDBEnv g_lmdbWalletEnv;
+CLMDBDatabase g_lmdbWalletDb;
+bool g_fLMDBWalletEnabled = false;
+
+// Serializes wallet environment lifecycle operations (init, rewrite, backup,
+// flush) against each other.  Short-lived CWalletDB handles increment
+// g_nWalletKVHandles so a rewrite can wait for them to drain, mirroring the
+// Berkeley DB mapFileUseCount protocol.
+std::mutex g_mutexWalletKV;
+std::atomic<int> g_nWalletKVHandles(0);
+size_t g_nWalletMapSize = 0;
+bool g_fWalletNoSync = true;
+// Directory that owns the open LMDB wallet.  The production startup path uses
+// GetDataDir(), but tests open the wallet in a temporary directory; rewrite
+// must follow the environment it is compacting, not the configured datadir.
+std::filesystem::path g_pathLMDBWalletDir;
+
+#if defined(__LP64__) || defined(_WIN64)
+constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 4096;
+// A 64-bit map is bounded by the representable size_t range, not by a small
+// platform constant.  Keep the MiB limit inside that range.
+constexpr int64 LMDB_MAX_MAPSIZE_MIB =
+    static_cast<int64>((std::numeric_limits<size_t>::max)() / (1024ULL * 1024ULL));
+#else
+constexpr int64 LMDB_DEFAULT_MAPSIZE_MIB = 1024;
+// 32-bit processes cannot map the full 4 GiB address space.  LMDB documents a
+// practical limit in the ~1.1-2 GiB range, so reject larger requests instead
+// of letting the size_t conversion wrap.
+constexpr int64 LMDB_MAX_MAPSIZE_MIB = 2048;
+#endif
+
+constexpr const char* CHAIN_BACKEND_MARKER = "blkindex.backend";
+constexpr const char* WALLET_BACKEND_MARKER = "wallet.backend";
+
+#if defined(__LP64__) || defined(_WIN64)
+// A wallet map is virtual address space, not a preallocation.  Match the chain
+// index default so a large wallet does not need a flag just to start.
+constexpr int64 LMDB_DEFAULT_WALLET_MAPSIZE_MIB = 4096;
+#else
+constexpr int64 LMDB_DEFAULT_WALLET_MAPSIZE_MIB = 256;
+#endif
+
+bool ParseInt64Strict(const std::string& strValue, int64& nValue)
+{
+    if (strValue.empty())
+        return false;
+
+    errno = 0;
+    char* pszEnd = nullptr;
+    const long long nParsed = strtoll(strValue.c_str(), &pszEnd, 10);
+    if (errno == ERANGE || pszEnd == strValue.c_str() || *pszEnd != '\0')
+        return false;
+
+    nValue = nParsed;
+    return true;
+}
+
+std::filesystem::path GetChainBackendMarkerPath(const std::filesystem::path& dir)
+{
+    return dir / CHAIN_BACKEND_MARKER;
+}
+
+void LogLMDBMapUsage()
+{
+    MDB_env* env = g_lmdbChainEnv.GetEnv();
+    if (!env)
+        return;
+
+    MDB_envinfo info;
+    MDB_stat stat;
+    if (mdb_env_info(env, &info) != 0 || mdb_env_stat(env, &stat) != 0)
+        return;
+
+    const double nUsedMiB =
+        static_cast<double>((info.me_last_pgno + 1) * stat.ms_psize) / (1024.0 * 1024.0);
+    const double nMapMiB = static_cast<double>(info.me_mapsize) / (1024.0 * 1024.0);
+    printf("LMDB chain index: %.1f of %.1f MiB used\n", nUsedMiB, nMapMiB);
+
+    if (info.me_mapsize > 0 && info.me_last_pgno + 1 > 0) {
+        const double nRatio = nUsedMiB / nMapMiB;
+        if (nRatio >= 0.85)
+            printf("Warning: LMDB chain index is %.0f%% full; increase "
+                   "-lmdbmapsize before it runs out of space\n", nRatio * 100.0);
+    }
+}
+
+} // namespace
+
+CDBScan::CDBScan(std::unique_ptr<CDBTransaction> txnIn, std::unique_ptr<CDBIterator> itIn)
+    : txn(std::move(txnIn)), it(std::move(itIn))
+{
+}
+
+CDBScan::~CDBScan()
+{
+    // Close the cursor before releasing the backend read transaction.  The
+    // destructor body runs before members are destroyed, so an explicit reset
+    // is required here: a cursor must not outlive its transaction.
+    it.reset();
+    if (txn)
+        txn->Commit();
+}
+
+bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend)
+{
+    std::ifstream file(GetChainBackendMarkerPath(dir));
+    if (!file)
+        return false;
+
+    std::getline(file, strBackend);
+    while (!strBackend.empty() &&
+           (strBackend.back() == '\r' || strBackend.back() == '\n' ||
+            strBackend.back() == ' ' || strBackend.back() == '\t'))
+        strBackend.pop_back();
+    while (!strBackend.empty() &&
+           (strBackend.front() == ' ' || strBackend.front() == '\t'))
+        strBackend.erase(strBackend.begin());
+    return true;
+}
+
+bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend)
+{
+    const std::filesystem::path pathMarker = GetChainBackendMarkerPath(dir);
+    const std::filesystem::path pathTmp = pathMarker.string() + ".tmp";
+
+    {
+        std::ofstream file(pathTmp, std::ios::trunc);
+        if (!file)
+            return error("WriteChainBackendMarker(): cannot create %s",
+                         pathTmp.string().c_str());
+        file << strBackend << "\n";
+        file.flush();
+        if (!file)
+            return error("WriteChainBackendMarker(): cannot write %s",
+                         pathTmp.string().c_str());
+    }
+
+    std::error_code ec;
+    std::filesystem::rename(pathTmp, pathMarker, ec);
+    if (ec) {
+        // Windows does not replace an existing file with rename().
+        std::filesystem::remove(pathMarker, ec);
+        std::filesystem::rename(pathTmp, pathMarker, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(pathTmp, ec);
+        return error("WriteChainBackendMarker(): cannot rename %s to %s",
+                     pathTmp.string().c_str(), pathMarker.string().c_str());
+    }
+    return true;
+}
+
+bool HasLMDBChainIndex(const std::filesystem::path& dir)
+{
+    const std::filesystem::path pathData = dir / "blkindex" / "data.mdb";
+    std::error_code ec;
+    if (!std::filesystem::exists(pathData, ec) || ec)
+        return false;
+    const uintmax_t nSize = std::filesystem::file_size(pathData, ec);
+    return !ec && nSize > 0;
+}
+
+bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured)
+{
+    std::string strMarker;
+    if (ReadChainBackendMarker(dir, strMarker)) {
+        if (strMarker != "lmdb" && strMarker != "bdb")
+            return error("Unknown chain backend marker in %s: '%s'",
+                         GetChainBackendMarkerPath(dir).string().c_str(),
+                         strMarker.c_str());
+
+        if (strMarker == "lmdb" && configured == DB_BACKEND_BDB)
+            return error("This data directory uses the LMDB chain index. "
+                         "Start with -dbbackend=lmdb. To revert to Berkeley DB, "
+                         "back up the data directory and remove both 'blkindex' "
+                         "and 'blkindex.backend'.");
+        return true;
+    }
+
+    // Older LMDB builds did not write a marker.  Treat an existing LMDB chain
+    // index as authoritative so that a default BDB start cannot silently load
+    // the stale blkindex.dat.
+    if (configured == DB_BACKEND_BDB && HasLMDBChainIndex(dir))
+        return error("Found an LMDB chain index at %s. "
+                     "Start with -dbbackend=lmdb, or remove 'blkindex' after "
+                     "backing up the data directory to use Berkeley DB.",
+                     (dir / "blkindex").string().c_str());
+
+    return true;
+}
+
+namespace {
+
+std::filesystem::path GetWalletBackendMarkerPath(const std::filesystem::path& dir)
+{
+    return dir / WALLET_BACKEND_MARKER;
+}
+
+std::filesystem::path GetWalletLMDBPath(const std::filesystem::path& dir)
+{
+    return dir / "wallet";
+}
+
+} // namespace
+
+bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend)
+{
+    std::ifstream file(GetWalletBackendMarkerPath(dir));
+    if (!file)
+        return false;
+
+    std::getline(file, strBackend);
+    while (!strBackend.empty() &&
+           (strBackend.back() == '\r' || strBackend.back() == '\n' ||
+            strBackend.back() == ' ' || strBackend.back() == '\t'))
+        strBackend.pop_back();
+    while (!strBackend.empty() &&
+           (strBackend.front() == ' ' || strBackend.front() == '\t'))
+        strBackend.erase(strBackend.begin());
+    return true;
+}
+
+bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend)
+{
+    const std::filesystem::path pathMarker = GetWalletBackendMarkerPath(dir);
+    const std::filesystem::path pathTmp = pathMarker.string() + ".tmp";
+
+    {
+        std::ofstream file(pathTmp, std::ios::trunc);
+        if (!file)
+            return error("WriteWalletBackendMarker(): cannot create %s",
+                         pathTmp.string().c_str());
+        file.write(strBackend.c_str(), strBackend.size());
+        file << "\n";
+        file.flush();
+        if (!file)
+            return error("WriteWalletBackendMarker(): cannot write %s",
+                         pathTmp.string().c_str());
+    }
+
+    TestWalletCrashPoint("wallet-marker-before-rename");
+    std::error_code ec;
+    std::filesystem::rename(pathTmp, pathMarker, ec);
+    if (ec) {
+        // Windows does not replace an existing file with rename().
+        std::filesystem::remove(pathMarker, ec);
+        std::filesystem::rename(pathTmp, pathMarker, ec);
+    }
+    if (ec) {
+        std::filesystem::remove(pathTmp, ec);
+        return error("WriteWalletBackendMarker(): cannot rename %s to %s",
+                     pathTmp.string().c_str(), pathMarker.string().c_str());
+    }
+    TestWalletCrashPoint("wallet-marker-after-rename");
+    return true;
+}
+
+bool HasLMDBWallet(const std::filesystem::path& dir)
+{
+    const std::filesystem::path pathData = GetWalletLMDBPath(dir) / "data.mdb";
+    std::error_code ec;
+    if (!std::filesystem::exists(pathData, ec) || ec)
+        return false;
+    const uintmax_t nSize = std::filesystem::file_size(pathData, ec);
+    return !ec && nSize > 0;
+}
+
+bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend configured)
+{
+    std::string strMarker;
+    if (ReadWalletBackendMarker(dir, strMarker)) {
+        if (strMarker != "lmdb" && strMarker != "bdb")
+            return error("Unknown wallet backend marker in %s: '%s'",
+                         GetWalletBackendMarkerPath(dir).string().c_str(),
+                         strMarker.c_str());
+
+        if (strMarker == "lmdb" && configured == DB_BACKEND_BDB)
+            return error("This data directory uses the LMDB wallet. "
+                         "Start with -walletbackend=lmdb. To revert to Berkeley DB, "
+                         "back up the data directory and remove both 'wallet' "
+                         "and 'wallet.backend'.");
+
+        // The marker is authoritative in both directions.  In particular, a
+        // leftover wallet/ directory must not let an LMDB start adopt a data
+        // directory whose marker still says Berkeley DB owns the wallet.
+        // Migrating an explicitly marked BDB wallet requires removing the
+        // marker first, so the switch is always a deliberate act.
+        if (strMarker == "bdb" && configured == DB_BACKEND_LMDB)
+            return error("This data directory uses the Berkeley DB wallet. "
+                         "To migrate it to LMDB, back up the data directory, "
+                         "remove wallet.backend and any existing wallet/ "
+                         "directory, then restart with -walletbackend=lmdb.");
+        return true;
+    }
+
+    // Older LMDB wallets have no marker.  Treat an existing LMDB wallet as
+    // authoritative so that a default BDB start cannot silently open the stale
+    // wallet.dat.
+    if (configured == DB_BACKEND_BDB && HasLMDBWallet(dir))
+        return error("Found an LMDB wallet at %s. "
+                     "Start with -walletbackend=lmdb, or remove 'wallet' after "
+                     "backing up the data directory to use Berkeley DB.",
+                     GetWalletLMDBPath(dir).string().c_str());
+
+    return true;
+}
+
+WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
+                                           bool fBDBWalletExists)
+{
+    if (!fLMDBEmpty)
+        return WALLET_USE_EXISTING;
+    if (fMarkerLMDB)
+        return WALLET_FAIL_MISSING;
+    if (fBDBWalletExists)
+        return WALLET_MIGRATE_BDB;
+    return WALLET_INIT_NEW;
+}
+
+DBBackend GetConfiguredWalletBackend()
+{
+    std::string strBackend = GetArg("-walletbackend", "bdb");
+    std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
+}
+
+DBBackend GetConfiguredDBBackend()
+{
+    std::string strBackend = GetArg("-dbbackend", "bdb");
+    std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
+}
+
+ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB, bool fLMDBEmpty)
+{
+    if (!fLMDBEmpty)
+        return CHAIN_INDEX_USE_EXISTING;
+    if (fMarkerLMDB)
+        return CHAIN_INDEX_FAIL_MISSING;
+    return CHAIN_INDEX_MIGRATE_BDB;
+}
+
+int64 GetLMDBMaxMapSizeMiB()
+{
+    return LMDB_MAX_MAPSIZE_MIB;
+}
+
+bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError)
+{
+    int64 nMiB = 0;
+    if (!ParseInt64Strict(strValue, nMiB))
+    {
+        strError = strprintf("'%s' is not a valid number of MiB", strValue.c_str());
+        return false;
+    }
+
+    if (nMiB <= 0)
+    {
+        strError = strprintf("must be a positive number of MiB (got %s)",
+                             std::to_string(nMiB).c_str());
+        return false;
+    }
+
+    if (nMiB > LMDB_MAX_MAPSIZE_MIB)
+    {
+        strError = strprintf("%s MiB exceeds the maximum supported value of %s MiB "
+                             "for this platform",
+                             std::to_string(nMiB).c_str(),
+                             std::to_string(LMDB_MAX_MAPSIZE_MIB).c_str());
+        return false;
+    }
+
+    // The multiplication is safe: nMiB is positive and at most
+    // SIZE_MAX / MiB (or 2048 on 32-bit builds).
+    const size_t nCandidate = static_cast<size_t>(nMiB) * (1024ULL * 1024ULL);
+
+    const size_t nPageSize = GetSystemPageSize();
+    if (nPageSize > 0 && nPageSize <= nCandidate && nCandidate % nPageSize != 0)
+    {
+        strError = strprintf("%s MiB is not a multiple of the system page size "
+                             "(%s bytes)",
+                             std::to_string(nMiB).c_str(),
+                             std::to_string(nPageSize).c_str());
+        return false;
+    }
+
+    nBytes = nCandidate;
+    return true;
+}
+
+size_t GetLMDBWalletMapSizeForMigration(size_t nConfigured, uintmax_t nSourceBytes)
+{
+    // Berkeley DB's file already includes its own page overhead, so its size
+    // bounds the record data that migration will copy.  Double it to leave
+    // room for LMDB branch pages and for the pages a single copy transaction
+    // dirties before it commits, then add a small fixed margin.
+    const uintmax_t nMargin = 16ULL * 1024ULL * 1024ULL;
+    uintmax_t nNeeded;
+    if (nSourceBytes > ((std::numeric_limits<uintmax_t>::max)() - nMargin) / 2)
+        nNeeded = (std::numeric_limits<uintmax_t>::max)();
+    else
+        nNeeded = nSourceBytes * 2 + nMargin;
+
+    const uintmax_t nPlatformMax =
+        static_cast<uintmax_t>(LMDB_MAX_MAPSIZE_MIB) * 1024ULL * 1024ULL;
+    if (nNeeded > nPlatformMax)
+        nNeeded = nPlatformMax;
+
+    // Keep the derived size page aligned, like ParseLMDBMapSize does for
+    // explicit values.  The maximum is MiB aligned, so clamping to it cannot
+    // leave an unaligned result behind.
+    const size_t nPageSize = GetSystemPageSize();
+    if (nPageSize > 0 && nNeeded < nPlatformMax) {
+        const uintmax_t nRound = static_cast<uintmax_t>(nPageSize) - 1;
+        if (nNeeded <= nPlatformMax - nRound)
+            nNeeded = ((nNeeded + nRound) / nPageSize) * nPageSize;
+        else
+            nNeeded = nPlatformMax;
+    }
+
+    return nNeeded > nConfigured ? static_cast<size_t>(nNeeded) : nConfigured;
+}
+
+std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly)
+{
+    if (!g_fLMDBChainEnabled)
+        return nullptr;
+
+    if (fReadOnly)
+        return g_lmdbChainDb.BeginTransaction(true);
+
+    // The environment allows a single writer.  Other writers may be busy for a
+    // short time, so wait for the slot rather than failing a block write.
+    for (int i = 0; i < 60000; ++i) {
+        std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(false);
+        if (txn)
+            return txn;
+        if (fShutdown)
+            break;
+        Sleep(1);
+    }
+    return nullptr;
+}
 
 void CDBEnv::EnvShutdown()
 {
@@ -216,8 +764,10 @@ void CDBEnv::CheckpointLSN(std::string strFile)
 }
 
 
+static bool IsChainFile(std::string strFile);
+
 CDB::CDB(const char *pszFile, const char* pszMode) :
-    pdb(nullptr), activeTxn(nullptr)
+    pdb(nullptr), activeTxn(nullptr), fUseKV(false), fUseKVWallet(false)
 {
     int ret;
     if (pszFile == nullptr)
@@ -225,6 +775,50 @@ CDB::CDB(const char *pszFile, const char* pszMode) :
 
     fReadOnly = (!strchr(pszMode, '+') && !strchr(pszMode, 'w'));
     bool fCreate = strchr(pszMode, 'c');
+
+    // The chain index can live in LMDB; wallet and address databases always
+    // stay on Berkeley DB.
+    if (IsChainFile(pszFile) && g_fLMDBChainEnabled)
+    {
+        strFile = pszFile;
+        fUseKV = true;
+
+        // Match the Berkeley DB constructor: a newly created chain database
+        // records the client version before it is used.
+        if (fCreate && !Exists(string("version")))
+        {
+            bool fTmp = fReadOnly;
+            fReadOnly = false;
+            WriteVersion(CLIENT_VERSION);
+            fReadOnly = fTmp;
+        }
+        return;
+    }
+
+    if (g_fLMDBWalletEnabled && string(pszFile) == "wallet.dat")
+    {
+        strFile = pszFile;
+        fUseKV = true;
+        fUseKVWallet = true;
+        {
+            // Rewrite and backup hold this lock while they wait for open
+            // handles to drain, then replace the environment.
+            std::lock_guard<std::mutex> lock(g_mutexWalletKV);
+            ++g_nWalletKVHandles;
+        }
+
+        // Match the Berkeley DB constructor: a newly created wallet records
+        // the client version before it is used.
+        if (fCreate && !Exists(string("version")))
+        {
+            bool fTmp = fReadOnly;
+            fReadOnly = false;
+            WriteVersion(CLIENT_VERSION);
+            fReadOnly = fTmp;
+        }
+        return;
+    }
+
     unsigned int nFlags = DB_THREAD;
     if (fCreate)
         nFlags |= DB_CREATE;
@@ -289,6 +883,22 @@ static bool IsChainFile(std::string strFile)
 
 void CDB::Close()
 {
+    if (fUseKV)
+    {
+        if (kvTxn)
+        {
+            kvTxn->Abort();
+            kvTxn.reset();
+        }
+        if (fUseKVWallet)
+        {
+            fUseKVWallet = false;
+            --g_nWalletKVHandles;
+        }
+        fUseKV = false;
+        return;
+    }
+
     if (!pdb)
         return;
     if (activeTxn)
@@ -311,6 +921,1051 @@ void CDB::Close()
         LOCK(bitdb.cs_db);
         --bitdb.mapFileUseCount[strFile];
     }
+}
+
+bool CDB::ReadKV(const CDBKey& key, CDBValue& value)
+{
+    if (kvTxn)
+        return kvTxn->Read(key, value);
+
+    std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(true);
+    if (!txn)
+        return false;
+    bool fFound = txn->Read(key, value);
+    txn->Commit();
+    return fFound;
+}
+
+bool CDB::WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite)
+{
+    if (kvTxn)
+        return kvTxn->Write(key, value, fOverwrite);
+
+    // Outside an explicit transaction, commit every write so readers see it.
+    std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(false);
+    if (!txn)
+        return false;
+    bool fWritten = txn->Write(key, value, fOverwrite);
+    if (fUseKVWallet)
+        TestWalletCrashPoint(("wallet-write-before-commit:" +
+                              TestWalletRecordType(key)).c_str());
+    bool fCommitted = txn->Commit();
+    if (fUseKVWallet && fWritten && fCommitted)
+        TestWalletCrashPoint(("wallet-write-after-commit:" +
+                              TestWalletRecordType(key)).c_str());
+    return fWritten && fCommitted;
+}
+
+bool CDB::EraseKV(const CDBKey& key)
+{
+    if (kvTxn)
+        return kvTxn->Erase(key);
+
+    std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(false);
+    if (!txn)
+        return false;
+    bool fErased = txn->Erase(key);
+    if (fUseKVWallet)
+        TestWalletCrashPoint(("wallet-write-before-commit:" +
+                              TestWalletRecordType(key)).c_str());
+    bool fCommitted = txn->Commit();
+    if (fUseKVWallet && fCommitted)
+        TestWalletCrashPoint(("wallet-write-after-commit:" +
+                              TestWalletRecordType(key)).c_str());
+    return fErased && fCommitted;
+}
+
+bool CDB::ExistsKV(const CDBKey& key)
+{
+    if (kvTxn)
+    {
+        CDBValue value;
+        return kvTxn->Read(key, value);
+    }
+
+    std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(true);
+    if (!txn)
+        return false;
+    CDBValue value;
+    bool fFound = txn->Read(key, value);
+    txn->Commit();
+    return fFound;
+}
+
+std::unique_ptr<CDBScan> CDB::GetScan(const CDBKey& prefix)
+{
+    if (fUseKV)
+    {
+        std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(true);
+        if (!txn)
+            return nullptr;
+        std::unique_ptr<CDBIterator> it = txn->NewIterator(prefix);
+        if (!it)
+        {
+            txn->Abort();
+            return nullptr;
+        }
+        return std::make_unique<CDBScan>(std::move(txn), std::move(it));
+    }
+
+    if (!pdb)
+        return nullptr;
+
+    // A scan inside an explicit transaction must use that transaction, or the
+    // cursor will not see the transaction's own writes.
+    std::unique_ptr<CDBIterator> it(new CBDBIterator(pdb, prefix, activeTxn));
+    return std::make_unique<CDBScan>(nullptr, std::move(it));
+}
+
+namespace {
+
+bool IsChainLMDBEmpty(bool& fEmpty)
+{
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(true);
+    if (!txn)
+        return false;
+    std::unique_ptr<CDBIterator> it = txn->NewIterator();
+    it->SeekToFirst();
+    fEmpty = !it->Valid();
+    it.reset();
+    return txn->Commit();
+}
+
+bool MissingLMDBChainIndexError(const std::filesystem::path& pathChain)
+{
+    return error("The LMDB chain index at %s is missing or empty, but "
+                 "blkindex.backend marks LMDB as authoritative. Restore the "
+                 "chain index from a backup, or remove blkindex.backend to "
+                 "deliberately re-import blkindex.dat.",
+                 pathChain.string().c_str());
+}
+
+} // namespace
+
+// Copies the raw key/value pairs from blkindex.dat into an empty LMDB chain
+// index.  The Berkeley DB file is kept as-is so switching back is lossless.
+bool CTxDB::MigrateToLMDB()
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(GetDataDir() / "blkindex.dat"))
+        return true;
+
+    bool fEmpty = false;
+    if (!IsChainLMDBEmpty(fEmpty))
+        return error("MigrateToLMDB(): cannot inspect LMDB chain index");
+    if (!fEmpty)
+        return true; // already migrated
+
+    printf("Migrating chain index from blkindex.dat to LMDB...\n");
+
+    CTxDB db("r");
+    Dbc* pcursor = db.GetCursor();
+    if (!pcursor)
+        return error("MigrateToLMDB(): cannot open blkindex.dat cursor");
+
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(false);
+    if (!txn)
+    {
+        pcursor->close();
+        return error("MigrateToLMDB(): cannot begin LMDB write transaction");
+    }
+
+    size_t nRecords = 0;
+    bool fSuccess = true;
+    while (true)
+    {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        int ret = db.ReadAtCursor(pcursor, ssKey, ssValue, DB_NEXT);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0)
+        {
+            fSuccess = false;
+            break;
+        }
+
+        const CDBKey key(ssKey.begin(), ssKey.end());
+        const CDBValue value(ssValue.begin(), ssValue.end());
+        if (!txn->Write(key, value, true))
+        {
+            fSuccess = false;
+            break;
+        }
+        ++nRecords;
+    }
+    pcursor->close();
+
+    if (!fSuccess)
+    {
+        txn->Abort();
+        return error("MigrateToLMDB(): failed to copy blkindex.dat");
+    }
+    if (!txn->Commit())
+        return error("MigrateToLMDB(): failed to commit LMDB chain index");
+
+    printf("Chain index migration complete (%" PRIszu " records)\n", nRecords);
+    db.Close();
+    bitdb.CloseDb("blkindex.dat");
+    return true;
+}
+
+bool InitLMDBChainDB()
+{
+    // Tests run with a mocked Berkeley environment and must not touch the
+    // configured data directory.
+    if (bitdb.IsMock())
+        return true;
+
+    if (!CheckChainBackendCompatibility(GetDataDir(), GetConfiguredDBBackend()))
+        return false;
+
+    if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
+        return true;
+
+    const std::filesystem::path pathChain = GetDataDir() / "blkindex";
+
+    std::string strMarker;
+    const bool fMarkerLMDB = ReadChainBackendMarker(GetDataDir(), strMarker) &&
+                             strMarker == "lmdb";
+
+    // Once the marker says LMDB is authoritative, an empty or missing LMDB
+    // index is data loss.  Never silently resurrect the migration-time BDB
+    // snapshot; a deliberate re-import requires removing the marker.
+    if (fMarkerLMDB && !HasLMDBChainIndex(GetDataDir()))
+        return MissingLMDBChainIndexError(pathChain);
+
+    if (!bitdb.Open(GetDataDir()))
+        return error("InitLMDBChainDB(): failed to open database environment");
+
+    const std::string strMapSize = mapArgs.count("-lmdbmapsize")
+        ? mapArgs["-lmdbmapsize"]
+        : std::to_string(LMDB_DEFAULT_MAPSIZE_MIB);
+    size_t nMapSize = 0;
+    std::string strMapSizeError;
+    if (!ParseLMDBMapSize(strMapSize, nMapSize, strMapSizeError))
+        return error("InitLMDBChainDB(): invalid -lmdbmapsize: %s",
+                     strMapSizeError.c_str());
+
+    // Match Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour unless durability was
+    // explicitly requested.  NOSYNC keeps each commit atomic and consistent,
+    // but skips the per-commit fsync that otherwise dominates block import.
+    const bool fNoSync = GetBoolArg("-lmdbnosync", true);
+
+    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync))
+        return error("InitLMDBChainDB(): failed to open LMDB environment %s",
+                     pathChain.string().c_str());
+
+    if (!g_lmdbChainDb.Open(g_lmdbChainEnv, "main", true))
+    {
+        g_lmdbChainEnv.Close();
+        return error("InitLMDBChainDB(): failed to open chain database");
+    }
+
+    bool fLMDBEmpty = false;
+    if (!IsChainLMDBEmpty(fLMDBEmpty))
+    {
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return error("InitLMDBChainDB(): cannot inspect LMDB chain index");
+    }
+
+    switch (GetChainIndexStartupAction(fMarkerLMDB, fLMDBEmpty))
+    {
+    case CHAIN_INDEX_FAIL_MISSING:
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return MissingLMDBChainIndexError(pathChain);
+
+    case CHAIN_INDEX_MIGRATE_BDB:
+        if (!CTxDB::MigrateToLMDB())
+        {
+            g_lmdbChainDb.Close();
+            g_lmdbChainEnv.Close();
+            return false;
+        }
+        break;
+
+    case CHAIN_INDEX_USE_EXISTING:
+        break;
+    }
+
+    if (!WriteChainBackendMarker(GetDataDir(), "lmdb"))
+    {
+        g_lmdbChainDb.Close();
+        g_lmdbChainEnv.Close();
+        return false;
+    }
+
+    g_fLMDBChainEnabled = true;
+    printf("Chain index database: LMDB (%s%s)\n", pathChain.string().c_str(),
+           fNoSync ? ", nosync" : "");
+    LogLMDBMapUsage();
+    return true;
+}
+
+void CloseLMDBChainDB()
+{
+    if (!g_fLMDBChainEnabled)
+        return;
+    g_fLMDBChainEnabled = false;
+    g_lmdbChainDb.Close();
+    g_lmdbChainEnv.Close();
+}
+
+namespace {
+
+bool IsWalletLMDBEmpty(bool& fEmpty)
+{
+    std::unique_ptr<CDBTransaction> txn = g_lmdbWalletDb.BeginTransaction(true);
+    if (!txn)
+        return false;
+    std::unique_ptr<CDBIterator> it = txn->NewIterator();
+    if (!it)
+    {
+        txn->Abort();
+        return false;
+    }
+    it->SeekToFirst();
+    fEmpty = !it->Valid();
+    const bool fError = it->Error();
+    it.reset();
+    if (fError || !txn->Commit())
+        return false;
+    return true;
+}
+
+// Reads wallet.dat through the Berkeley DB environment that init.cpp already
+// opened.  The class only exists because the cursor helpers on CDB are
+// protected; the migration itself is a raw record copy.
+class CWalletMigrationSource : public CDB
+{
+public:
+    CWalletMigrationSource() : CDB("wallet.dat", "r") {}
+    using CDB::GetCursor;
+    using CDB::ReadAtCursor;
+};
+
+// Copies the raw key/value pairs from wallet.dat into the already-open, empty
+// LMDB wallet.  The Berkeley DB file is never modified, so a failed migration
+// can be retried and a default BDB start can still use it.  The caller writes
+// wallet.backend only after this function succeeds.
+bool MigrateWalletToLMDB(const std::filesystem::path& dir)
+{
+    namespace fs = std::filesystem;
+
+    if (!fs::exists(dir / "wallet.dat"))
+        return true;
+
+    printf("Migrating wallet from wallet.dat to LMDB...\n");
+
+    std::unique_ptr<CWalletMigrationSource> source;
+    try {
+        source = std::make_unique<CWalletMigrationSource>();
+    } catch (const std::exception& e) {
+        return error("MigrateWalletToLMDB(): cannot open wallet.dat: %s",
+                     e.what());
+    }
+
+    Dbc* pcursor = source->GetCursor();
+    if (!pcursor) {
+        source->Close();
+        bitdb.CloseDb("wallet.dat");
+        return error("MigrateWalletToLMDB(): cannot open wallet.dat cursor");
+    }
+
+    std::unique_ptr<CDBTransaction> txn = g_lmdbWalletDb.BeginTransaction(false);
+    if (!txn) {
+        pcursor->close();
+        source->Close();
+        bitdb.CloseDb("wallet.dat");
+        return error("MigrateWalletToLMDB(): cannot begin LMDB write transaction");
+    }
+
+    size_t nRecords = 0;
+    bool fSuccess = true;
+    while (true) {
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        int ret = source->ReadAtCursor(pcursor, ssKey, ssValue, DB_NEXT);
+        if (ret == DB_NOTFOUND)
+            break;
+        if (ret != 0) {
+            fSuccess = false;
+            break;
+        }
+
+        const CDBKey key(ssKey.begin(), ssKey.end());
+        const CDBValue value(ssValue.begin(), ssValue.end());
+        const bool fWritten = txn->Write(key, value, true);
+
+        // Read the record back inside the same transaction so a write that
+        // silently stored a different value cannot pass the final count check.
+        // This is a byte comparison of the serialized record; wallet-level
+        // semantics are covered by the migration tests.
+        CDBValue stored;
+        const bool fVerified = fWritten && txn->Read(key, stored) && stored == value;
+
+        // Values can contain private keys; do not leave them in the staging
+        // stream once the LMDB transaction owns its own copy.
+        if (ssValue.size() > 0)
+            OPENSSL_cleanse(&ssValue[0], ssValue.size());
+        if (!fVerified) {
+            fSuccess = false;
+            break;
+        }
+        ++nRecords;
+        TestWalletCrashPoint("wallet-migrate-record");
+    }
+    pcursor->close();
+
+    // Verify the whole copy inside the transaction, before committing.  A
+    // short write must never be mistaken for a successful migration.
+    size_t nStored = 0;
+    if (fSuccess && nRecords > 0) {
+        std::unique_ptr<CDBIterator> it = txn->NewIterator();
+        if (!it) {
+            fSuccess = false;
+        } else {
+            for (it->SeekToFirst(); it->Valid(); it->Next())
+                ++nStored;
+            if (it->Error() || nStored != nRecords)
+                fSuccess = false;
+            it.reset();
+        }
+    }
+
+    source->Close();
+    bitdb.CloseDb("wallet.dat");
+
+    if (nRecords == 0) {
+        txn->Abort();
+        return error("MigrateWalletToLMDB(): wallet.dat contains no records");
+    }
+    if (!fSuccess) {
+        txn->Abort();
+        return error("MigrateWalletToLMDB(): failed to copy wallet.dat");
+    }
+    TestWalletCrashPoint("wallet-migrate-before-commit");
+    if (!txn->Commit())
+        return error("MigrateWalletToLMDB(): failed to commit LMDB wallet");
+    printf("Wallet migration complete (%" PRIszu " records verified)\n",
+           nRecords);
+    TestWalletCrashPoint("wallet-migrate-after-commit");
+    return true;
+}
+
+bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
+{
+    return error("The LMDB wallet at %s is missing or empty, but wallet.backend "
+                 "marks LMDB as authoritative. Restore the wallet from a "
+                 "backup, or remove wallet.backend to deliberately start from "
+                 "wallet.dat.",
+                 pathWallet.string().c_str());
+}
+
+// RewriteWalletLMDB() stages the compacted environment in wallet.rewrite,
+// moves the active environment to wallet.old and then installs the staged one.
+// A crash between those renames leaves no wallet/ directory at all, which the
+// startup state machine would otherwise report as data loss.  Finish or undo
+// the rewrite before the marker and emptiness checks look at the directory.
+void RecoverInterruptedWalletRewrite(const std::filesystem::path& dir)
+{
+    const std::filesystem::path pathWallet = dir / "wallet";
+    const std::filesystem::path pathNew = dir / "wallet.rewrite";
+    const std::filesystem::path pathOld = dir / "wallet.old";
+    std::error_code ec;
+
+    // A marker temp file without a marker means the process died between
+    // write() and rename().  The committed wallet is authoritative and the
+    // startup path will write the marker again.
+    std::filesystem::remove(dir / "wallet.backend.tmp", ec);
+
+    const bool fWallet = std::filesystem::exists(pathWallet, ec) && !ec;
+    const bool fNew = std::filesystem::exists(pathNew, ec) && !ec;
+    const bool fOld = std::filesystem::exists(pathOld, ec) && !ec;
+
+    if (!fWallet && (fNew || fOld))
+    {
+        // Prefer the compacted copy: it is complete by the time the old
+        // environment is renamed.  Fall back to the old environment if the
+        // copy is missing.
+        const std::filesystem::path& pathRestore = fNew ? pathNew : pathOld;
+        std::filesystem::rename(pathRestore, pathWallet, ec);
+        if (ec)
+            error("RecoverInterruptedWalletRewrite(): cannot restore %s: %s",
+                  pathRestore.string().c_str(), ec.message().c_str());
+        else
+            printf("Recovered interrupted LMDB wallet rewrite from %s\n",
+                   pathRestore.string().c_str());
+    }
+
+    if (std::filesystem::exists(pathWallet, ec) && !ec)
+    {
+        // Any remaining staging directory is superseded.  wallet.old may
+        // still contain the plaintext keys encryption was compacting away, so
+        // it must not be left behind.
+        std::filesystem::remove_all(pathNew, ec);
+        std::filesystem::remove_all(pathOld, ec);
+    }
+}
+
+bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
+                              size_t nMapSize,
+                              bool fNoSync)
+{
+    const std::filesystem::path pathWallet = dir / "wallet";
+
+    // Re-check the marker here as well, so the test entry point (and any
+    // future caller) cannot bypass the authority rules enforced by
+    // InitLMDBWalletDB().
+    if (!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB))
+        return false;
+
+    RecoverInterruptedWalletRewrite(dir);
+
+    std::string strMarker;
+    const bool fMarkerLMDB = ReadWalletBackendMarker(dir, strMarker) &&
+                             strMarker == "lmdb";
+    const bool fBDBWalletExists = std::filesystem::exists(dir / "wallet.dat");
+
+    // Once the marker says LMDB is authoritative, an empty or missing LMDB
+    // wallet is data loss, not an invitation to create a fresh wallet.
+    if (fMarkerLMDB && !HasLMDBWallet(dir))
+        return MissingLMDBWalletError(pathWallet);
+
+    // The first LMDB start copies wallet.dat inside one transaction.  The
+    // environment is new, so CLMDBEnv::Open() has no data.mdb whose size could
+    // raise the map automatically.  Derive the map from the source file here;
+    // otherwise a wallet larger than -lmdbwalletsize fails with MDB_MAP_FULL.
+    if (!fMarkerLMDB) {
+        std::error_code ec;
+        const uintmax_t nSourceBytes =
+            std::filesystem::file_size(dir / "wallet.dat", ec);
+        if (!ec && nSourceBytes > 0) {
+            const size_t nMigrationSize =
+                GetLMDBWalletMapSizeForMigration(nMapSize, nSourceBytes);
+            if (nMigrationSize > nMapSize) {
+                printf("LMDB wallet map size increased from %" PRIszu
+                       " to %" PRIszu " bytes to fit the wallet.dat migration\n",
+                       nMapSize, nMigrationSize);
+                nMapSize = nMigrationSize;
+            }
+        }
+    }
+
+    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync,
+                              "-lmdbwalletsize"))
+        return error("InitLMDBWalletDB(): failed to open LMDB environment %s",
+                     pathWallet.string().c_str());
+
+    if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
+    {
+        g_lmdbWalletEnv.Close();
+        return error("InitLMDBWalletDB(): failed to open wallet database");
+    }
+
+    bool fLMDBEmpty = false;
+    if (!IsWalletLMDBEmpty(fLMDBEmpty))
+    {
+        g_lmdbWalletDb.Close();
+        g_lmdbWalletEnv.Close();
+        return error("InitLMDBWalletDB(): cannot inspect LMDB wallet");
+    }
+
+    switch (GetWalletStartupAction(fMarkerLMDB, fLMDBEmpty, fBDBWalletExists))
+    {
+    case WALLET_FAIL_MISSING:
+        g_lmdbWalletDb.Close();
+        g_lmdbWalletEnv.Close();
+        return MissingLMDBWalletError(pathWallet);
+
+    case WALLET_MIGRATE_BDB:
+        if (!MigrateWalletToLMDB(dir))
+        {
+            g_lmdbWalletDb.Close();
+            g_lmdbWalletEnv.Close();
+
+            // The environment was created empty for this attempt and the
+            // transaction was aborted, so nothing of value is lost.  Remove it
+            // so a failed migration does not leave a wallet/ directory that
+            // would later look authoritative to a default BDB start.
+            std::error_code ec;
+            std::filesystem::remove_all(pathWallet, ec);
+            if (ec)
+                error("InitLMDBWalletDB(): cannot remove incomplete LMDB "
+                      "wallet %s: %s", pathWallet.string().c_str(),
+                      ec.message().c_str());
+            return false;
+        }
+        break;
+
+    case WALLET_INIT_NEW:
+    case WALLET_USE_EXISTING:
+        break;
+    }
+
+    if (!WriteWalletBackendMarker(dir, "lmdb"))
+    {
+        g_lmdbWalletDb.Close();
+        g_lmdbWalletEnv.Close();
+        return false;
+    }
+
+    g_fLMDBWalletEnabled = true;
+    g_nWalletMapSize = nMapSize;
+    g_fWalletNoSync = fNoSync;
+    g_pathLMDBWalletDir = dir;
+    printf("Wallet database: LMDB (%s%s)\n", pathWallet.string().c_str(),
+           fNoSync ? ", nosync" : "");
+    return true;
+}
+
+// Opens the wallet environment after a rewrite step has closed it.
+// pszPoint names the operation for test-only failure injection; it is inert
+// unless a test has armed that exact point.
+bool ReopenLMDBWallet(const std::filesystem::path& pathWallet,
+                      const char* pszPoint)
+{
+    if (TestWalletRewriteFailureMatches(pszPoint))
+        return false;
+
+    if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
+                              g_fWalletNoSync, "-lmdbwalletsize"))
+        return false;
+
+    if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
+    {
+        g_lmdbWalletEnv.Close();
+        return false;
+    }
+    return true;
+}
+
+// Renames a rewrite component, honouring the test-only failure injection.
+bool RewriteRename(const std::filesystem::path& pathFrom,
+                   const std::filesystem::path& pathTo,
+                   const char* pszPoint,
+                   std::error_code& ec)
+{
+    if (TestWalletRewriteFailureMatches(pszPoint))
+    {
+        ec = std::make_error_code(std::errc::io_error);
+        return false;
+    }
+    std::filesystem::rename(pathFrom, pathTo, ec);
+    return !ec;
+}
+
+// A rewrite failure that leaves no usable LMDB environment cannot fall back
+// to Berkeley DB: wallet.backend still marks LMDB as authoritative, so any
+// BDB write would be invisible after the next restart.  Stop instead of
+// continuing with a split wallet.  Tests can arm TestWalletRewriteAbort to
+// observe the decision without terminating the test process.
+bool FatalWalletRewrite(const char* pszReason)
+{
+    error("RewriteWalletLMDB(): %s; LMDB remains authoritative, refusing to "
+          "fall back to Berkeley DB", pszReason);
+    if (g_fTestWalletRewriteAbort.load())
+    {
+        g_fTestWalletRewriteAborted.store(true);
+        return false;
+    }
+    exit(1);
+}
+
+// Compacts the LMDB wallet into a fresh environment.  LMDB is copy-on-write,
+// so overwritten pages (including the plaintext keys removed during wallet
+// encryption) stay in the file until the environment is copied or compacted.
+//
+// Once the live environment is closed it must be reopened before the caller
+// resumes, even when the rewrite fails: the marker still says "lmdb", so a
+// Berkeley DB fallback would accept writes that the next LMDB start could not
+// see.  g_fLMDBWalletEnabled and g_pathLMDBWalletDir therefore never change
+// here.
+bool RewriteWalletLMDB()
+{
+    if (!g_fLMDBWalletEnabled)
+        return true;
+
+    std::lock_guard<std::mutex> lock(g_mutexWalletKV);
+
+    while (g_nWalletKVHandles.load() > 0 && !fShutdown)
+        Sleep(100);
+    if (fShutdown)
+        return false;
+
+    const std::filesystem::path dir = g_pathLMDBWalletDir.empty()
+        ? GetDataDir() : g_pathLMDBWalletDir;
+    const std::filesystem::path pathWallet = dir / "wallet";
+    const std::filesystem::path pathNew = dir / "wallet.rewrite";
+    const std::filesystem::path pathOld = dir / "wallet.old";
+
+    std::error_code ec;
+    std::filesystem::remove_all(pathNew, ec);
+    std::filesystem::remove_all(pathOld, ec);
+
+    MDB_env* env = g_lmdbWalletEnv.GetEnv();
+    if (!env)
+        return error("RewriteWalletLMDB(): the LMDB environment is not open");
+
+    if (!g_lmdbWalletEnv.Sync(true))
+        return false;
+
+    // mdb_env_copy2() requires the destination directory to exist and to be
+    // empty; it does not create it.
+    if (!std::filesystem::create_directories(pathNew, ec) && ec)
+    {
+        std::filesystem::remove_all(pathNew, ec);
+        return error("RewriteWalletLMDB(): cannot create %s",
+                     pathNew.string().c_str());
+    }
+
+    int rc = mdb_env_copy2(env, pathNew.string().c_str(), MDB_CP_COMPACT);
+    if (rc != 0)
+    {
+        std::filesystem::remove_all(pathNew, ec);
+        return error("RewriteWalletLMDB(): mdb_env_copy2 failed: %s",
+                     mdb_strerror(rc));
+    }
+    TestWalletCrashPoint("wallet-rewrite-after-copy");
+
+    // The copy is complete and synced.  From here on the environment has to
+    // be closed for the directory renames; every failure path below either
+    // reopens a usable environment or stops the process.
+    g_lmdbWalletDb.Close();
+    g_lmdbWalletEnv.Close();
+
+    if (!RewriteRename(pathWallet, pathOld, "wallet-rewrite-rename-old", ec))
+    {
+        // Nothing moved: wallet/ is still the active environment.
+        std::filesystem::remove_all(pathNew, ec);
+        if (!ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-old"))
+            return FatalWalletRewrite("cannot move the old wallet aside and "
+                                      "cannot reopen it");
+        return error("RewriteWalletLMDB(): cannot move the old wallet aside");
+    }
+    TestWalletCrashPoint("wallet-rewrite-after-old-rename");
+
+    if (!RewriteRename(pathNew, pathWallet, "wallet-rewrite-install", ec))
+    {
+        // Put the old environment back.  Do not continue writing into
+        // wallet.old: startup recovery prefers wallet.rewrite over wallet.old,
+        // so those writes could be lost if the process died now.
+        std::error_code restoreEc;
+        if (RewriteRename(pathOld, pathWallet, "wallet-rewrite-restore",
+                          restoreEc))
+        {
+            if (ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-restored"))
+            {
+                std::filesystem::remove_all(pathNew, restoreEc);
+                return error("RewriteWalletLMDB(): cannot install the "
+                             "compacted wallet; restored the old wallet");
+            }
+        }
+        return FatalWalletRewrite("cannot install the compacted wallet or "
+                                  "restore the old one");
+    }
+    TestWalletCrashPoint("wallet-rewrite-after-install");
+
+    if (!ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-installed"))
+    {
+        // The compacted copy is installed but unusable.  Park it, restore the
+        // old environment and reopen that, so the process keeps using LMDB.
+        std::error_code rollbackEc;
+        std::filesystem::rename(pathWallet, pathNew, rollbackEc);
+        if (!rollbackEc)
+            std::filesystem::rename(pathOld, pathWallet, rollbackEc);
+
+        if (!rollbackEc &&
+            ReopenLMDBWallet(pathWallet, "wallet-rewrite-reopen-restored"))
+        {
+            std::filesystem::remove_all(pathNew, rollbackEc);
+            return error("RewriteWalletLMDB(): cannot reopen the compacted "
+                         "wallet; restored the old wallet");
+        }
+        return FatalWalletRewrite("cannot reopen the compacted wallet or "
+                                  "restore the old one");
+    }
+
+    // The new environment is active.  If the plaintext old copy cannot be
+    // removed, report failure so callers that require compaction (wallet
+    // encryption) can stop; LMDB stays enabled and usable, and startup
+    // recovery removes the leftover copy on the next start.
+    if (TestWalletRewriteFailureMatches("wallet-rewrite-remove-old"))
+        ec = std::make_error_code(std::errc::io_error);
+    else
+        std::filesystem::remove_all(pathOld, ec);
+    if (ec)
+        return error("RewriteWalletLMDB(): cannot remove the old wallet %s: %s",
+                     pathOld.string().c_str(), ec.message().c_str());
+
+    printf("Rewrote LMDB wallet %s\n", pathWallet.string().c_str());
+    return true;
+}
+
+} // namespace
+
+namespace {
+
+// Test-only failure injection for wallet write transactions (see db.h).
+struct TestWalletFailureState
+{
+    CCriticalSection cs;
+    bool fWriteArmed = false;
+    bool fCommitArmed = false;
+    std::string strType;
+    int nSkip = 0;
+};
+
+TestWalletFailureState g_testWalletFailure;
+std::atomic<bool> g_fTestWalletFailureArmed(false);
+
+} // namespace
+
+void SetTestWalletWriteFailure(const std::string& strType, int nSkip)
+{
+    LOCK(g_testWalletFailure.cs);
+    g_testWalletFailure.fWriteArmed = true;
+    g_testWalletFailure.fCommitArmed = false;
+    g_testWalletFailure.strType = strType;
+    g_testWalletFailure.nSkip = std::max(nSkip, 0);
+    g_fTestWalletFailureArmed.store(true);
+}
+
+void SetTestWalletCommitFailure()
+{
+    LOCK(g_testWalletFailure.cs);
+    g_testWalletFailure.fWriteArmed = false;
+    g_testWalletFailure.fCommitArmed = true;
+    g_testWalletFailure.strType.clear();
+    g_testWalletFailure.nSkip = 0;
+    g_fTestWalletFailureArmed.store(true);
+}
+
+void ClearTestWalletWriteFailures()
+{
+    {
+        LOCK(g_testWalletFailure.cs);
+        g_testWalletFailure.fWriteArmed = false;
+        g_testWalletFailure.fCommitArmed = false;
+        g_testWalletFailure.strType.clear();
+        g_testWalletFailure.nSkip = 0;
+    }
+    g_fTestWalletFailureArmed.store(false);
+}
+
+bool TestWalletWriteFailureArmed()
+{
+    return g_fTestWalletFailureArmed.load();
+}
+
+bool TestWalletWriteFailureMatches(const std::string& strType)
+{
+    LOCK(g_testWalletFailure.cs);
+    if (!g_testWalletFailure.fWriteArmed ||
+        strType != g_testWalletFailure.strType)
+        return false;
+    if (g_testWalletFailure.nSkip > 0)
+    {
+        --g_testWalletFailure.nSkip;
+        return false;
+    }
+    g_testWalletFailure.fWriteArmed = false;
+    g_fTestWalletFailureArmed.store(false);
+    return true;
+}
+
+bool ConsumeTestWalletCommitFailure()
+{
+    LOCK(g_testWalletFailure.cs);
+    if (!g_testWalletFailure.fCommitArmed)
+        return false;
+    g_testWalletFailure.fCommitArmed = false;
+    g_fTestWalletFailureArmed.store(false);
+    return true;
+}
+
+void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip)
+{
+    std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+    g_testWalletRewrite.mapSkip[strPoint] = std::max(nSkip, 0);
+}
+
+void ClearTestWalletRewriteFailures()
+{
+    {
+        std::lock_guard<std::mutex> lock(g_testWalletRewrite.mutex);
+        g_testWalletRewrite.mapSkip.clear();
+    }
+    g_fTestWalletRewriteAbort.store(false);
+    g_fTestWalletRewriteAborted.store(false);
+}
+
+void SetTestWalletRewriteAbort(bool fAbort)
+{
+    g_fTestWalletRewriteAbort.store(fAbort);
+    if (!fAbort)
+        g_fTestWalletRewriteAborted.store(false);
+}
+
+bool TestWalletRewriteAbortArmed()
+{
+    return g_fTestWalletRewriteAbort.load();
+}
+
+bool TestWalletRewriteAborted()
+{
+    return g_fTestWalletRewriteAborted.load();
+}
+
+bool InitLMDBWalletDB()
+{
+    // Tests run with a mocked Berkeley environment and must not touch the
+    // configured data directory.
+    if (bitdb.IsMock())
+        return true;
+
+    const DBBackend configured = GetConfiguredWalletBackend();
+    if (!CheckWalletBackendCompatibility(GetDataDir(), configured))
+        return false;
+
+    if (configured != DB_BACKEND_LMDB)
+        return true;
+
+    const std::string strMapSize = mapArgs.count("-lmdbwalletsize")
+        ? mapArgs["-lmdbwalletsize"]
+        : std::to_string(LMDB_DEFAULT_WALLET_MAPSIZE_MIB);
+    size_t nMapSize = 0;
+    std::string strMapSizeError;
+    if (!ParseLMDBMapSize(strMapSize, nMapSize, strMapSizeError))
+        return error("InitLMDBWalletDB(): invalid -lmdbwalletsize: %s",
+                     strMapSizeError.c_str());
+
+    return InitLMDBWalletDBInternal(GetDataDir(), nMapSize,
+                                    GetBoolArg("-lmdbnosync", true));
+}
+
+bool InitLMDBWalletDBForTest(const std::filesystem::path& dir)
+{
+    if (g_fLMDBWalletEnabled)
+        CloseLMDBWalletDB();
+    return InitLMDBWalletDBInternal(dir, LMDB_DEFAULT_WALLET_MAPSIZE_MIB *
+                                   1024ULL * 1024ULL, true);
+}
+
+void CloseLMDBWalletDB()
+{
+    if (!g_fLMDBWalletEnabled)
+        return;
+    g_fLMDBWalletEnabled = false;
+    g_lmdbWalletDb.Close();
+    g_lmdbWalletEnv.Close();
+    g_pathLMDBWalletDir.clear();
+}
+
+bool IsLMDBWalletEnabled()
+{
+    return g_fLMDBWalletEnabled;
+}
+
+bool FlushLMDBWallet(bool fForce)
+{
+    if (!g_fLMDBWalletEnabled)
+        return true;
+    return g_lmdbWalletEnv.Sync(fForce);
+}
+
+std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly)
+{
+    if (!g_fLMDBWalletEnabled)
+        return nullptr;
+
+    // A rewrite fatal path leaves the backend enabled but the environment
+    // closed.  Fail immediately instead of retrying a writer slot for a
+    // minute: any write must be refused, never redirected to Berkeley DB.
+    if (!g_lmdbWalletEnv.GetEnv())
+        return nullptr;
+
+    if (fReadOnly)
+        return g_lmdbWalletDb.BeginTransaction(true);
+
+    // The environment allows a single writer.  Other writers may be busy for a
+    // short time, so wait for the slot rather than failing a wallet write.
+    for (int i = 0; i < 60000; ++i) {
+        std::unique_ptr<CDBTransaction> txn = g_lmdbWalletDb.BeginTransaction(false);
+        if (txn)
+            return txn;
+        if (fShutdown)
+            break;
+        Sleep(1);
+    }
+    return nullptr;
+}
+
+bool BackupLMDBWallet(const std::string& strDest)
+{
+    if (!g_fLMDBWalletEnabled)
+        return false;
+
+    std::lock_guard<std::mutex> lock(g_mutexWalletKV);
+
+    while (g_nWalletKVHandles.load() > 0 && !fShutdown)
+        Sleep(50);
+    if (fShutdown)
+        return false;
+
+    MDB_env* env = g_lmdbWalletEnv.GetEnv();
+    if (!env)
+        return false;
+    if (!g_lmdbWalletEnv.Sync(true))
+        return false;
+
+    std::filesystem::path pathDest(strDest);
+    std::error_code ec;
+    if (std::filesystem::is_directory(pathDest, ec))
+    {
+        // Match backupwallet's existing-directory behaviour: copy into it.
+        pathDest /= "wallet";
+    }
+    else if (std::filesystem::exists(pathDest, ec))
+    {
+        return error("backupwallet: %s exists and is not a directory",
+                     pathDest.string().c_str());
+    }
+
+    // An LMDB environment is a directory, so the destination is a directory
+    // too.  mdb_env_copy2() requires it to exist and to be empty.
+    if (std::filesystem::exists(pathDest, ec))
+    {
+        if (!std::filesystem::is_directory(pathDest, ec) ||
+            !std::filesystem::is_empty(pathDest, ec))
+            return error("backupwallet: %s already exists and is not an empty "
+                         "directory", pathDest.string().c_str());
+    }
+    else
+    {
+        const std::filesystem::path pathParent = pathDest.parent_path();
+        if (!pathParent.empty())
+            std::filesystem::create_directories(pathParent, ec);
+        if (!ec)
+            std::filesystem::create_directories(pathDest, ec);
+        if (ec)
+            return error("backupwallet: cannot create %s",
+                         pathDest.string().c_str());
+    }
+
+    int rc = mdb_env_copy2(env, pathDest.string().c_str(), MDB_CP_COMPACT);
+    if (rc != 0)
+    {
+        std::filesystem::remove_all(pathDest, ec);
+        return error("backupwallet: cannot copy LMDB wallet to %s: %s",
+                     pathDest.string().c_str(), mdb_strerror(rc));
+    }
+
+    printf("copied LMDB wallet to %s\n", pathDest.string().c_str());
+    return true;
 }
 
 void CDBEnv::CloseDb(const string& strFile)
@@ -339,6 +1994,9 @@ bool CDBEnv::RemoveDb(const string& strFile)
 
 bool CDB::Rewrite(const string& strFile, const char* pszSkip)
 {
+    if (g_fLMDBWalletEnabled && strFile == "wallet.dat")
+        return RewriteWalletLMDB();
+
     while (!fShutdown)
     {
         {
@@ -791,8 +2449,70 @@ bool CTxDB::LoadBlockIndex()
 
 
 
+namespace {
+
+enum BlockIndexLoadResult
+{
+    BLOCK_INDEX_RECORD,
+    BLOCK_INDEX_END,
+    BLOCK_INDEX_ERROR,
+};
+
+BlockIndexLoadResult LoadBlockIndexRecord(CDataStream& ssKey, CDataStream& ssValue)
+{
+    try {
+        // The key layout for every index record is the varint length of the
+        // string prefix followed by the type string itself and then the 32-byte
+        // block hash, i.e. make_pair(string, uint256).  We compare the prefix
+        // bytes directly instead of constructing a std::string each record,
+        // and we reuse the hash already present in the key rather than
+        // recomputing the SHA256d header hash via CDiskBlockIndex::GetBlockHash().
+        uint64 nSize = ReadCompactSize(ssKey);
+        if (nSize != 10 || ssKey.size() < 10 + 32)
+            return BLOCK_INDEX_END; // finished loading block index
+        if (memcmp(&ssKey[0], "blockindex", 10) != 0)
+            return BLOCK_INDEX_END;
+        ssKey.ignore(10);
+        uint256 hashBlock;
+        ssKey >> hashBlock;
+
+        if (fRequestShutdown)
+            return BLOCK_INDEX_END; // if shutdown was requested while loading
+
+        CDiskBlockIndex diskindex;
+        ssValue >> diskindex;
+
+        // Construct block index object
+        CBlockIndex* pindexNew = InsertBlockIndex(hashBlock);
+        pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
+        pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
+        pindexNew->nFile          = diskindex.nFile;
+        pindexNew->nBlockPos      = diskindex.nBlockPos;
+        pindexNew->nHeight        = diskindex.nHeight;
+        pindexNew->nVersion       = diskindex.nVersion;
+        pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
+        pindexNew->nTime          = diskindex.nTime;
+        pindexNew->nBits          = diskindex.nBits;
+        pindexNew->nNonce         = diskindex.nNonce;
+
+        // Watch for genesis block
+        if (pindexGenesisBlock == nullptr && hashBlock == hashGenesisBlock)
+            pindexGenesisBlock = pindexNew;
+
+        return BLOCK_INDEX_RECORD;
+    }
+    catch (std::exception&) {
+        return BLOCK_INDEX_ERROR;
+    }
+}
+
+} // namespace
+
 bool CTxDB::LoadBlockIndexGuts()
 {
+    if (fUseKV)
+        return LoadBlockIndexGutsKV();
+
     // Get database cursor
     Dbc* pcursor = GetCursor();
     if (!pcursor)
@@ -811,58 +2531,66 @@ bool CTxDB::LoadBlockIndexGuts()
         if (ret == DB_NOTFOUND)
             break;
         else if (ret != 0)
-            return false;
-
-        // Unserialize
-
-        try {
-        // The key layout for every index record is the varint length of the
-        // string prefix followed by the type string itself and then the 32-byte
-        // block hash, i.e. make_pair(string, uint256).  We compare the prefix
-        // bytes directly instead of constructing a std::string each record,
-        // and we reuse the hash already present in the key rather than
-        // recomputing the SHA256d header hash via CDiskBlockIndex::GetBlockHash().
-        uint64 nSize = ReadCompactSize(ssKey);
-        if (nSize != 10 || ssKey.size() < 10 + 32)
-            break; // finished loading block index
-        if (memcmp(&ssKey[0], "blockindex", 10) != 0)
-            break;
-        ssKey.ignore(10);
-        uint256 hashBlock;
-        ssKey >> hashBlock;
-
-        if (fRequestShutdown)
-            break; // if shutdown was requested while loading
-
         {
-            CDiskBlockIndex diskindex;
-            ssValue >> diskindex;
-
-            // Construct block index object
-            CBlockIndex* pindexNew = InsertBlockIndex(hashBlock);
-            pindexNew->pprev          = InsertBlockIndex(diskindex.hashPrev);
-            pindexNew->pnext          = InsertBlockIndex(diskindex.hashNext);
-            pindexNew->nFile          = diskindex.nFile;
-            pindexNew->nBlockPos      = diskindex.nBlockPos;
-            pindexNew->nHeight        = diskindex.nHeight;
-            pindexNew->nVersion       = diskindex.nVersion;
-            pindexNew->hashMerkleRoot = diskindex.hashMerkleRoot;
-            pindexNew->nTime          = diskindex.nTime;
-            pindexNew->nBits          = diskindex.nBits;
-            pindexNew->nNonce         = diskindex.nNonce;
-
-            // Watch for genesis block
-            if (pindexGenesisBlock == nullptr && hashBlock == hashGenesisBlock)
-                pindexGenesisBlock = pindexNew;
+            pcursor->close();
+            return false;
         }
-        }    // try
-        catch (std::exception &e) {
+
+        BlockIndexLoadResult result = LoadBlockIndexRecord(ssKey, ssValue);
+        if (result == BLOCK_INDEX_END)
+            break;
+        if (result == BLOCK_INDEX_ERROR)
+        {
+            pcursor->close();
             return error("%s() : deserialize error", __PRETTY_FUNCTION__);
         }
     }
     pcursor->close();
 
     return true;
+}
+
+bool CTxDB::LoadBlockIndexGutsKV()
+{
+    std::unique_ptr<CDBTransaction> txn = g_lmdbChainDb.BeginTransaction(true);
+    if (!txn)
+        return false;
+
+    CDataStream ssPrefix(SER_DISK, CLIENT_VERSION);
+    ssPrefix << string("blockindex");
+    const CDBKey prefix(ssPrefix.begin(), ssPrefix.end());
+
+    std::unique_ptr<CDBIterator> it = txn->NewIterator(prefix);
+    if (!it)
+    {
+        txn->Abort();
+        return false;
+    }
+
+    for (it->SeekToFirst(); it->Valid(); it->Next())
+    {
+        const CDBKey key = it->Key();
+        const CDBValue value = it->Value();
+        CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+        if (!key.empty())
+            ssKey.write((const char*)key.data(), key.size());
+        CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+        if (!value.empty())
+            ssValue.write((const char*)value.data(), value.size());
+
+        BlockIndexLoadResult result = LoadBlockIndexRecord(ssKey, ssValue);
+        if (result == BLOCK_INDEX_END)
+            break;
+        if (result == BLOCK_INDEX_ERROR)
+        {
+            it.reset();
+            txn->Abort();
+            return error("%s() : deserialize error", __PRETTY_FUNCTION__);
+        }
+    }
+    it.reset();
+
+    return txn->Commit();
 }
 
 

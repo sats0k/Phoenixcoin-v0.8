@@ -10,11 +10,13 @@
 
 #include <db_cxx.h>
 
+#include <memory>
 #include <utility>
 #include <map>
 #include <string>
 #include <vector>
 
+#include "db_kv.h"
 #include "sync.h"
 #include "serialize.h"
 #include "bignum.h"
@@ -35,6 +37,9 @@ extern unsigned int nWalletDBUpdated;
 
 void ThreadFlushWalletDB(void* parg);
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
+
+/** Copies the active LMDB wallet to strDest with mdb_env_copy2(). */
+bool BackupLMDBWallet(const std::string& strDest);
 
 bool ExportWallet(CWallet *pwallet, const std::string &strDst);
 bool ImportWallet(CWallet *pwallet, const std::string &strSrc);
@@ -101,6 +106,195 @@ public:
 
 extern CDBEnv bitdb;
 
+enum DBBackend
+{
+    DB_BACKEND_BDB = 0,
+    DB_BACKEND_LMDB = 1,
+};
+
+/** Startup action for the LMDB chain index once the environment is open. */
+enum ChainIndexStartupAction
+{
+    CHAIN_INDEX_USE_EXISTING,
+    CHAIN_INDEX_MIGRATE_BDB,
+    CHAIN_INDEX_FAIL_MISSING,
+};
+
+/**
+ * Decides what startup should do with the LMDB chain index.  A marker saying
+ * LMDB is authoritative forbids migration: an empty index means data loss, not
+ * an invitation to resurrect the old blkindex.dat snapshot.
+ */
+ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB, bool fLMDBEmpty);
+
+/** Returns the chain index backend selected by -dbbackend (default: BDB). */
+DBBackend GetConfiguredDBBackend();
+
+/** Maximum supported -lmdbmapsize value in MiB for this build. */
+int64 GetLMDBMaxMapSizeMiB();
+
+/**
+ * Parses a -lmdbmapsize value in MiB and converts it to a page-aligned byte
+ * count.  Fails for non-numeric, non-positive, unrepresentable, unsupported and
+ * unaligned values, filling strError with a user-facing reason.
+ */
+bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError);
+
+/**
+ * Returns the map size to use for a migration from a wallet.dat of
+ * nSourceBytes.  The configured value is kept unless the source file needs
+ * more room, so an explicit small -lmdbwalletsize cannot make the one-shot
+ * copy fail with MDB_MAP_FULL.
+ */
+size_t GetLMDBWalletMapSizeForMigration(size_t nConfigured, uintmax_t nSourceBytes);
+
+/** Reads the blkindex.backend marker from dir.  Returns false when it is absent. */
+bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
+
+/** Atomically writes the blkindex.backend marker in dir. */
+bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
+
+/** Returns true when dir contains a non-empty LMDB chain index. */
+bool HasLMDBChainIndex(const std::filesystem::path& dir);
+
+/**
+ * Checks that the configured backend can use the chain index in dir.  A marker
+ * records which backend owns the index, and a legacy LMDB index without a
+ * marker is still treated as authoritative.  This prevents a default BDB start
+ * from silently loading a stale blkindex.dat after an LMDB migration.
+ */
+bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
+
+/**
+ * Validates the configured chain index backend against the data directory and,
+ * when LMDB is selected, opens it and copies the raw records from an existing
+ * blkindex.dat on first use.  The Berkeley DB file is left untouched.
+ *
+ * A blkindex.backend marker records that the data directory has moved to LMDB
+ * so that a later default BDB start cannot silently load the stale index.
+ */
+bool InitLMDBChainDB();
+void CloseLMDBChainDB();
+
+/** Begins a transaction on the active chain index backend (LMDB). */
+std::unique_ptr<CDBTransaction> BeginChainTransaction(bool fReadOnly);
+
+
+/** Startup action for the LMDB wallet once its environment is open. */
+enum WalletStartupAction
+{
+    WALLET_USE_EXISTING,
+    WALLET_INIT_NEW,
+    WALLET_MIGRATE_BDB,
+    WALLET_FAIL_MISSING,
+};
+
+/** Returns the wallet backend selected by -walletbackend (default: BDB). */
+DBBackend GetConfiguredWalletBackend();
+
+/**
+ * Decides what startup should do with the LMDB wallet.  A marker saying LMDB
+ * is authoritative forbids silently starting from an empty wallet; that is
+ * data loss, not an invitation to create a fresh wallet.  When no marker is
+ * present and wallet.dat exists, the wallet is copied into the empty LMDB
+ * environment before the marker is written.
+ */
+WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
+                                           bool fBDBWalletExists);
+
+/** Reads the wallet.backend marker from dir.  Returns false when it is absent. */
+bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
+
+/** Atomically writes the wallet.backend marker in dir. */
+bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
+
+/** Returns true when dir contains a non-empty LMDB wallet. */
+bool HasLMDBWallet(const std::filesystem::path& dir);
+
+/**
+ * Checks that the configured wallet backend can use the wallet in dir.  A
+ * marker records which backend owns the wallet, and a legacy LMDB wallet
+ * without a marker is still treated as authoritative.  This prevents a
+ * default BDB start from silently creating or loading a stale wallet.dat after
+ * an LMDB migration.
+ */
+bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
+
+/**
+ * Validates the configured wallet backend and opens the LMDB wallet when it is
+ * selected.  On first use, an existing wallet.dat is copied into the empty
+ * LMDB wallet in a single transaction.  The Berkeley DB file is left untouched
+ * so a failed or unwanted migration does not destroy the original wallet.
+ *
+ * A wallet.backend marker records that the data directory has moved to LMDB so
+ * that a later default BDB start cannot silently open a stale wallet.dat.
+ */
+bool InitLMDBWalletDB();
+void CloseLMDBWalletDB();
+bool IsLMDBWalletEnabled();
+
+/** Flushes pending LMDB wallet commits to disk.  No-op for a BDB wallet. */
+bool FlushLMDBWallet(bool fForce = true);
+
+/** Begins a transaction on the active wallet backend (LMDB). */
+std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly);
+
+/**
+ * Test hook: initializes the LMDB wallet rooted at dir, bypassing the mock
+ * guard so tests can use a temporary directory instead of the real datadir.
+ */
+bool InitLMDBWalletDBForTest(const std::filesystem::path& dir);
+
+/**
+ * Test-only failure injection for wallet write transactions.
+ *
+ * SetTestWalletWriteFailure arms the next wallet write whose serialized record
+ * type matches strType (for example "key", "tx" or "hyb"); after nSkip matches
+ * have succeeded the matching write returns false.  The caller must then abort
+ * the surrounding transaction, which is what the atomicity tests exercise.
+ *
+ * SetTestWalletCommitFailure makes the next wallet transaction commit fail and
+ * abort instead.  Both hooks are one-shot, apply only to wallet databases and
+ * are inert until armed.  They are used by the failure-injection tests only.
+ */
+void SetTestWalletWriteFailure(const std::string& strType, int nSkip = 0);
+void SetTestWalletCommitFailure();
+void ClearTestWalletWriteFailures();
+bool TestWalletWriteFailureArmed();
+bool TestWalletWriteFailureMatches(const std::string& strType);
+bool ConsumeTestWalletCommitFailure();
+
+/**
+ * Test-only failure injection for RewriteWalletLMDB().  The named point fails
+ * once (after nSkip successful hits), and no other rewrite is affected.  The
+ * points are "wallet-rewrite-rename-old", "wallet-rewrite-install",
+ * "wallet-rewrite-restore", "wallet-rewrite-reopen-old",
+ * "wallet-rewrite-reopen-installed", "wallet-rewrite-reopen-restored" and
+ * "wallet-rewrite-remove-old".
+ *
+ * Fatal rewrite errors normally terminate the process because no safe wallet
+ * backend remains.  SetTestWalletRewriteAbort(true) makes them return false
+ * instead and records the decision in TestWalletRewriteAborted(), so a unit
+ * test can inspect the on-disk state without exiting.  All hooks are inert
+ * until armed and apply only to the LMDB wallet.
+ */
+void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip = 0);
+void ClearTestWalletRewriteFailures();
+void SetTestWalletRewriteAbort(bool fAbort);
+bool TestWalletRewriteAbortArmed();
+bool TestWalletRewriteAborted();
+
+/**
+ * Test-only crash injection.  PHOENIX_TEST_CRASH_FILE names a small control
+ * file containing "<point> <skip>".  When the named point is reached, skip
+ * matching calls are released and the next one kills the process with
+ * SIGKILL, leaving the same on-disk state a power loss would.  The file is
+ * rewritten after each skip so a test can arm an exact write.  The hook is
+ * inert when the variable or file is absent and is never armed by a normal
+ * startup path.
+ */
+void TestWalletCrashPoint(const char* pszPoint);
+
 
 /** RAII class that provides access to a Berkeley database */
 class CDB
@@ -110,6 +304,24 @@ protected:
     std::string strFile;
     DbTxn *activeTxn;
     bool fReadOnly;
+
+    // When an LMDB backend is active this database delegates to it and pdb
+    // stays null.  The chain index and the wallet each have their own LMDB
+    // environment, so remember which one this handle belongs to.
+    std::unique_ptr<CDBTransaction> kvTxn;
+    bool fUseKV;
+    bool fUseKVWallet;
+
+    std::unique_ptr<CDBTransaction> BeginKVTransaction(bool fReadOnly)
+    {
+        return fUseKVWallet ? BeginWalletTransaction(fReadOnly)
+                            : BeginChainTransaction(fReadOnly);
+    }
+
+    bool ReadKV(const CDBKey& key, CDBValue& value);
+    bool WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite);
+    bool EraseKV(const CDBKey& key);
+    bool ExistsKV(const CDBKey& key);
 
     explicit CDB(const char* pszFile, const char* pszMode="r+");
     ~CDB() { Close(); }
@@ -123,6 +335,33 @@ protected:
     template<typename K, typename T>
     bool Read(const K& key, T& value)
     {
+        if (fUseKV)
+        {
+            CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+            ssKey << key;
+            CDBKey kvKey(ssKey.begin(), ssKey.end());
+            CDBValue kvValue;
+            if (!ReadKV(kvKey, kvValue))
+                return false;
+            CDataStream ssValue(SER_DISK, CLIENT_VERSION);
+            try {
+                if (!kvValue.empty())
+                    ssValue.write((const char*)kvValue.data(), kvValue.size());
+                ssValue >> value;
+                if (!kvValue.empty())
+                    OPENSSL_cleanse(kvValue.data(), kvValue.size());
+                if (ssValue.size() > 0)
+                    OPENSSL_cleanse(&ssValue[0], ssValue.size());
+                return true;
+            } catch (const std::exception&) {
+                if (!kvValue.empty())
+                    OPENSSL_cleanse(kvValue.data(), kvValue.size());
+                if (ssValue.size() > 0)
+                    OPENSSL_cleanse(&ssValue[0], ssValue.size());
+                return false;
+            }
+        }
+
         if (!pdb)
             return false;
 
@@ -158,7 +397,7 @@ protected:
     template<typename K, typename T>
     bool Write(const K& key, const T& value, bool fOverwrite=true)
     {
-        if (!pdb)
+        if (!fUseKV && !pdb)
             return false;
         if (fReadOnly)
             assert(!"Write called on database in read-only mode");
@@ -167,12 +406,39 @@ protected:
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
         ssKey << key;
-        Dbt datKey(&ssKey[0], ssKey.size());
+
+        // Test-only failure injection: see SetTestWalletWriteFailure.
+        if (fUseKV && fUseKVWallet && TestWalletWriteFailureArmed())
+        {
+            std::string strTestType;
+            try {
+                CDataStream ssType(ssKey.begin(), ssKey.end(),
+                                   SER_DISK, CLIENT_VERSION);
+                ssType >> strTestType;
+            } catch (...) {
+            }
+            if (TestWalletWriteFailureMatches(strTestType))
+                return false;
+        }
 
         // Value
         CDataStream ssValue(SER_DISK, CLIENT_VERSION);
         ssValue.reserve(10000);
         ssValue << value;
+
+        if (fUseKV)
+        {
+            CDBKey kvKey(ssKey.begin(), ssKey.end());
+            CDBValue kvValue(ssValue.begin(), ssValue.end());
+            bool fResult = WriteKV(kvKey, kvValue, fOverwrite);
+            if (!kvValue.empty())
+                OPENSSL_cleanse(kvValue.data(), kvValue.size());
+            if (ssValue.size() > 0)
+                OPENSSL_cleanse(&ssValue[0], ssValue.size());
+            return fResult;
+        }
+
+        Dbt datKey(&ssKey[0], ssKey.size());
         Dbt datValue(&ssValue[0], ssValue.size());
 
         // Write
@@ -187,7 +453,7 @@ protected:
     template<typename K>
     bool Erase(const K& key)
     {
-        if (!pdb)
+        if (!fUseKV && !pdb)
             return false;
         if (fReadOnly)
             assert(!"Erase called on database in read-only mode");
@@ -196,6 +462,13 @@ protected:
         CDataStream ssKey(SER_DISK, CLIENT_VERSION);
         ssKey.reserve(1000);
         ssKey << key;
+
+        if (fUseKV)
+        {
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            return EraseKV(kvKey);
+        }
+
         Dbt datKey(&ssKey[0], ssKey.size());
 
         // Erase
@@ -209,6 +482,14 @@ protected:
     template<typename K>
     bool Exists(const K& key)
     {
+        if (fUseKV)
+        {
+            CDataStream ssKey(SER_DISK, CLIENT_VERSION);
+            ssKey << key;
+            const CDBKey kvKey(ssKey.begin(), ssKey.end());
+            return ExistsKV(kvKey);
+        }
+
         if (!pdb)
             return false;
 
@@ -225,6 +506,9 @@ protected:
         OPENSSL_cleanse(datKey.get_data(), datKey.get_size());
         return (ret == 0);
     }
+
+    /** Opens a forward/backward scan on either backend. */
+    std::unique_ptr<CDBScan> GetScan(const CDBKey& prefix = CDBKey());
 
     Dbc* GetCursor()
     {
@@ -279,6 +563,14 @@ protected:
 public:
     bool TxnBegin()
     {
+        if (fUseKV)
+        {
+            if (kvTxn)
+                return false;
+            kvTxn = BeginKVTransaction(false);
+            return kvTxn.get() != nullptr;
+        }
+
         if (!pdb || activeTxn)
             return false;
         DbTxn* ptxn = bitdb.TxnBegin();
@@ -290,6 +582,25 @@ public:
 
     bool TxnCommit()
     {
+        if (fUseKV)
+        {
+            if (!kvTxn)
+                return false;
+            if (fUseKVWallet)
+                TestWalletCrashPoint("wallet-txn-before-commit");
+            if (fUseKVWallet && ConsumeTestWalletCommitFailure())
+            {
+                kvTxn->Abort();
+                kvTxn.reset();
+                return false;
+            }
+            bool fSuccess = kvTxn->Commit();
+            kvTxn.reset();
+            if (fUseKVWallet && fSuccess)
+                TestWalletCrashPoint("wallet-txn-after-commit");
+            return fSuccess;
+        }
+
         if (!pdb || !activeTxn)
             return false;
         int ret = activeTxn->commit(0);
@@ -299,6 +610,15 @@ public:
 
     bool TxnAbort()
     {
+        if (fUseKV)
+        {
+            if (!kvTxn)
+                return false;
+            kvTxn->Abort();
+            kvTxn.reset();
+            return true;
+        }
+
         if (!pdb || !activeTxn)
             return false;
         int ret = activeTxn->abort();
@@ -326,7 +646,7 @@ public:
 
 
 
-/** Access to the transaction database (blkindex.dat) */
+/** Access to the block and transaction index (blkindex.dat or the LMDB chain index) */
 class CTxDB : public CDB
 {
 public:
@@ -351,6 +671,9 @@ public:
     bool WriteBestInvalidWork(CBigNum bnBestInvalidWork);
     bool LoadBlockIndex();
 
+    /** Copies raw blkindex.dat records into an empty LMDB chain index. */
+    static bool MigrateToLMDB();
+
     /* Calls related to sync checkpoints */
     bool ReadSyncCheckpoint(uint256 &hashCheckpoint);
     bool WriteSyncCheckpoint(uint256 hashCheckpoint);
@@ -358,6 +681,7 @@ public:
     bool WriteCheckpointPubKey(const std::string &strPubKey);
 private:
     bool LoadBlockIndexGuts();
+    bool LoadBlockIndexGutsKV();
 };
 
 

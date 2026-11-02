@@ -435,7 +435,19 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
 
         // Need to completely rewrite the wallet file; if we don't, bdb might keep
         // bits of the unencrypted private key in slack space in the database file.
-        CDB::Rewrite(strWalletFile);
+        // The rewrite can fail after encryption was committed; continuing would
+        // leave plaintext key material behind, so stop and let the user reload
+        // the wallet (startup finishes or repairs an interrupted rewrite).
+        if (!CDB::Rewrite(strWalletFile))
+        {
+            printf("EncryptWallet() : failed to rewrite the wallet after encryption\n");
+            // Tests arm the rewrite abort hook to observe this failure without
+            // terminating the process; production must stop because the old
+            // plaintext pages may still be present.
+            if (TestWalletRewriteAbortArmed())
+                return false;
+            exit(1);
+        }
 
     }
     NotifyStatusChanged(this);
@@ -948,10 +960,45 @@ void CWallet::ReacceptWalletTransactions()
 {
     CTxDB txdb("r");
     bool fRepeat = true;
+    bool fRepairedSpent = false;
     while (fRepeat)
     {
         LOCK(cs_wallet);
         fRepeat = false;
+
+        if (!fRepairedSpent)
+        {
+            fRepairedSpent = true;
+
+            // A crash can land between writing a wallet transaction and
+            // persisting the spent flags of the outputs it consumes.  The
+            // transaction record is the durable unit, so rebuild those flags
+            // from the wallet's own transactions before consulting the chain
+            // index.  Only inconsistent records are rewritten, and a wallet
+            // that was shut down cleanly takes the no-op path.
+            for (PAIRTYPE(const uint256, CWalletTx)& item : mapWallet)
+            {
+                CWalletTx& wtx = item.second;
+                for (const CTxIn& txin : wtx.vin)
+                {
+                    map<uint256, CWalletTx>::iterator mi =
+                        mapWallet.find(txin.prevout.hash);
+                    if (mi == mapWallet.end())
+                        continue;
+                    CWalletTx& prev = mi->second;
+                    if (txin.prevout.n >= prev.vout.size() ||
+                        prev.IsSpent(txin.prevout.n))
+                        continue;
+                    if (!IsMine(prev.vout[txin.prevout.n]))
+                        continue;
+                    prev.MarkSpent(txin.prevout.n);
+                    prev.MarkDirty();
+                    prev.WriteToDisk();
+                    NotifyTransactionChanged(this, prev.GetHash(), CT_UPDATED);
+                }
+            }
+        }
+
         vector<CDiskTxPos> vMissingTx;
         for (PAIRTYPE(const uint256, CWalletTx)& item : mapWallet)
         {
