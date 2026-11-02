@@ -430,6 +430,37 @@ so a materialised, spendable key always wins a tie.
 path on a real `CWallet`, including the `mapHybridKeys` clear that only the
 size comparison can notice.
 
+## Wallet backend benchmark
+
+`test/wallet_perf.cpp` builds a separate `wallet_perf` executable for
+on-disk wallet backend measurements. It is not part of `test_phoenixcoin`
+because the Boost fixture uses an in-memory Berkeley DB environment, where
+timings and database sizes would not reflect a real wallet.
+
+```
+cd src
+make -j4 DYNAMIC=1 -f Makefile.linux wallet_perf
+```
+
+Seed one realistic wallet, copy the seed once per backend so every run starts
+from the same records, then run the operations:
+
+```
+./wallet_perf seed /tmp/wallet-perf/seed --tx=10000 --keys=1000 --scripts=200
+cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/bdb
+cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/lmdb
+./wallet_perf bdb  /tmp/wallet-perf/bdb  --insert-tx=2000 --insert-keys=500 \
+    --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
+./wallet_perf lmdb /tmp/wallet-perf/lmdb --insert-tx=2000 --insert-keys=500 \
+    --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
+```
+
+Each mode prints CSV rows (`backend,metric,value,unit,note`) for startup,
+migration, shutdown, insertion and lookup latency, keypool refill, the
+script/address operations that stand in for descriptors in this wallet
+format, and database size. Methodology and measured results are in
+`doc/lmdb.md`, "Wallet backend performance".
+
 ## Wallet write atomicity tests
 
 `wallet_migration_tests` also contains three failure-injection tests that

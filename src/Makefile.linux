@@ -237,9 +237,14 @@ obj-test/%.o: test/%.cpp
 test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS) $(TESTLIBS)
 
+# On-disk wallet backend benchmark.  Kept separate from the Boost suite so the
+# default tests keep using the in-memory mock Berkeley DB environment.
+wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
+	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
+
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
 	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
-	-rm -f phoenixcoind test_phoenixcoin
+	-rm -f phoenixcoind test_phoenixcoin wallet_perf
 
 FORCE:

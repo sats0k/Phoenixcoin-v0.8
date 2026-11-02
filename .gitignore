@@ -2,6 +2,7 @@ src/*.exe
 src/phoenixcoin
 src/phoenixcoind
 src/test_phoenixcoin
+src/wallet_perf
 .*.swp
 *.*~*
 *.bak

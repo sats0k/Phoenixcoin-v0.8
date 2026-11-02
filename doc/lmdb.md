@@ -375,6 +375,78 @@ restart.  The deterministic phase deliberately consumes no legacy keypool
 keys, so the full comparison really covers the whole pool, and the shared
 hybrid pool must allocate the same address on both branches.
 
+## Wallet backend performance
+
+`src/test/wallet_perf.cpp` is a standalone benchmark binary.  It is kept out
+of `test_phoenixcoin` because the unit-test fixture deliberately uses an
+in-memory Berkeley DB environment; on-disk timings and database sizes are only
+meaningful against the real backends.  Build it with:
+
+```
+cd src
+make -j4 DYNAMIC=1 -f Makefile.linux wallet_perf
+```
+
+The benchmark has three phases.  `seed` creates one realistic Berkeley DB
+wallet, `bdb` and `lmdb` restore independent copies of that seed and run the
+identical operations on each backend.  The seed used below contained 10,000
+transactions (one to three inputs and two to three outputs each), 1,000 legacy
+keys, 200 redeem scripts, 200 watch-only scripts, 200 address book labels and
+a 100-key keypool; its `wallet.dat` was 6.43 MB.  After seeding, each measured
+run inserted 2,000 more transactions, generated 500 keys, performed 1,000,000
+in-memory lookups and 5,000 direct record reads, added 500 of each
+script/label record, and refilled a 100-key keypool.
+
+The numbers below are medians of three runs on an Intel Xeon E3-1220L (four
+threads) with an ext4 filesystem on NVMe, so they include real writeback.
+Both backends run with their normal no-sync commit setting; the final flush is
+included in shutdown.
+
+| Metric | Berkeley DB | LMDB | Difference |
+| --- | ---: | ---: | ---: |
+| Startup, environment open | 17.2 ms | 0.40 ms | 43x faster |
+| Startup, wallet load | 443.4 ms | 334.0 ms | 1.33x faster |
+| Startup, total | 459.7 ms | 334.4 ms | 1.37x faster |
+| Migration, source env open plus copy | n/a | 70.1 ms | (copy itself 50.0 ms) |
+| Shutdown | 47.0 ms | 76.0 ms | see note |
+| Transaction lookup, loaded map | 3.26 us/op | 3.32 us/op | about equal |
+| Transaction lookup, direct record | 5.64 us/op | 3.92 us/op | 1.44x faster |
+| Transaction insertion | 8.35 ms/op (120 tx/s) | 60.7 us/op (16,469 tx/s) | 138x faster |
+| Key insertion | 4.41 ms/op | 0.124 ms/op | 36x faster |
+| Keypool refill | 434.7 ms (230 keys/s) | 15.2 ms (6,592 keys/s) | 29x faster |
+| Add redeem script* | 4.19 ms/op | 16.5 us/op | 253x faster |
+| Add watch-only script* | 4.27 ms/op | 11.8 us/op | 362x faster |
+| Address book label* | 4.31 ms/op | 24.0 us/op | 179x faster |
+| Wallet file after the run | 7.79 MB | 7.68 MB | 1.4% smaller |
+| Whole data directory after the run | 18.27 MB | 24.60 MB | not comparable |
+
+\* This wallet format has no descriptor records.  The rows marked with an
+asterisk measure the closest persisted operations it does have:
+`AddCScript`, `AddWatchOnly` and `SetAddressBookName`.
+
+The large insertion gap is not a generic Berkeley DB versus LMDB claim.  Every
+wallet write constructs a short-lived `CWalletDB`, and `CDB::Close()` runs
+`txn_checkpoint()` on the Berkeley DB environment.  The wallet therefore pays
+a checkpoint and synchronization on essentially every record write.  LMDB
+keeps one environment open, commits without forcing a checkpoint per record,
+and flushes it on close.  That is the real behavior of the current wallet
+code, but the comparison should be read as "this BDB wallet path" versus "this
+LMDB wallet path", not as a storage-engine microbenchmark.
+
+The same accounting explains shutdown.  Berkeley DB has already paid its
+synchronization costs during insertion; LMDB's close includes the final flush.
+Taken as one unit, inserting 2,000 transactions and shutting down took about
+16.75 s on BDB and 0.20 s on LMDB.  The in-memory lookup measures the loaded
+`mapWallet` and wrapper overhead rather than either backend.
+
+Database sizes need similar care.  The Berkeley DB whole-directory figure
+includes its preallocated `database/` logs.  The LMDB directory still contains
+the retained source `wallet.dat` and the Berkeley DB environment used for
+migration, so only the wallet files are directly comparable.  Immediately
+after migration, LMDB occupied 4.97 MB versus the 6.43 MB Berkeley DB source
+because migration compacts the records; after the additional writes it had
+grown to 7.68 MB, slightly below the 7.79 MB Berkeley DB wallet.
+
 ## Wallet rewrite failures
 
 `RewriteWalletLMDB()` closes the live environment before it moves `wallet/`
