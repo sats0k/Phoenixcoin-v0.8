@@ -281,6 +281,7 @@ bool ConsumeTestWalletCommitFailure();
 void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip = 0);
 void ClearTestWalletRewriteFailures();
 void SetTestWalletRewriteAbort(bool fAbort);
+bool TestWalletRewriteAbortArmed();
 bool TestWalletRewriteAborted();
 
 /**

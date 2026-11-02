@@ -1984,4 +1984,119 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
     }
 }
 
+// Regression: encryptwallet must never report success when the post-encryption
+// rewrite fails and leaves plaintext pages in the LMDB file.  Encryption
+// commits the encrypted records first and then compacts the environment; a
+// failed rewrite therefore leaves an encrypted logical wallet whose physical
+// file still contains the old plaintext pages.  The test arms the rewrite
+// abort hook so EncryptWallet() returns false instead of terminating the
+// process, proves the plaintext bytes are still there, and then performs the
+// rewrite successfully to show the data is removed and the wallet still works.
+BOOST_AUTO_TEST_CASE(wallet_encryption_rewrite_failure_is_not_success)
+{
+    TempDirGuard guard("wallet_encryption_rewrite_failure");
+    CloseLMDBWalletDB();
+
+    struct RewriteHooksGuard
+    {
+        RewriteHooksGuard() { ClearTestWalletRewriteFailures(); }
+        ~RewriteHooksGuard() { ClearTestWalletRewriteFailures(); }
+    } hooksGuard;
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+
+    MigrateMockWallet(guard.dir);
+
+    const SecureString passphrase("correct horse battery staple\n");
+    const CKeyID signingKeyID = built.pubKeys[0].GetID();
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+
+    // Collect the plaintext key material before encryption so the physical
+    // LMDB file can be scanned for it afterwards.
+    std::vector<std::vector<unsigned char>> plaintextSecrets;
+    {
+        std::set<CKeyID> keyIDs;
+        wallet->GetKeys(keyIDs);
+        for (const CKeyID &keyID : keyIDs) {
+            CKey key;
+            if (wallet->GetKey(keyID, key)) {
+                const CPrivKey secret = key.GetPrivKey();
+                plaintextSecrets.emplace_back(secret.begin(), secret.end());
+            }
+        }
+
+        for (const auto &entry : wallet->mapHybridKeys) {
+            CHybridKeyDisk disk = CHybridKeyDisk::FromMemory(entry.second);
+            plaintextSecrets.emplace_back(disk.secpPriv.begin(),
+                                          disk.secpPriv.end());
+            plaintextSecrets.push_back(disk.mldsaPrivKey);
+        }
+    }
+    BOOST_REQUIRE(!plaintextSecrets.empty());
+
+    const std::filesystem::path dataFile = guard.dir / "wallet" / "data.mdb";
+    BOOST_REQUIRE(std::filesystem::exists(dataFile));
+
+    const auto countPlaintext = [&dataFile, &plaintextSecrets]() {
+        size_t found = 0;
+        for (const std::vector<unsigned char> &secret : plaintextSecrets) {
+            if (FileContainsBytes(dataFile, secret))
+                ++found;
+        }
+        return found;
+    };
+
+    BOOST_CHECK_GT(countPlaintext(), 0U);
+
+    // Fail the rewrite after encryption has been committed.  The abort hook is
+    // required because production stops the process here rather than leaving
+    // plaintext behind.
+    SetTestWalletRewriteAbort(true);
+    SetTestWalletRewriteFailure("wallet-rewrite-rename-old");
+
+    BOOST_CHECK(!wallet->EncryptWallet(passphrase));
+
+    // The logical wallet is encrypted even though the rewrite failed.
+    BOOST_CHECK(wallet->IsCrypted());
+    BOOST_CHECK(wallet->IsLocked());
+    BOOST_CHECK(IsLMDBWalletEnabled());
+
+    std::string marker;
+    BOOST_REQUIRE(ReadWalletBackendMarker(guard.dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+
+    // This is the dangerous state the regression exists for: plaintext pages
+    // are still physically present in the LMDB file.
+    BOOST_CHECK_GT(countPlaintext(), 0U);
+
+    // A successful rewrite must compact those pages away; the call is only
+    // made after the injected failure is cleared.
+    ClearTestWalletRewriteFailures();
+    BOOST_REQUIRE(CDB::Rewrite("wallet.dat"));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+    for (const std::vector<unsigned char> &secret : plaintextSecrets) {
+        BOOST_CHECK_MESSAGE(!FileContainsBytes(dataFile, secret),
+                            "plaintext private key material survived the "
+                            "successful wallet rewrite");
+    }
+
+    wallet.reset();
+
+    // The encrypted wallet must survive a restart and remain usable.
+    RestartLMDBWallet(guard.dir);
+    std::unique_ptr<CWallet> restarted(LoadWalletOrFail());
+    BOOST_CHECK(restarted->IsCrypted());
+    BOOST_CHECK(restarted->IsLocked());
+    BOOST_REQUIRE(restarted->Unlock(passphrase));
+    BOOST_CHECK(!restarted->IsLocked());
+    CheckSigningWorks(*restarted, signingKeyID,
+                      "encrypted after a failed rewrite");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

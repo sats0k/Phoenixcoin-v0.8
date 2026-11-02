@@ -1810,6 +1810,11 @@ void SetTestWalletRewriteAbort(bool fAbort)
         g_fTestWalletRewriteAborted.store(false);
 }
 
+bool TestWalletRewriteAbortArmed()
+{
+    return g_fTestWalletRewriteAbort.load();
+}
+
 bool TestWalletRewriteAborted()
 {
     return g_fTestWalletRewriteAborted.load();
@@ -1875,6 +1880,12 @@ bool FlushLMDBWallet(bool fForce)
 std::unique_ptr<CDBTransaction> BeginWalletTransaction(bool fReadOnly)
 {
     if (!g_fLMDBWalletEnabled)
+        return nullptr;
+
+    // A rewrite fatal path leaves the backend enabled but the environment
+    // closed.  Fail immediately instead of retrying a writer slot for a
+    // minute: any write must be refused, never redirected to Berkeley DB.
+    if (!g_lmdbWalletEnv.GetEnv())
         return nullptr;
 
     if (fReadOnly)

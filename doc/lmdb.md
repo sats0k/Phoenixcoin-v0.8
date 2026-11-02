@@ -398,13 +398,26 @@ next LMDB start could not see.  The failure paths are:
 already committed at that point, so continuing could leave plaintext key
 material in the old copy.
 
-`kvdb_tests/wallet_lmdb_rewrite_failures` injects each variant with the
-inert test-only `SetTestWalletRewriteFailure` hook.  It checks that the
-marker stays `lmdb`, that later writes still reach LMDB, that a write after
-an unrecoverable failure fails instead of landing in Berkeley DB, and that a
-restart repairs the directory.  `SetTestWalletRewriteAbort(true)` makes the
-fatal path return false instead of exiting, so the test can inspect the
-on-disk state; both hooks apply only to the LMDB wallet.
+Four named `kvdb_tests` cases inject each filesystem step with the inert
+test-only `SetTestWalletRewriteFailure` hook:
+`wallet_lmdb_rewrite_rename_old_failure`,
+`wallet_lmdb_rewrite_install_failure`,
+`wallet_lmdb_rewrite_reopen_failure` and
+`wallet_lmdb_rewrite_cleanup_failure`.  They check that the marker stays
+`lmdb`, that `wallet.dat` never appears as a Berkeley DB file, that later
+writes still reach LMDB, that a write after an unrecoverable failure fails
+instead of landing in Berkeley DB, and that a restart repairs the directory.
+`SetTestWalletRewriteAbort(true)` makes the fatal path return false instead
+of exiting, so the test can inspect the on-disk state; both hooks apply only
+to the LMDB wallet.
+
+`wallet_migration_tests/wallet_encryption_rewrite_failure_is_not_success`
+covers the encryption caller.  It fails the post-encryption rewrite after
+the encrypted records have been committed, requires `EncryptWallet()` to
+return false (the test-only abort hook turns the production exit into an
+observable failure), and scans `wallet/data.mdb` to prove plaintext pages
+are still present.  A following successful rewrite must remove those bytes,
+and the encrypted wallet must restart, unlock and sign.
 
 ## Wallet backend sanitizer validation
 

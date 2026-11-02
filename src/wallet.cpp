@@ -441,6 +441,11 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
         if (!CDB::Rewrite(strWalletFile))
         {
             printf("EncryptWallet() : failed to rewrite the wallet after encryption\n");
+            // Tests arm the rewrite abort hook to observe this failure without
+            // terminating the process; production must stop because the old
+            // plaintext pages may still be present.
+            if (TestWalletRewriteAbortArmed())
+                return false;
             exit(1);
         }
 
