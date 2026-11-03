@@ -217,6 +217,14 @@ static Object DBBackendDiagnosticsToJSON(const DBBackendDiagnostics& diag)
     marker.push_back(Pair("value", diag.strMarker));
     marker.push_back(Pair("matches_backend", diag.fMarkerMatchesBackend));
 
+    Object dataFile;
+    dataFile.push_back(Pair("directory_exists", diag.disk.fDirectoryExists));
+    dataFile.push_back(Pair("present", diag.disk.fDataFileExists));
+    dataFile.push_back(Pair("bytes", (int64_t)diag.disk.nDataFileBytes));
+    dataFile.push_back(Pair("lock_present", diag.disk.fLockFileExists));
+    dataFile.push_back(Pair("complete", diag.disk.fComplete));
+    dataFile.push_back(Pair("reason", diag.disk.strReason));
+
     Object env;
     env.push_back(Pair("map_size", (int64_t)diag.env.nMapSize));
     env.push_back(Pair("max_map_size", (int64_t)diag.env.nMaxMapSize));
@@ -250,9 +258,72 @@ static Object DBBackendDiagnosticsToJSON(const DBBackendDiagnostics& diag)
     result.push_back(Pair("database_open", diag.fDatabaseOpen));
     result.push_back(Pair("path", diag.strPath));
     result.push_back(Pair("marker", marker));
+    result.push_back(Pair("data_file", dataFile));
     result.push_back(Pair("environment", env));
     result.push_back(Pair("database", db));
     result.push_back(Pair("error", diag.strError));
+    return result;
+}
+
+Value checklmdb(const Array &params, bool fHelp)
+{
+    if (fHelp || params.size() < 1 || params.size() > 2) {
+        string msg = "checklmdb <path> [full]\n"
+          "Offline structural check of an LMDB environment directory.  "
+          "Verifies that data.mdb has both meta pages, covers every page the "
+          "meta page refers to, opens read-only without creating lock.mdb, and "
+          "contains the main sub-database.  With full=true every record is "
+          "also read, which checks the B-tree pages.  A backup root containing "
+          "wallet/ or blkindex/ is accepted.  The command refuses to check an "
+          "environment that this node has open; use getdbinfo for live "
+          "diagnostics.";
+        throw(runtime_error(msg));
+    }
+
+    std::filesystem::path path(params[0].get_str());
+    const bool fFull = params.size() > 1 ? params[1].get_bool() : false;
+
+    std::error_code ec;
+    if (!std::filesystem::is_regular_file(path / "data.mdb", ec)) {
+        for (const char* sub : {"wallet", "blkindex"}) {
+            const std::filesystem::path candidate = path / sub;
+            if (std::filesystem::is_regular_file(candidate / "data.mdb", ec)) {
+                path = candidate;
+                break;
+            }
+            ec.clear();
+        }
+    }
+
+    Object result;
+    result.push_back(Pair("path", path.string()));
+    result.push_back(Pair("full_scan", fFull));
+
+    if (IsActiveLMDBEnvironmentPath(path)) {
+        result.push_back(Pair("ok", false));
+        result.push_back(Pair("error", "refusing to verify an environment "
+              "that this node has open; use getdbinfo for live diagnostics"));
+        return result;
+    }
+
+    CLMDBVerifyResult verify;
+    const bool fOk = VerifyLMDBEnvironment(path.string(), fFull, verify);
+    result.push_back(Pair("ok", fOk));
+    result.push_back(Pair("directory_exists", verify.fDirectoryExists));
+    result.push_back(Pair("data_file_exists", verify.fDataFileExists));
+    result.push_back(Pair("data_file_bytes", (int64_t)verify.nDataFileBytes));
+    result.push_back(Pair("lock_file_exists", verify.fLockFileExists));
+    result.push_back(Pair("opened", verify.fOpened));
+    result.push_back(Pair("main_database", verify.fMainDatabase));
+    result.push_back(Pair("complete", verify.fComplete));
+    result.push_back(Pair("records_readable", verify.fRecordsReadable));
+    result.push_back(Pair("page_size", (int64_t)verify.nPageSize));
+    result.push_back(Pair("map_size", (int64_t)verify.nMapSize));
+    result.push_back(Pair("last_page", (int64_t)verify.nLastPgno));
+    result.push_back(Pair("last_txn_id", (int64_t)verify.nLastTxnId));
+    result.push_back(Pair("entries", (int64_t)verify.nEntries));
+    result.push_back(Pair("required_bytes", (int64_t)verify.nRequiredBytes));
+    result.push_back(Pair("error", verify.strError));
     return result;
 }
 
@@ -298,6 +369,7 @@ static const CRPCCommand vRPCCommands[] =
     { "gethashespersec",        &gethashespersec,        true,   false },
     { "getinfo",                &getinfo,                true,   false },
     { "getdbinfo",              &getdbinfo,              true,   true  },
+    { "checklmdb",              &checklmdb,              true,   true  },
     { "getmininginfo",          &getmininginfo,          true,   false },
     { "getnewaddress",          &getnewaddress,          true,   false },
     { "getaccountaddress",      &getaccountaddress,      true,   false },
@@ -1435,6 +1507,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     // Special case non-string parameter types
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
+    if (strMethod == "checklmdb"               && n > 1) ConvertTo<bool>(params[1]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);

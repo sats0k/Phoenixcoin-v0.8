@@ -876,23 +876,27 @@ void RunChainBackendMarker(const std::string &tag)
     std::filesystem::remove_all(dir, ec);
     BOOST_REQUIRE(!ec);
 
-    // Legacy LMDB datadirs have no marker; a non-empty data.mdb is authoritative.
+    // Legacy LMDB datadirs have no marker; an existing environment is
+    // authoritative.
     const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
-    BOOST_REQUIRE(std::filesystem::create_directories(legacy / "blkindex"));
     {
-        std::ofstream data(legacy / "blkindex" / "data.mdb", std::ios::trunc);
-        BOOST_REQUIRE(data.good());
-        data << "lmdb";
+        CLMDBDatabase stale;
+        BOOST_REQUIRE(stale.Open((legacy / "blkindex").string()));
+        WriteValue(stale, Key("canary"), Value("legacy lmdb index"));
+        stale.Close();
     }
     BOOST_CHECK(HasLMDBChainIndex(legacy));
     BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
     BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
 
-    // An empty placeholder is not an index and must not block BDB.
+    // A truncated placeholder is an incomplete environment, not an index.
+    // Fail closed so a default BDB start cannot silently use a stale
+    // blkindex.dat while the user believes the LMDB index is present.
     std::filesystem::resize_file(legacy / "blkindex" / "data.mdb", 0, ec);
     BOOST_REQUIRE(!ec);
     BOOST_CHECK(!HasLMDBChainIndex(legacy));
-    BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
 
     std::filesystem::remove_all(legacy, ec);
 }
@@ -968,11 +972,11 @@ void RunWalletBackendMarker(const std::string &tag)
     // must not let an LMDB start adopt the data directory without an explicit
     // migration.
     BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
-    BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
     {
-        std::ofstream data(dir / "wallet" / "data.mdb", std::ios::trunc);
-        BOOST_REQUIRE(data.good());
-        data << "stale lmdb wallet";
+        CLMDBDatabase stale;
+        BOOST_REQUIRE(stale.Open((dir / "wallet").string()));
+        WriteValue(stale, Key("canary"), Value("stale lmdb wallet"));
+        stale.Close();
     }
     BOOST_CHECK(HasLMDBWallet(dir));
     BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
@@ -993,23 +997,27 @@ void RunWalletBackendMarker(const std::string &tag)
     std::filesystem::remove_all(dir, ec);
     BOOST_REQUIRE(!ec);
 
-    // Legacy LMDB wallets have no marker; a non-empty data.mdb is authoritative.
+    // Legacy LMDB wallets have no marker; an existing environment is
+    // authoritative.
     const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
-    BOOST_REQUIRE(std::filesystem::create_directories(legacy / "wallet"));
     {
-        std::ofstream data(legacy / "wallet" / "data.mdb", std::ios::trunc);
-        BOOST_REQUIRE(data.good());
-        data << "lmdb";
+        CLMDBDatabase stale;
+        BOOST_REQUIRE(stale.Open((legacy / "wallet").string()));
+        WriteValue(stale, Key("canary"), Value("legacy lmdb wallet"));
+        stale.Close();
     }
     BOOST_CHECK(HasLMDBWallet(legacy));
     BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
     BOOST_CHECK(CheckWalletBackendCompatibility(legacy, DB_BACKEND_LMDB));
 
-    // An empty placeholder is not a wallet and must not block BDB.
+    // An empty or truncated placeholder is an incomplete environment and is
+    // rejected for both backends instead of silently falling back to
+    // wallet.dat.
     std::filesystem::resize_file(legacy / "wallet" / "data.mdb", 0, ec);
     BOOST_REQUIRE(!ec);
     BOOST_CHECK(!HasLMDBWallet(legacy));
-    BOOST_CHECK(CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_LMDB));
 
     std::filesystem::remove_all(legacy, ec);
 }
@@ -1854,6 +1862,262 @@ void RunWalletRewriteCleanupFailure(const std::string &tag)
     BOOST_CHECK_EQUAL(h.Read("rewrite-after-cleanup-failure"), "lmdb");
 }
 
+// Offline verification backs both backup integrity checks and -checklmdb.  It
+// must reject every incomplete environment without modifying it, and accept a
+// complete one with or without a full record scan.
+void RunLMDBEnvironmentVerify(const std::string &tag)
+{
+    const std::filesystem::path root = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{root};
+
+    CLMDBVerifyResult verify;
+
+    // A missing directory and a path that is a regular file are not
+    // environments.
+    BOOST_CHECK(!VerifyLMDBEnvironment((root / "missing").string(), false, verify));
+    BOOST_CHECK(!verify.fDirectoryExists);
+    BOOST_CHECK(!verify.strError.empty());
+
+    {
+        std::ofstream file(root / "not-a-directory", std::ios::trunc);
+        BOOST_REQUIRE(file.good());
+        file << "x";
+    }
+    BOOST_CHECK(!VerifyLMDBEnvironment((root / "not-a-directory").string(),
+                                       false, verify));
+    BOOST_CHECK(!verify.fDirectoryExists);
+
+    // An empty directory has no data.mdb.
+    const std::filesystem::path empty = root / "empty";
+    BOOST_REQUIRE(std::filesystem::create_directories(empty));
+    BOOST_CHECK(!VerifyLMDBEnvironment(empty.string(), false, verify));
+    BOOST_CHECK(verify.fDirectoryExists);
+    BOOST_CHECK(!verify.fDataFileExists);
+    BOOST_CHECK(!verify.fOpened);
+
+    // A data.mdb shorter than the two LMDB meta pages is rejected before LMDB
+    // maps it.
+    const std::filesystem::path small = root / "small";
+    BOOST_REQUIRE(std::filesystem::create_directories(small));
+    {
+        std::ofstream data(small / "data.mdb", std::ios::trunc);
+        BOOST_REQUIRE(data.good());
+        data << "not an lmdb environment";
+    }
+    BOOST_CHECK(!VerifyLMDBEnvironment(small.string(), false, verify));
+    BOOST_CHECK(verify.fDataFileExists);
+    BOOST_CHECK(!verify.fDataFileSizeSane);
+    BOOST_CHECK(!verify.fOpened);
+
+    // Build a real environment with a few records, then copy it without
+    // lock.mdb exactly as a compacted backup would look.
+    const std::filesystem::path source = root / "source";
+    const size_t nMapSize = 8 * 1024 * 1024;
+    {
+        CLMDBEnv env;
+        BOOST_REQUIRE(env.Open(source.string(), true, nMapSize, true));
+        CLMDBDatabase db;
+        BOOST_REQUIRE(db.Open(env, "main", true));
+        {
+            std::unique_ptr<CDBTransaction> txn = db.BeginTransaction(false);
+            BOOST_REQUIRE(txn);
+            BOOST_CHECK(txn->Write(Key("one"), Value("1")));
+            BOOST_CHECK(txn->Write(Key("two"), Value("2")));
+            BOOST_CHECK(txn->Write(Key("three"), Value("3")));
+            BOOST_REQUIRE(txn->Commit());
+        }
+        db.Close();
+        env.Close();
+    }
+
+    const std::filesystem::path backup = root / "backup";
+    std::error_code ec;
+    std::filesystem::copy(source, backup,
+                          std::filesystem::copy_options::recursive, ec);
+    BOOST_REQUIRE(!ec);
+    std::filesystem::remove(backup / "lock.mdb", ec);
+    BOOST_REQUIRE(!ec);
+
+    BOOST_CHECK(VerifyLMDBEnvironment(backup.string(), false, verify));
+    BOOST_CHECK(verify.fDirectoryExists);
+    BOOST_CHECK(verify.fDataFileExists);
+    BOOST_CHECK(!verify.fLockFileExists);
+    BOOST_CHECK(verify.fDataFileSizeSane);
+    BOOST_CHECK(verify.fOpened);
+    BOOST_CHECK(verify.fMainDatabase);
+    BOOST_CHECK(verify.fComplete);
+    BOOST_CHECK(verify.fRecordsReadable);
+    BOOST_CHECK_EQUAL(verify.nEntries, 3U);
+    BOOST_CHECK_GT(verify.nPageSize, 0U);
+    BOOST_CHECK_GT(verify.nRequiredBytes, 0U);
+    BOOST_CHECK_GE(verify.nDataFileBytes, verify.nRequiredBytes);
+    BOOST_CHECK(verify.strError.empty());
+
+    // MDB_NOLOCK verification must not create lock.mdb in the backup.
+    BOOST_CHECK(!std::filesystem::exists(backup / "lock.mdb"));
+
+    // A full scan reads every record and reports the same entry count and
+    // transaction as the metadata-only check.
+    CLMDBVerifyResult deep;
+    BOOST_CHECK(VerifyLMDBEnvironment(backup.string(), true, deep));
+    BOOST_CHECK(deep.fFullScan);
+    BOOST_CHECK(deep.fRecordsReadable);
+    BOOST_CHECK_EQUAL(deep.nEntries, 3U);
+    BOOST_CHECK_EQUAL(deep.nLastTxnId, verify.nLastTxnId);
+
+    // Truncating the data file below the last page the meta page refers to is
+    // detected even when both meta pages are still present.
+    const std::filesystem::path truncated = root / "truncated";
+    std::filesystem::copy(backup, truncated,
+                          std::filesystem::copy_options::recursive, ec);
+    BOOST_REQUIRE(!ec);
+    const uintmax_t nMetaBytes =
+        2ULL * (GetSystemPageSize() > 0 ? GetSystemPageSize() : 4096ULL);
+    const uintmax_t nCut =
+        std::filesystem::file_size(truncated / "data.mdb", ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_REQUIRE_GT(nCut, nMetaBytes);
+    std::filesystem::resize_file(truncated / "data.mdb", nMetaBytes, ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_CHECK(!VerifyLMDBEnvironment(truncated.string(), false, verify));
+    BOOST_CHECK(verify.fOpened);
+    BOOST_CHECK_GT(verify.nRequiredBytes, verify.nDataFileBytes);
+    BOOST_CHECK(!verify.fComplete);
+
+    // Zeroed meta pages are not a valid LMDB file.
+    const std::filesystem::path corrupt = root / "corrupt";
+    std::filesystem::copy(backup, corrupt,
+                          std::filesystem::copy_options::recursive, ec);
+    BOOST_REQUIRE(!ec);
+    {
+        std::fstream data(corrupt / "data.mdb",
+                          std::ios::in | std::ios::out | std::ios::binary);
+        BOOST_REQUIRE(data.good());
+        const std::vector<char> zeros(8192, 0);
+        data.write(zeros.data(), zeros.size());
+        data.flush();
+        BOOST_REQUIRE(data.good());
+    }
+    BOOST_CHECK(!VerifyLMDBEnvironment(corrupt.string(), false, verify));
+    BOOST_CHECK(!verify.fOpened);
+    BOOST_CHECK(!verify.fComplete);
+    BOOST_CHECK(!verify.strError.empty());
+}
+
+// backupwallet on LMDB must produce a verified point-in-time copy that can be
+// restored, and must refuse to overwrite an existing non-empty destination.
+void RunWalletLMDBBackup(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            CloseLMDBWalletDB();
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    // Without an active LMDB wallet there is nothing to copy.
+    CloseLMDBWalletDB();
+    BOOST_CHECK(!BackupLMDBWallet((dir / "inactive").string()));
+
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_REQUIRE(db.Write(std::string("backup-probe"), std::string("one")));
+        BOOST_REQUIRE(db.Write(std::string("backup-second"), std::string("two")));
+    }
+
+    const DBDiagnostics before = GetDBDiagnostics(dir, dir);
+    const size_t nEntries = before.wallet.db.nEntries;
+    BOOST_CHECK_GT(nEntries, 0U);
+
+    // A path that does not exist names a new environment directory.
+    const std::filesystem::path dest = dir / "backup";
+    BOOST_REQUIRE(BackupLMDBWallet(dest.string()));
+    BOOST_CHECK(std::filesystem::exists(dest / "data.mdb"));
+
+    // A compacted copy contains no lock.mdb.
+    BOOST_CHECK(!std::filesystem::exists(dest / "lock.mdb"));
+
+    CLMDBVerifyResult verify;
+    BOOST_REQUIRE(VerifyLMDBEnvironment(dest.string(), true, verify));
+    BOOST_CHECK_EQUAL(verify.nEntries, nEntries);
+
+    // A successful backup must not leave a staging directory behind.
+    for (const auto &entry : std::filesystem::directory_iterator(dir)) {
+        const std::string name = entry.path().filename().string();
+        BOOST_CHECK_MESSAGE(name.find("backup.tmp-") == std::string::npos,
+                            "leftover staging directory " << name);
+    }
+
+    // An existing directory receives the copy under <destination>/wallet,
+    // matching Berkeley DB backupwallet.
+    const std::filesystem::path root = dir / "backup-root";
+    BOOST_REQUIRE(std::filesystem::create_directories(root));
+    BOOST_REQUIRE(BackupLMDBWallet(root.string()));
+    BOOST_REQUIRE(VerifyLMDBEnvironment((root / "wallet").string(), true, verify));
+    BOOST_CHECK_EQUAL(verify.nEntries, nEntries);
+
+    // An existing directory is a backup root: the copy goes to its wallet/
+    // subdirectory.  A non-empty wallet/ target is refused and left untouched.
+    const std::filesystem::path nonEmpty = dir / "non-empty";
+    BOOST_REQUIRE(std::filesystem::create_directories(nonEmpty / "wallet"));
+    {
+        std::ofstream file(nonEmpty / "wallet" / "keep", std::ios::trunc);
+        BOOST_REQUIRE(file.good());
+        file << "keep";
+    }
+    BOOST_CHECK(!BackupLMDBWallet(nonEmpty.string()));
+    BOOST_CHECK(std::filesystem::exists(nonEmpty / "wallet" / "keep"));
+    for (const auto &entry : std::filesystem::directory_iterator(nonEmpty)) {
+        const std::string name = entry.path().filename().string();
+        BOOST_CHECK_MESSAGE(name.find("wallet.tmp-") == std::string::npos,
+                            "failed backup left staging directory " << name);
+    }
+
+    // A regular file at the destination is refused too.
+    {
+        std::ofstream file(dir / "not-a-backup", std::ios::trunc);
+        BOOST_REQUIRE(file.good());
+        file << "keep";
+    }
+    BOOST_CHECK(!BackupLMDBWallet((dir / "not-a-backup").string()));
+
+    // Restore the earlier snapshot: a record written after the backup must
+    // disappear, while the records captured by the backup must survive.
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_REQUIRE(db.Write(std::string("after-backup"), std::string("gone")));
+    }
+    CloseLMDBWalletDB();
+
+    std::error_code ec;
+    std::filesystem::rename(dir / "wallet", dir / "wallet.live", ec);
+    BOOST_REQUIRE(!ec);
+    std::filesystem::copy(root / "wallet", dir / "wallet",
+                          std::filesystem::copy_options::recursive, ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+
+    {
+        WalletDBTestAccess db("wallet.dat", "r");
+        std::string value;
+        BOOST_REQUIRE(db.Read(std::string("backup-probe"), value));
+        BOOST_CHECK_EQUAL(value, "one");
+        BOOST_REQUIRE(db.Read(std::string("backup-second"), value));
+        BOOST_CHECK_EQUAL(value, "two");
+        BOOST_CHECK(!db.Exists(std::string("after-backup")));
+    }
+}
+
 } // namespace
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
@@ -1956,6 +2220,11 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_stats)
     RunLMDBEnvironmentStats("lmdb_stats");
 }
 
+BOOST_AUTO_TEST_CASE(lmdb_environment_verify)
+{
+    RunLMDBEnvironmentVerify("lmdb_verify");
+}
+
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_runtime_growth)
 {
     RunLMDBRuntimeGrowth("lmdb_runtime_growth");
@@ -2036,6 +2305,11 @@ BOOST_AUTO_TEST_CASE(wallet_startup_action)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_backend)
 {
     RunWalletLMDBBackend("wallet_lmdb_backend");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_backup)
+{
+    RunWalletLMDBBackup("wallet_lmdb_backup");
 }
 
 BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)

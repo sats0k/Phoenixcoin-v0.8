@@ -54,6 +54,54 @@ struct CLMDBDBStats
 };
 
 /**
+ * Result of an offline structural check of one LMDB environment directory.
+ *
+ * The check opens the environment with MDB_RDONLY | MDB_NOLOCK, so it neither
+ * needs nor creates lock.mdb and never modifies a backup.  It first verifies
+ * that data.mdb is large enough to contain both LMDB meta pages, then compares
+ * the file length with the last page recorded by the newest meta page.  A
+ * truncated or incompletely copied data.mdb is therefore rejected before LMDB
+ * can touch a page beyond the end of the file.
+ *
+ * With fFullScan the main sub-database is walked record by record, which also
+ * detects damaged B-tree pages.  A full scan is cheap for a wallet and
+ * optional for a large chain index.
+ */
+struct CLMDBVerifyResult
+{
+    std::string strPath;
+    bool fDirectoryExists = false;
+    bool fDataFileExists = false;
+    bool fLockFileExists = false;
+    bool fDataFileSizeSane = false;
+    bool fOpened = false;
+    bool fMainDatabase = false;
+    bool fComplete = false;
+    bool fFullScan = false;
+    bool fRecordsReadable = false;
+    size_t nDataFileBytes = 0;
+    size_t nRequiredBytes = 0;
+    size_t nPageSize = 0;
+    size_t nMapSize = 0;
+    size_t nLastPgno = 0;
+    size_t nLastTxnId = 0;
+    size_t nEntries = 0;
+    std::string strError;
+};
+
+/**
+ * Verifies the LMDB environment at path.  Returns true only when the
+ * environment opens, the expected "main" sub-database exists, the data file
+ * covers every page the meta page refers to, and (with fFullScan) every record
+ * can be read.  On failure strError explains the first problem found.
+ *
+ * This is an offline check: it uses MDB_NOLOCK and must not be pointed at an
+ * environment that another process is writing.
+ */
+bool VerifyLMDBEnvironment(const std::string &path, bool fFullScan,
+                           CLMDBVerifyResult &result);
+
+/**
  * Thin RAII wrapper around an LMDB environment.
  *
  * A CLMDBEnv owns one MDB_env and caches the named sub-databases opened in it.

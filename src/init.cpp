@@ -69,6 +69,10 @@ void StartShutdown() {
 #endif
 }
 
+// Set when startup fails.  Shutdown() is also the normal signal-driven exit
+// path, so the status is recorded explicitly instead of inferring it there.
+static bool fStartupFailed = false;
+
 void Shutdown(void */*parg*/) {
     static CCriticalSection cs_Shutdown;
     static bool fTaken;
@@ -106,7 +110,7 @@ void Shutdown(void */*parg*/) {
 #ifndef QT_GUI
         /* ensure non-UI client gets exited here, but let Phoenixcoin-Qt
          * reach 'return(0);' in phoenixcoin.cpp */
-        exit(0);
+        exit(fStartupFailed ? 1 : 0);
 #endif
     }
     else
@@ -143,6 +147,71 @@ bool AppInit(int argc, char* argv[])
         /* If Qt is used, parameters/phoenixcoin.conf are parsed
          * in qt/phoenixcoin.cpp's main() */
         ParseParameters(argc, argv);
+
+        // Standalone offline LMDB check.  Handled before the datadir and
+        // logging are initialised so it can inspect any directory, including a
+        // backup on removable media, without starting a node.
+        if (mapArgs.count("-checklmdb"))
+        {
+            const std::string strCheckPath = mapArgs["-checklmdb"];
+            std::filesystem::path path(strCheckPath);
+            const bool fFull = GetBoolArg("-checklmdbdeep", false);
+
+            std::error_code ec;
+            if (!path.empty() && strCheckPath != "1" &&
+                !std::filesystem::is_regular_file(path / "data.mdb", ec)) {
+                for (const char* sub : {"wallet", "blkindex"}) {
+                    const std::filesystem::path candidate = path / sub;
+                    if (std::filesystem::is_regular_file(
+                            candidate / "data.mdb", ec)) {
+                        path = candidate;
+                        break;
+                    }
+                    ec.clear();
+                }
+            }
+
+            if (path.empty() || strCheckPath == "1") {
+                fprintf(stderr, "Error: -checklmdb=<dir> requires an "
+                                "environment directory\n");
+                exit(1);
+            }
+
+            CLMDBVerifyResult result;
+            const bool fOk = VerifyLMDBEnvironment(path.string(), fFull, result);
+
+            fprintf(stdout, "LMDB environment: %s\n", path.string().c_str());
+            fprintf(stdout, "  directory: %s\n",
+                    result.fDirectoryExists ? "yes" : "no");
+            fprintf(stdout, "  data.mdb: %s (%llu bytes)\n",
+                    result.fDataFileExists ? "yes" : "no",
+                    static_cast<unsigned long long>(result.nDataFileBytes));
+            fprintf(stdout, "  lock.mdb: %s%s\n",
+                    result.fLockFileExists ? "yes" : "no",
+                    result.fLockFileExists ? "" :
+                    " (normal for a backup copy)");
+            fprintf(stdout, "  opened: %s\n",
+                    result.fOpened ? "yes" : "no");
+            fprintf(stdout, "  main database: %s\n",
+                    result.fMainDatabase ? "yes" : "no");
+            if (result.fOpened) {
+                fprintf(stdout, "  page size: %llu bytes\n",
+                        static_cast<unsigned long long>(result.nPageSize));
+                fprintf(stdout, "  last page: %llu\n",
+                        static_cast<unsigned long long>(result.nLastPgno));
+                fprintf(stdout, "  last transaction: %llu\n",
+                        static_cast<unsigned long long>(result.nLastTxnId));
+                fprintf(stdout, "  entries: %llu\n",
+                        static_cast<unsigned long long>(result.nEntries));
+            }
+            fprintf(stdout, "  full scan: %s\n", fFull ? "yes" : "no");
+            if (!fOk)
+                fprintf(stdout, "  error: %s\n", result.strError.c_str());
+            fprintf(stdout, "  result: %s\n", fOk ? "OK" : "FAILED");
+            fflush(stdout);
+            exit(fOk ? 0 : 1);
+        }
+
         if (!std::filesystem::is_directory(GetDataDir(false)))
         {
             fprintf(stderr, "Error: Specified directory does not exist\n");
@@ -185,7 +254,10 @@ bool AppInit(int argc, char* argv[])
         PrintException(nullptr, "AppInit()");
     }
     if (!fRet)
+    {
+        fStartupFailed = true;
         Shutdown(nullptr);
+    }
     return fRet;
 }
 
@@ -278,6 +350,8 @@ std::string HelpMessage()
         "  -lmdbmaxwalletsize=<n> " + _("Automatic LMDB wallet map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
         "  -lmdbruntimegrow=<0|1> " + _("Grow the LMDB map automatically when it fills (default: 1)") + "\n" +
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
+        "  -checklmdb=<dir>       " + _("Check an offline LMDB environment (for example a backup) and exit") + "\n" +
+        "  -checklmdbdeep         " + _("With -checklmdb, read every record instead of only the environment metadata") + "\n" +
         "  -walletbackend=<b>     " + _("Wallet backend: bdb or lmdb (default: bdb)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI

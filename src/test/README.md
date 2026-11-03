@@ -606,6 +606,17 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   start is refused while the marker says LMDB, `backupwallet` produces a
   restorable environment, a failed migration leaves no marker so it can
   be retried, and `getdbinfo` reports the migrated wallet as healthy.
+- `regression_lmdb_wallet_backup.sh` — the operational backup and restore
+  workflow: an online `backupwallet` creates a compacted, verified copy with
+  no `lock.mdb`; `-checklmdb`/`-checklmdbdeep` and the `checklmdb` RPC accept
+  it without modifying `data.mdb`; an existing directory receives
+  `<destination>/wallet`; non-empty, regular-file and live-environment
+  destinations are refused; truncated, zeroed and empty environments are
+  rejected by both check forms; startup against a truncated live wallet exits
+  non-zero with an `LMDB wallet ... is incomplete` error and does not rewrite
+  the marker; and restoring the snapshot brings back the address and label
+  while discarding a post-backup address-book entry.  It also restarts after
+  the restore and signs with the restored and newly created keys.
 - `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on real
   daemons: populate a BDB wallet with imported keys, labels, watch-only and
   multisig scripts, signed messages, keypool entries and hybrid keys; send
@@ -653,6 +664,19 @@ Run a single script with:
 cd src
 ./test/regression_hybridkeys_file.sh ./phoenixcoind
 ```
+
+For CI or nightly jobs, the LMDB backup/restore path has dedicated targets:
+
+```
+cd src
+make -f Makefile.linux check-lmdb-backup   # focused unit tests + backup/restore script
+make -f Makefile.linux nightly-lmdb        # adds the wallet and chain migration regressions
+```
+
+`check-lmdb-backup` is the restore test that should run whenever the wallet,
+database, backup or startup code changes.  Each script allocates an ephemeral
+RPC port; set `PXC_REGTEST_PORT` to pin it when running under a constrained
+network or while debugging.
 
 ## Adding tests
 

@@ -3,6 +3,7 @@
 // file LICENCE or http://opensource.org/license/mit
 
 #include "lmdbdb.h"
+#include "allocators.h"
 #include "datatypes.h"
 #include "util.h"
 
@@ -213,6 +214,175 @@ bool CLMDBEnv::GetDbStats(MDB_dbi dbi, CLMDBDBStats &stats) const
     stats.nLeafPages = static_cast<size_t>(stat.ms_leaf_pages);
     stats.nOverflowPages = static_cast<size_t>(stat.ms_overflow_pages);
     stats.nPageSize = static_cast<size_t>(stat.ms_psize);
+    return true;
+}
+
+bool VerifyLMDBEnvironment(const std::string &path, bool fFullScan,
+                           CLMDBVerifyResult &result)
+{
+    result = CLMDBVerifyResult();
+    result.strPath = path;
+    result.fFullScan = fFullScan;
+
+    std::error_code ec;
+    result.fDirectoryExists = std::filesystem::is_directory(path, ec) && !ec;
+    if (!result.fDirectoryExists) {
+        result.strError = (std::filesystem::exists(path, ec) && !ec)
+            ? "path exists but is not a directory"
+            : "directory does not exist";
+        return false;
+    }
+
+    const std::filesystem::path pathData =
+        std::filesystem::path(path) / "data.mdb";
+    const std::filesystem::path pathLock =
+        std::filesystem::path(path) / "lock.mdb";
+    result.fDataFileExists = std::filesystem::is_regular_file(pathData, ec) && !ec;
+    if (!result.fDataFileExists) {
+        result.strError = "data.mdb is missing";
+        return false;
+    }
+    result.fLockFileExists = std::filesystem::is_regular_file(pathLock, ec) && !ec;
+
+    const uintmax_t nBytes = std::filesystem::file_size(pathData, ec);
+    if (ec) {
+        result.strError = "cannot read the size of data.mdb";
+        return false;
+    }
+    result.nDataFileBytes = static_cast<size_t>(nBytes);
+
+    // Both LMDB meta pages must exist before mdb_env_open() maps the file.
+    // mmap() succeeds beyond EOF, but touching a missing meta page raises
+    // SIGBUS instead of returning a clean LMDB error.  LMDB page sizes are at
+    // least the system page size, so two system pages are the safe minimum.
+    const size_t nSystemPage = GetSystemPageSize();
+    const uintmax_t nMinimumMetaBytes =
+        2ULL * (nSystemPage > 0 ? nSystemPage : 4096ULL);
+    if (nBytes < nMinimumMetaBytes) {
+        result.strError = "data.mdb is too small to contain two LMDB meta "
+                          "pages (truncated or incomplete copy)";
+        return false;
+    }
+    result.fDataFileSizeSane = true;
+
+    MDB_env *env = nullptr;
+    int rc = mdb_env_create(&env);
+    if (rc != 0) {
+        result.strError = std::string("mdb_env_create failed: ") +
+                          mdb_strerror(rc);
+        return false;
+    }
+    mdb_env_set_maxdbs(env, LMDB_MAX_DBS);
+
+    // NOLOCK makes this a true offline check: a backup without lock.mdb can
+    // be verified without creating one, and a read-only directory works too.
+    rc = mdb_env_open(env, path.c_str(),
+                      MDB_RDONLY | MDB_NOLOCK | MDB_NOTLS, 0);
+    if (rc != 0) {
+        result.strError = std::string("cannot open data.mdb: ") +
+                          mdb_strerror(rc);
+        mdb_env_close(env);
+        return false;
+    }
+    result.fOpened = true;
+
+    MDB_envinfo info;
+    MDB_stat envStat;
+    if (mdb_env_info(env, &info) != 0 || mdb_env_stat(env, &envStat) != 0) {
+        result.strError = "LMDB cannot report environment statistics";
+        mdb_env_close(env);
+        return false;
+    }
+    result.nPageSize = static_cast<size_t>(envStat.ms_psize);
+    result.nMapSize = static_cast<size_t>(info.me_mapsize);
+    result.nLastPgno = static_cast<size_t>(info.me_last_pgno);
+    result.nLastTxnId = static_cast<size_t>(info.me_last_txnid);
+    result.nRequiredBytes = result.nPageSize > 0
+        ? (result.nLastPgno + 1) * result.nPageSize : 0;
+    if (nBytes < result.nRequiredBytes) {
+        result.strError = strprintf(
+            "data.mdb is truncated: %llu bytes on disk but the meta page "
+            "refers to %llu bytes",
+            static_cast<unsigned long long>(nBytes),
+            static_cast<unsigned long long>(result.nRequiredBytes));
+        mdb_env_close(env);
+        return false;
+    }
+
+    MDB_txn *txn = nullptr;
+    rc = mdb_txn_begin(env, nullptr, MDB_RDONLY, &txn);
+    if (rc != 0) {
+        result.strError = std::string("cannot begin a read transaction: ") +
+                          mdb_strerror(rc);
+        mdb_env_close(env);
+        return false;
+    }
+
+    MDB_dbi dbi = 0;
+    rc = mdb_dbi_open(txn, "main", 0, &dbi);
+    if (rc != 0) {
+        result.strError = std::string("main sub-database is missing or "
+                                      "unreadable: ") + mdb_strerror(rc);
+        mdb_txn_abort(txn);
+        mdb_env_close(env);
+        return false;
+    }
+    result.fMainDatabase = true;
+
+    MDB_stat dbStat;
+    rc = mdb_stat(txn, dbi, &dbStat);
+    if (rc != 0) {
+        result.strError = std::string("cannot read main database statistics: ") +
+                          mdb_strerror(rc);
+        mdb_txn_abort(txn);
+        mdb_env_close(env);
+        return false;
+    }
+    result.nEntries = static_cast<size_t>(dbStat.ms_entries);
+
+    if (fFullScan) {
+        MDB_cursor *cursor = nullptr;
+        rc = mdb_cursor_open(txn, dbi, &cursor);
+        if (rc != 0) {
+            result.strError = std::string("cannot open a scan cursor: ") +
+                              mdb_strerror(rc);
+            mdb_txn_abort(txn);
+            mdb_env_close(env);
+            return false;
+        }
+
+        MDB_val key;
+        MDB_val value;
+        size_t nRecords = 0;
+        for (rc = mdb_cursor_get(cursor, &key, &value, MDB_FIRST);
+             rc == 0;
+             rc = mdb_cursor_get(cursor, &key, &value, MDB_NEXT))
+            ++nRecords;
+        mdb_cursor_close(cursor);
+
+        if (rc != MDB_NOTFOUND) {
+            result.strError = std::string("cannot read every record: ") +
+                              mdb_strerror(rc);
+            mdb_txn_abort(txn);
+            mdb_env_close(env);
+            return false;
+        }
+        if (nRecords != result.nEntries) {
+            result.strError = strprintf(
+                "full scan read %llu records but the main database reports "
+                "%llu entries",
+                static_cast<unsigned long long>(nRecords),
+                static_cast<unsigned long long>(result.nEntries));
+            mdb_txn_abort(txn);
+            mdb_env_close(env);
+            return false;
+        }
+    }
+
+    result.fRecordsReadable = true;
+    mdb_txn_abort(txn);
+    mdb_env_close(env);
+    result.fComplete = true;
     return true;
 }
 

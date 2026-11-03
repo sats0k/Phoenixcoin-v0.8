@@ -102,6 +102,164 @@ both `<datadir>/wallet` and `<datadir>/wallet.backend`.  The untouched
 `wallet.dat` is then used again.  Any keys or transactions created while the
 LMDB wallet was active exist only in the LMDB copy.
 
+## Online backup and restore
+
+An LMDB wallet is an environment directory, not a single `wallet.dat` file.
+Copying `data.mdb` with `cp`, `rsync`, a snapshot tool, or a file manager while
+the node is running is **not** a valid backup: LMDB may be extending or
+rewriting pages concurrently, and the copy can contain a torn B-tree or a data
+file shorter than the pages its meta page refers to.  Use `backupwallet`.
+
+### Taking a backup
+
+1. Leave the node running.  `backupwallet` waits for open wallet handles to
+   drain and serialises the copy against wallet writes; block processing
+   continues.
+2. Choose a destination that is either absent or an empty directory.  An
+   existing directory is treated as a backup root, matching the Berkeley DB
+   command, so the environment is written to `<destination>/wallet`:
+
+   ```
+   phoenixcoind backupwallet /media/backup/phoenixcoin-2026-11-03
+   ```
+
+3. The command copies the live environment with LMDB's compact copy
+   (`MDB_CP_COMPACT`) into a hidden sibling staging directory.  It then runs a
+   full record scan over the staged copy and requires the same committed entry
+   count as the source.  Only after both checks pass is the staging directory
+   renamed to the final destination.  A failed copy or verification removes the
+   staging directory and leaves the live wallet and any existing destination
+   untouched.
+
+   A compact copy contains `data.mdb` only; it has no `lock.mdb` and is safe to
+   place on read-only media.  Compaction also resets the LMDB transaction ID,
+   so the copy's transaction counter is deliberately not compared with the
+   source.
+
+4. Verify the result independently, then copy the verified directory to a
+   second medium if the backup matters:
+
+   ```
+   phoenixcoind -checklmdb=/media/backup/phoenixcoin-2026-11-03/wallet -checklmdbdeep
+   ```
+
+   A non-zero exit status means the backup is not usable.  Do not delete the
+   previous good backup until this check and a restore test have passed.
+
+`backupwallet` refuses a destination that exists as a regular file, and it
+refuses a non-empty `<destination>/wallet`.  Choose a new path or remove the
+old backup deliberately; the command will not overwrite one.
+
+### Restoring a backup
+
+1. Stop the node and keep the current wallet directory, in case the restore is
+   the wrong choice:
+
+   ```
+   mv ~/.phoenixcoin/wallet ~/.phoenixcoin/wallet.failed
+   ```
+
+2. Copy the verified backup into place.  Copy `data.mdb` only; do not copy a
+   stale `lock.mdb` from another host:
+
+   ```
+   mkdir ~/.phoenixcoin/wallet
+   cp /media/backup/phoenixcoin-2026-11-03/wallet/data.mdb ~/.phoenixcoin/wallet/
+   ```
+
+3. Confirm that `~/.phoenixcoin/wallet.backend` still contains `lmdb`, then
+   verify the restored environment offline before starting:
+
+   ```
+   phoenixcoind -checklmdb=$HOME/.phoenixcoin/wallet -checklmdbdeep
+   ```
+
+4. Start with the LMDB wallet selected:
+
+   ```
+   phoenixcoind -walletbackend=lmdb
+   ```
+
+5. Check `getdbinfo`: `wallet.data_file.complete` must be `true`,
+   `wallet.opened_cleanly` must be `true`, and the `wallet.database.entries`
+   count must match the count reported when the backup was taken.  Then confirm
+   a known address with `validateaddress` and `dumpprivkey`, and make a small
+   outgoing transaction if the wallet holds spendable coins.
+
+A backup is a point-in-time snapshot.  Keys and transactions created after it
+were not captured.  New addresses come from the pre-generated keypool, so a
+key created after the backup may still exist in the restored wallet even though
+its address-book entry and transaction history do not.
+
+### Restoring the chain index
+
+There is no online chain-index backup command.  To back up `blkindex/`,
+`blkindex.backend`, `blk0001.dat` and `txleveldb` consistently, stop the node
+first and copy the whole data directory.  A live `cp`/`rsync` of `blkindex/` is
+subject to the same torn-copy risk as the wallet.  If only the wallet matters,
+`backupwallet` is safe while the node runs.
+
+If the chain index is lost or incomplete, restore a stopped-node backup.  There
+is no `-reindex` mode in this codebase; if no backup exists, remove `blkindex/`
+and `blkindex.backend` (or `blkindex.dat` for Berkeley DB) and let the node
+download the chain again.
+
+## Offline verification
+
+`-checklmdb` checks an LMDB environment without starting a node and without
+modifying it:
+
+```
+phoenixcoind -checklmdb=<directory> [-checklmdbdeep]
+```
+
+The directory may contain `data.mdb` directly, or be a backup root containing
+`wallet/` or `blkindex/`; the command descends into the matching subdirectory.
+`-checklmdbdeep` reads every record through a cursor, which exercises the
+B-tree pages rather than only the meta page and database header.  Without it
+the check is fast and validates the file size, meta pages and main database
+header.
+
+The check:
+
+- requires the directory and `data.mdb` to exist;
+- requires at least two LMDB meta pages and a data file covering every page the
+  active meta page refers to;
+- opens the environment read-only with `MDB_RDONLY | MDB_NOLOCK | MDB_NOTLS`, so
+  it does not create `lock.mdb`, works on a read-only filesystem, and leaves
+  `data.mdb` byte-for-byte unchanged;
+- requires the `main` sub-database;
+- with `-checklmdbdeep`, reads every key and value and reports the entry count.
+
+It prints one field per line and ends with `result: OK` or `result: FAILED`.
+The exit status is `0` only on success; a bare `-checklmdb` is an error and
+requires an explicit directory.  Typical failures are:
+
+```
+data.mdb is missing
+data.mdb is only 4096 bytes, too small to contain two LMDB meta pages
+data.mdb is truncated: 8192 bytes on disk but the meta page refers to 12288 bytes
+cannot open data.mdb: MDB_INVALID: File is not an LMDB file
+main sub-database is missing or unreadable
+```
+
+The same check is available over RPC while the node is running:
+
+```
+phoenixcoind checklmdb <directory> [full]
+```
+
+`full` is a boolean and selects the full record scan.  The RPC returns an
+object with `ok`, the same counters and a human-readable `error`; it reports
+`ok: false` rather than throwing for verification failures.  It refuses an
+environment that the running node has open, so use `getdbinfo` for live
+diagnostics.  A backup root is accepted, and the result's `path` field shows
+the environment that was actually checked.
+
+Neither form is a substitute for a restore test.  Verification proves the
+environment is structurally complete and readable; restoring it and checking a
+known address proves the data is the state you intended to keep.
+
 ## Options
 
 - `-dbbackend=lmdb|bdb` — chain index backend, default `bdb`.
@@ -211,6 +369,14 @@ The result has a `chain` and a `wallet` object with the same shape:
       "value" : "lmdb",
       "matches_backend" : true
     },
+    "data_file" : {
+      "directory_exists" : true,
+      "present" : true,
+      "bytes" : 184549376,
+      "lock_present" : true,
+      "complete" : true,
+      "reason" : ""
+    },
     "environment" : {
       "map_size" : 4294967296,
       "max_map_size" : 1099511627776,
@@ -253,6 +419,13 @@ Field meanings:
   database handle opened successfully.  `environment_open`, `database_open`
   and `error` narrow down a false value.  Berkeley DB reports `opened_cleanly`
   as true and leaves the LMDB counters at zero.
+- `data_file` is the on-disk inspection that startup uses before opening the
+  environment.  `present` and `bytes` describe `data.mdb`, `lock_present`
+  reports `lock.mdb`, and `complete` is false for an empty, missing or
+  truncated file.  `reason` explains an incomplete state, for example
+  `data.mdb is missing` or `data.mdb is only 4096 bytes, too small to contain
+  two LMDB meta pages`.  A healthy live LMDB backend has `complete: true` and
+  an empty `reason`; Berkeley DB leaves these fields false/zero.
 - `environment.map_size` is the current map limit (the configured initial size
   or a size chosen while opening or growing), not a preallocated file size.
   `max_map_size` is the automatic growth ceiling and `auto_grow` reports
@@ -473,6 +646,49 @@ restart, and the keypool was refilled through the LMDB wallet; `backupwallet`
 produced an environment that loaded the same addresses when restored into a
 fresh data directory; and `encryptwallet` compacted and rewrote the
 environment, with the encrypted wallet reopening and unlocking after restart.
+
+### Backup, verification and restore validation
+
+`regression_lmdb_wallet_backup.sh` passed 52/52 checks against a real daemon.
+It follows the operator workflow described above:
+
+- creates an LMDB wallet with a known address and key;
+- takes an online `backupwallet` to a new path, requires the compacted copy to
+  contain `data.mdb` and no `lock.mdb`, and restores both the address and its
+  private key;
+- runs `-checklmdbdeep` and the `checklmdb` RPC against the backup and checks
+  that `data.mdb` keeps its SHA-256 checksum and no `lock.mdb` appears;
+- writes an existing-directory backup to `<destination>/wallet`, auto-descends
+  into that subdirectory for both check forms, and refuses a non-empty
+  `<destination>/wallet`, a regular-file destination, and leaves no staging
+  directory behind after a refusal;
+- rejects a data file truncated to its two meta pages, zeroed meta pages and
+  an empty directory through both the standalone command and the RPC;
+- starts against a truncated live wallet and requires a non-zero exit, a clear
+  `LMDB wallet ... is incomplete` error, and an unchanged `wallet.backend`;
+- restores the point-in-time backup into the live datadir and proves that the
+  pre-backup address and label survive while an address-book entry created
+  after the backup is gone; then creates a new address, restarts, and signs
+  with both the restored and the new key.
+
+The unit tests `kvdb_tests/lmdb_environment_verify` and
+`kvdb_tests/wallet_lmdb_backup` cover the same verifier and backup paths in
+memory, including missing/non-directory/too-small/truncated/corrupt
+environments, full-scan behaviour, non-mutation of the backup, inactive-wallet
+failure, element-count mismatch detection, staging cleanup, and a restore that
+reopens through the normal wallet code.
+
+The make targets run the restore test in CI/nightly jobs:
+
+```
+cd src
+make -f Makefile.linux check-lmdb-backup
+make -f Makefile.linux nightly-lmdb
+```
+
+`check-lmdb-backup` builds the daemon and test binary, runs the two focused
+unit tests, then runs `regression_lmdb_wallet_backup.sh`.  `nightly-lmdb` adds
+the wallet and chain migration regressions.
 
 ## Wallet backend parity
 

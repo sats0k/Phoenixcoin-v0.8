@@ -10,6 +10,7 @@
 
 #include <db_cxx.h>
 
+#include <cstdint>
 #include <memory>
 #include <utility>
 #include <map>
@@ -114,6 +115,36 @@ enum DBBackend
 };
 
 /**
+ * On-disk state of one LMDB environment directory, inspected without opening
+ * it.  fComplete only proves that data.mdb is large enough to hold the two
+ * LMDB meta pages; it does not prove the B-tree is readable.  Use
+ * VerifyLMDBEnvironment() (the -checklmdb command) for a full check.
+ */
+struct LMDBOnDiskState
+{
+    bool fDirectoryExists = false;
+    bool fDataFileExists = false;
+    bool fLockFileExists = false;
+    bool fComplete = false;
+    uintmax_t nDataFileBytes = 0;
+    std::string strReason;
+};
+
+/**
+ * Inspects dir as an LMDB environment directory.  A missing, empty or
+ * truncated data.mdb is reported as incomplete, which startup treats as a
+ * failure rather than as an invitation to create a fresh environment.
+ */
+LMDBOnDiskState InspectLMDBEnvironmentOnDisk(const std::filesystem::path& dir);
+
+/**
+ * Returns true when path is the environment directory currently opened for the
+ * chain index or wallet.  Offline verification must not be used on a live
+ * environment, and this lets the command refuse that case.
+ */
+bool IsActiveLMDBEnvironmentPath(const std::filesystem::path& path);
+
+/**
  * Health of one database backend (chain index or wallet) for getdbinfo.
  *
  * The configured value comes from the command line, the active value from the
@@ -136,6 +167,7 @@ struct DBBackendDiagnostics
     bool fMarkerMatchesBackend = false;
     std::string strPath;
     std::string strError;
+    LMDBOnDiskState disk;
     CLMDBStats env;
     CLMDBDBStats db;
 };

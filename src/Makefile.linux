@@ -237,6 +237,22 @@ obj-test/%.o: test/%.cpp
 test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS) $(TESTLIBS)
 
+# LMDB backup/restore validation.  This is the operator workflow, end to end:
+# backupwallet on a live node, offline verification, destination refusals,
+# rejection of copied/truncated environments, fail-closed startup, and a
+# point-in-time restore on a real daemon.
+.PHONY: check-lmdb-backup nightly-lmdb
+check-lmdb-backup:
+	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind test_phoenixcoin
+	./test_phoenixcoin --run_test=kvdb_tests/lmdb_environment_verify:kvdb_tests/wallet_lmdb_backup
+	./test/regression_lmdb_wallet_backup.sh ./phoenixcoind
+
+# Longer-running LMDB regression set for CI/nightly jobs.  The backup restore
+# test runs first because it exercises the recovery path operators rely on.
+nightly-lmdb: check-lmdb-backup
+	./test/regression_lmdb_wallet_migration.sh ./phoenixcoind
+	./test/regression_lmdb_chain_migration.sh ./phoenixcoind
+
 # On-disk wallet backend benchmark.  Kept separate from the Boost suite so the
 # default tests keep using the in-memory mock Berkeley DB environment.
 wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))

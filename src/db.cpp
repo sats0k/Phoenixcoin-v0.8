@@ -289,14 +289,57 @@ bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string
     return true;
 }
 
+LMDBOnDiskState InspectLMDBEnvironmentOnDisk(const std::filesystem::path& dir)
+{
+    LMDBOnDiskState state;
+
+    std::error_code ec;
+    state.fDirectoryExists = std::filesystem::is_directory(dir, ec) && !ec;
+    if (!state.fDirectoryExists) {
+        state.strReason = (std::filesystem::exists(dir, ec) && !ec)
+            ? "path exists but is not a directory"
+            : "directory is missing";
+        return state;
+    }
+
+    const std::filesystem::path pathData = dir / "data.mdb";
+    const std::filesystem::path pathLock = dir / "lock.mdb";
+    state.fDataFileExists =
+        std::filesystem::is_regular_file(pathData, ec) && !ec;
+    if (!state.fDataFileExists) {
+        state.strReason = "data.mdb is missing";
+        return state;
+    }
+    state.fLockFileExists =
+        std::filesystem::is_regular_file(pathLock, ec) && !ec;
+
+    state.nDataFileBytes = std::filesystem::file_size(pathData, ec);
+    if (ec) {
+        state.strReason = "cannot read the size of data.mdb";
+        return state;
+    }
+
+    // Both LMDB meta pages must be present.  LMDB maps whole pages, so a file
+    // shorter than two pages cannot be a complete environment even if the
+    // first meta page happens to look valid.
+    const size_t nSystemPage = GetSystemPageSize();
+    const uintmax_t nMinimum =
+        2ULL * (nSystemPage > 0 ? nSystemPage : 4096ULL);
+    if (state.nDataFileBytes < nMinimum) {
+        state.strReason = strprintf(
+            "data.mdb is only %llu bytes, too small to contain two LMDB "
+            "meta pages",
+            static_cast<unsigned long long>(state.nDataFileBytes));
+        return state;
+    }
+
+    state.fComplete = true;
+    return state;
+}
+
 bool HasLMDBChainIndex(const std::filesystem::path& dir)
 {
-    const std::filesystem::path pathData = dir / "blkindex" / "data.mdb";
-    std::error_code ec;
-    if (!std::filesystem::exists(pathData, ec) || ec)
-        return false;
-    const uintmax_t nSize = std::filesystem::file_size(pathData, ec);
-    return !ec && nSize > 0;
+    return InspectLMDBEnvironmentOnDisk(dir / "blkindex").fComplete;
 }
 
 bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured)
@@ -319,7 +362,16 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend 
     // Older LMDB builds did not write a marker.  Treat an existing LMDB chain
     // index as authoritative so that a default BDB start cannot silently load
     // the stale blkindex.dat.
-    if (configured == DB_BACKEND_BDB && HasLMDBChainIndex(dir))
+    const LMDBOnDiskState state = InspectLMDBEnvironmentOnDisk(dir / "blkindex");
+    if (state.fDirectoryExists && !state.fComplete)
+        return error("Found an incomplete LMDB chain index at %s: %s. "
+                     "Restore it from a verified backup, or remove the "
+                     "directory to let the node start from blkindex.dat or "
+                     "create a fresh index.",
+                     (dir / "blkindex").string().c_str(),
+                     state.strReason.c_str());
+
+    if (configured == DB_BACKEND_BDB && state.fComplete)
         return error("Found an LMDB chain index at %s. "
                      "Start with -dbbackend=lmdb, or remove 'blkindex' after "
                      "backing up the data directory to use Berkeley DB.",
@@ -341,6 +393,26 @@ std::filesystem::path GetWalletLMDBPath(const std::filesystem::path& dir)
 }
 
 } // namespace
+
+bool IsActiveLMDBEnvironmentPath(const std::filesystem::path& path)
+{
+    std::error_code ec;
+    const std::filesystem::path canonical =
+        std::filesystem::weakly_canonical(path, ec);
+    if (ec)
+        return false;
+
+    const auto matches = [&canonical](const CLMDBEnv& env) {
+        if (!env.IsOpen() || env.GetPath().empty())
+            return false;
+        std::error_code envEc;
+        const std::filesystem::path envPath =
+            std::filesystem::weakly_canonical(env.GetPath(), envEc);
+        return !envEc && envPath == canonical;
+    };
+
+    return matches(g_lmdbChainEnv) || matches(g_lmdbWalletEnv);
+}
 
 bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend)
 {
@@ -396,12 +468,7 @@ bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::strin
 
 bool HasLMDBWallet(const std::filesystem::path& dir)
 {
-    const std::filesystem::path pathData = GetWalletLMDBPath(dir) / "data.mdb";
-    std::error_code ec;
-    if (!std::filesystem::exists(pathData, ec) || ec)
-        return false;
-    const uintmax_t nSize = std::filesystem::file_size(pathData, ec);
-    return !ec && nSize > 0;
+    return InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir)).fComplete;
 }
 
 bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend configured)
@@ -435,7 +502,16 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
     // Older LMDB wallets have no marker.  Treat an existing LMDB wallet as
     // authoritative so that a default BDB start cannot silently open the stale
     // wallet.dat.
-    if (configured == DB_BACKEND_BDB && HasLMDBWallet(dir))
+    const LMDBOnDiskState state =
+        InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir));
+    if (state.fDirectoryExists && !state.fComplete)
+        return error("Found an incomplete LMDB wallet at %s: %s. "
+                     "Restore it from a verified backup, or remove the "
+                     "directory to let the node use wallet.dat.",
+                     GetWalletLMDBPath(dir).string().c_str(),
+                     state.strReason.c_str());
+
+    if (configured == DB_BACKEND_BDB && state.fComplete)
         return error("Found an LMDB wallet at %s. "
                      "Start with -walletbackend=lmdb, or remove 'wallet' after "
                      "backing up the data directory to use Berkeley DB.",
@@ -1093,6 +1169,16 @@ bool IsChainLMDBEmpty(bool& fEmpty)
 
 bool MissingLMDBChainIndexError(const std::filesystem::path& pathChain)
 {
+    const LMDBOnDiskState state = InspectLMDBEnvironmentOnDisk(pathChain);
+    if (state.fDirectoryExists && !state.fComplete)
+        return error("The LMDB chain index at %s is incomplete: %s. "
+                     "blkindex.backend marks LMDB as authoritative, so the "
+                     "node will not silently re-import blkindex.dat. Restore "
+                     "the chain index from a verified backup (check it with "
+                     "-checklmdb), or remove blkindex.backend to deliberately "
+                     "re-import blkindex.dat.",
+                     pathChain.string().c_str(), state.strReason.c_str());
+
     return error("The LMDB chain index at %s is missing or empty, but "
                  "blkindex.backend marks LMDB as authoritative. Restore the "
                  "chain index from a backup, or remove blkindex.backend to "
@@ -1429,6 +1515,16 @@ bool MigrateWalletToLMDB(const std::filesystem::path& dir)
 
 bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
 {
+    const LMDBOnDiskState state = InspectLMDBEnvironmentOnDisk(pathWallet);
+    if (state.fDirectoryExists && !state.fComplete)
+        return error("The LMDB wallet at %s is incomplete: %s. "
+                     "wallet.backend marks LMDB as authoritative, so the node "
+                     "will not silently start from wallet.dat. Restore the "
+                     "wallet from a verified backup (check it with "
+                     "-checklmdb), or remove wallet.backend to deliberately "
+                     "start from wallet.dat.",
+                     pathWallet.string().c_str(), state.strReason.c_str());
+
     return error("The LMDB wallet at %s is missing or empty, but wallet.backend "
                  "marks LMDB as authoritative. Restore the wallet from a "
                  "backup, or remove wallet.backend to deliberately start from "
@@ -2014,6 +2110,13 @@ bool BackupLMDBWallet(const std::string& strDest)
     if (!g_lmdbWalletEnv.Sync(true))
         return false;
 
+    // Capture the committed source entry count before the copy.  No wallet
+    // handle is open and g_mutexWalletKV is held, so the source cannot change
+    // until the copy and its verification are complete.
+    CLMDBDBStats sourceDbStats;
+    if (!g_lmdbWalletDb.GetStats(sourceDbStats))
+        return error("backupwallet: cannot read the live LMDB wallet state");
+
     std::filesystem::path pathDest(strDest);
     std::error_code ec;
     if (std::filesystem::is_directory(pathDest, ec))
@@ -2028,35 +2131,99 @@ bool BackupLMDBWallet(const std::string& strDest)
     }
 
     // An LMDB environment is a directory, so the destination is a directory
-    // too.  mdb_env_copy2() requires it to exist and to be empty.
-    if (std::filesystem::exists(pathDest, ec))
+    // too.  It may not exist yet, or it must be an empty directory.
+    const bool fDestExists = std::filesystem::exists(pathDest, ec);
+    if (fDestExists)
     {
         if (!std::filesystem::is_directory(pathDest, ec) ||
             !std::filesystem::is_empty(pathDest, ec))
             return error("backupwallet: %s already exists and is not an empty "
                          "directory", pathDest.string().c_str());
     }
-    else
+
+    const std::filesystem::path pathParent = pathDest.parent_path();
+    if (!pathParent.empty())
     {
-        const std::filesystem::path pathParent = pathDest.parent_path();
-        if (!pathParent.empty())
-            std::filesystem::create_directories(pathParent, ec);
-        if (!ec)
-            std::filesystem::create_directories(pathDest, ec);
+        std::filesystem::create_directories(pathParent, ec);
         if (ec)
-            return error("backupwallet: cannot create %s",
-                         pathDest.string().c_str());
+            return error("backupwallet: cannot create %s: %s",
+                         pathParent.string().c_str(), ec.message().c_str());
     }
 
-    int rc = mdb_env_copy2(env, pathDest.string().c_str(), MDB_CP_COMPACT);
+    // Build the copy beside the destination and install it with a rename only
+    // after it has been verified.  A crash or full disk therefore cannot leave
+    // a partial directory that looks like a usable backup.
+    static std::atomic<unsigned int> nTempCounter(0);
+    const std::string strLeaf = pathDest.filename().string();
+    const std::string strTmpName =
+        (strLeaf.empty() ? std::string("lmdb-backup") : strLeaf) +
+        strprintf(".tmp-%" PRI64d, GetTimeMillis()) + "-" +
+        std::to_string(nTempCounter.fetch_add(1));
+    const std::filesystem::path pathTmp =
+        pathDest.parent_path() / strTmpName;
+
+    std::filesystem::remove_all(pathTmp, ec);
+    ec.clear();
+    std::filesystem::create_directories(pathTmp, ec);
+    if (ec)
+        return error("backupwallet: cannot create staging directory %s: %s",
+                     pathTmp.string().c_str(), ec.message().c_str());
+
+    int rc = mdb_env_copy2(env, pathTmp.string().c_str(), MDB_CP_COMPACT);
     if (rc != 0)
     {
-        std::filesystem::remove_all(pathDest, ec);
+        std::filesystem::remove_all(pathTmp, ec);
         return error("backupwallet: cannot copy LMDB wallet to %s: %s",
                      pathDest.string().c_str(), mdb_strerror(rc));
     }
 
-    printf("copied LMDB wallet to %s\n", pathDest.string().c_str());
+    // mdb_env_copy2() documents a point-in-time copy.  Verify the result with
+    // a full record scan and compare its entry count with the source before
+    // the backup is made visible under its final name.  A compact copy has a
+    // new transaction ID by design, so the transaction counter is not a
+    // comparable property.
+    CLMDBVerifyResult verify;
+    if (!VerifyLMDBEnvironment(pathTmp.string(), true, verify))
+    {
+        std::filesystem::remove_all(pathTmp, ec);
+        return error("backupwallet: verification of %s failed: %s",
+                     pathDest.string().c_str(), verify.strError.c_str());
+    }
+
+    if (!verify.fComplete || !verify.fMainDatabase ||
+        !verify.fRecordsReadable ||
+        verify.nEntries != sourceDbStats.nEntries)
+    {
+        std::filesystem::remove_all(pathTmp, ec);
+        return error("backupwallet: copy of %s is inconsistent "
+                     "(source: %llu entries; backup: %llu entries)",
+                     pathDest.string().c_str(),
+                     static_cast<unsigned long long>(sourceDbStats.nEntries),
+                     static_cast<unsigned long long>(verify.nEntries));
+    }
+
+    if (fDestExists)
+    {
+        // The destination was validated as an empty directory above.  Remove
+        // only that empty placeholder so the verified copy can take its name.
+        if (!std::filesystem::remove(pathDest, ec) || ec)
+        {
+            std::filesystem::remove_all(pathTmp, ec);
+            return error("backupwallet: cannot replace empty directory %s",
+                         pathDest.string().c_str());
+        }
+    }
+
+    std::filesystem::rename(pathTmp, pathDest, ec);
+    if (ec)
+    {
+        std::filesystem::remove_all(pathTmp, ec);
+        return error("backupwallet: cannot install verified backup at %s: %s",
+                     pathDest.string().c_str(), ec.message().c_str());
+    }
+
+    printf("copied and verified LMDB wallet to %s (%" PRIszu " entries)\n",
+           pathDest.string().c_str(), verify.nEntries);
     return true;
 }
 
@@ -2809,6 +2976,8 @@ DBBackendDiagnostics CollectDBBackendDiagnostics(
         DBBackendName(fLMDBEnabled ? DB_BACKEND_LMDB : DB_BACKEND_BDB);
     diag.fLMDBEnabled = fLMDBEnabled;
     diag.strPath = (dir / (fWallet ? "wallet" : "blkindex")).string();
+    diag.disk = InspectLMDBEnvironmentOnDisk(
+        dir / (fWallet ? "wallet" : "blkindex"));
 
     std::string strMarker;
     diag.fMarkerPresent = fWallet
@@ -2830,12 +2999,16 @@ DBBackendDiagnostics CollectDBBackendDiagnostics(
 
     diag.fEnvironmentOpen = env.GetStats(diag.env);
     diag.fDatabaseOpen = db.GetStats(diag.db);
-    diag.fOpenedCleanly = diag.fEnvironmentOpen && diag.fDatabaseOpen;
+    diag.fOpenedCleanly = diag.fEnvironmentOpen && diag.fDatabaseOpen &&
+                          diag.disk.fComplete;
 
     if (!diag.fEnvironmentOpen)
         diag.strError = "LMDB environment is not open";
     else if (!diag.fDatabaseOpen)
         diag.strError = "LMDB database statistics are unavailable";
+    else if (!diag.disk.fComplete)
+        diag.strError = std::string("LMDB data file is incomplete: ") +
+                        diag.disk.strReason;
     else if (!diag.fMarkerMatchesBackend)
         diag.strError = "backend marker does not match the active backend";
     return diag;
