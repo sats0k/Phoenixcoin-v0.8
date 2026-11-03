@@ -2242,10 +2242,7 @@ bool BackupLMDBWallet(const std::string& strDest)
 bool FlushWalletDB(const std::string& strFile)
 {
     if (g_fLMDBWalletEnabled)
-    {
-        FlushLMDBWallet(true);
-        return true;
-    }
+        return FlushLMDBWallet(true);
 
     TRY_LOCK(bitdb.cs_db, lockDb);
     if (!lockDb)

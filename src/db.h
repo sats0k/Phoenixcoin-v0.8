@@ -41,9 +41,10 @@ void ThreadFlushWalletDB(void* parg);
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
 /**
- * Flushes the active wallet database to disk.  Returns false when a Berkeley
- * DB flush was skipped because the environment was busy; callers should retry
- * on the next flush interval.  Hides the backend from the wallet loop.
+ * Flushes the active wallet database to disk.  Returns false when the LMDB
+ * sync fails, or when a Berkeley DB flush was skipped because the environment
+ * was busy; callers should retry on the next flush interval.  Hides the
+ * backend from the wallet loop.
  */
 bool FlushWalletDB(const std::string& strFile);
 

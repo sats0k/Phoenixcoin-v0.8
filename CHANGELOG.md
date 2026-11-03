@@ -109,7 +109,8 @@ Changes since v0.8.3.
   `BackupWalletDB()` in the database layer instead of branching on
   `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs
   to know which backend is underneath; Berkeley DB and LMDB keep their
-  existing on-disk behaviour.
+  existing on-disk behaviour. `FlushWalletDB()` now propagates LMDB sync
+  failures instead of reporting them as a successful flush.
 - The startup wallet salvage and verification pass is now selected by
   `CheckWalletDatabaseAtStartup()` in the wallet persistence layer.
   `init.cpp` handles the result but no longer checks whether the active
