@@ -225,7 +225,7 @@ assert 0 <= e["utilization_percent"] <= 100, e
 assert e["max_readers"] > 0, e
 assert e["writer_active"] is False, e
 assert e["read_only"] is False, e
-assert e["nosync"] is True, e
+assert e["nosync"] is False, e
 assert w["database"]["entries"] > 0, w
 assert w["database"]["page_size"] == e["page_size"], w
 assert c["active_backend"] in ("bdb", "lmdb"), c

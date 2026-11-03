@@ -148,7 +148,7 @@ std::atomic<int> g_nWalletKVHandles(0);
 size_t g_nWalletMapSize = 0;
 size_t g_nWalletMaxMapSize = 0;
 bool g_fWalletAutoGrow = true;
-bool g_fWalletNoSync = true;
+bool g_fWalletNoSync = false;
 // Directory that owns the open LMDB wallet.  The production startup path uses
 // GetDataDir(), but tests open the wallet in a temporary directory; rewrite
 // must follow the environment it is compacting, not the configured datadir.
@@ -1309,10 +1309,10 @@ bool InitLMDBChainDB()
         return error("InitLMDBChainDB(): invalid LMDB map size: %s",
                      strMapSizeError.c_str());
 
-    // Match Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour unless durability was
-    // explicitly requested.  NOSYNC keeps each commit atomic and consistent,
-    // but skips the per-commit fsync that otherwise dominates block import.
-    const bool fNoSync = GetBoolArg("-lmdbnosync", true);
+    // Durability is the safe default.  -lmdbnosync=1 is an explicit opt-in
+    // for bulk import or benchmarking; it matches Berkeley DB's
+    // DB_TXN_WRITE_NOSYNC behaviour but skips the per-commit fsync.
+    const bool fNoSync = GetBoolArg("-lmdbnosync", false);
 
     if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync,
                              "-lmdbmapsize", false, nMaxMapSize, fAutoGrow))
@@ -2038,7 +2038,8 @@ bool InitLMDBWalletDB()
                      strMapSizeError.c_str());
 
     return InitLMDBWalletDBInternal(GetDataDir(), nMapSize, nMaxMapSize,
-                                    fAutoGrow, GetBoolArg("-lmdbnosync", true));
+                                    fAutoGrow,
+                                    GetBoolArg("-lmdbnosync", false));
 }
 
 bool InitLMDBWalletDBForTest(const std::filesystem::path& dir)

@@ -121,6 +121,12 @@ Changes since v0.8.3.
   `CheckWalletDatabaseAtStartup()` in the wallet persistence layer.
   `init.cpp` handles the result but no longer checks whether the active
   backend is LMDB or Berkeley DB.
+- LMDB now uses its strongest normal durability mode by default:
+  `-lmdbnosync` defaults to `0`, so each commit fsyncs.  The previous
+  default skipped the per-commit fsync to match Berkeley DB's
+  `DB_TXN_WRITE_NOSYNC` behaviour; that remains available as an explicit
+  opt-in for bulk import and benchmarking.  `MDB_WRITEMAP`, `MDB_MAPASYNC`
+  and `MDB_NOMETASYNC` are not enabled.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

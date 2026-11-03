@@ -284,11 +284,14 @@ known address proves the data is the state you intended to keep.
 - `-lmdbruntimegrow=<0|1>` — default `1`.  Grow the LMDB map automatically when
   a write transaction would exhaust the map.  When disabled the map is fixed at
   `-lmdbmapsize` (and `-lmdbmaxmapsize` is ignored).
-- `-lmdbnosync=<0|1>` — default `1`.  Commits do not fsync, matching Berkeley
-  DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per block during
-  initial sync.  Transactions remain atomic and consistent.  Set to `0` for
-  per-commit durability.  A clean shutdown always flushes the environment.
-  This option applies to both LMDB environments.
+- `-lmdbnosync=<0|1>` — default `0`.  Each commit fsyncs, using LMDB's
+  strongest normal durability mode.  Set to `1` to skip fsync, matching
+  Berkeley DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per
+  block during initial sync; transactions remain atomic and consistent, but a
+  system crash may lose the most recent commits.  A clean shutdown always
+  flushes the environment.  `MDB_WRITEMAP`, `MDB_MAPASYNC` and
+  `MDB_NOMETASYNC` are never enabled.  This option applies to both LMDB
+  environments.
 - `-walletbackend=lmdb|bdb` — wallet backend, default `lmdb`.
 - `-lmdbwalletsize=<MiB>` — initial size of the LMDB wallet map, default
   4096 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
@@ -399,7 +402,7 @@ The result has a `chain` and a `wallet` object with the same shape:
       "readers" : 0,
       "writer_active" : false,
       "read_only" : false,
-      "nosync" : true
+      "nosync" : false
     },
     "database" : {
       "entries" : 128439,

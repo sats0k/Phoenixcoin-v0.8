@@ -578,7 +578,7 @@ which returns a `chain` and `wallet` object with the same fields.  The
 `regression_lmdb_wallet_migration.sh` run asserts on a real daemon that the
 migrated wallet reports `active_backend == "lmdb"`, a matching marker,
 positive map/page counters, a nonzero entry count, `writer_active == false`,
-`read_only == false`, `nosync == true` and an empty `error`.  Field
+`read_only == false`, `nosync == false` and an empty `error`.  Field
 definitions and a sample result are in `doc/lmdb.md`, "Health diagnostics".
 
 ## Shell regression scripts

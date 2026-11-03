@@ -121,8 +121,10 @@ public:
     /**
      * Opens (and creates when needed) the environment.  With fNoSync the
      * environment is opened with MDB_NOSYNC, so commits do not fsync and a
-     * system crash may lose the most recent transactions.  The database stays
-     * consistent (MDB_WRITEMAP is not used) and the data is flushed when the
+     * system crash may lose the most recent transactions.  This is opt-in;
+     * production callers default to LMDB's normal per-commit durability.
+     * MDB_WRITEMAP, MDB_MAPASYNC and MDB_NOMETASYNC are never enabled.
+     * The database stays consistent and the data is flushed when the
      * environment is closed.
      *
      * nMaxMapSize bounds automatic growth when fAutoGrow is true.  A zero

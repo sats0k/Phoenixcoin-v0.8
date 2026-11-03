@@ -120,10 +120,15 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
     // transaction instead of the thread; the transaction still must not be
     // used concurrently from several threads.
     //
-    // MDB_NOSYNC matches Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour: commits
-    // stay atomic and consistent, but do not force the OS buffers to disk.
-    // This avoids an fsync for every block during initial sync.  The data is
-    // flushed explicitly when the environment is closed.
+    // MDB_NOSYNC is opt-in: it matches Berkeley DB's DB_TXN_WRITE_NOSYNC
+    // behaviour, keeping commits atomic and consistent while skipping the
+    // per-commit fsync.  The default remains LMDB's strongest normal
+    // durability mode.
+    //
+    // MDB_WRITEMAP, MDB_MAPASYNC and MDB_NOMETASYNC are deliberately never
+    // enabled.  WRITEMAP removes protection against application memory bugs,
+    // and mixing processes with different WRITEMAP settings can defeat
+    // durability.
     unsigned int nFlags = MDB_NOTLS;
     if (fNoSync)
         nFlags |= MDB_NOSYNC;

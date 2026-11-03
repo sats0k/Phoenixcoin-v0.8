@@ -352,7 +352,7 @@ std::string HelpMessage()
         "  -lmdbwalletsize=<n>    " + _("Initial LMDB wallet map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
         "  -lmdbmaxwalletsize=<n> " + _("Automatic LMDB wallet map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
         "  -lmdbruntimegrow=<0|1> " + _("Grow the LMDB map automatically when it fills (default: 1)") + "\n" +
-        "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
+        "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 0); enabling it may lose recent writes on a system crash") + "\n" +
         "  -checklmdb=<dir>       " + _("Check an offline LMDB environment (for example a backup) and exit") + "\n" +
         "  -checklmdbdeep         " + _("With -checklmdb, read every record instead of only the environment metadata") + "\n" +
         "  -walletbackend=<b>     " + _("Wallet backend: lmdb or bdb (default: lmdb)") + "\n" +
