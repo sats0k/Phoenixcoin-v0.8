@@ -71,7 +71,10 @@ void StartShutdown() {
 
 // Set when startup fails.  Shutdown() is also the normal signal-driven exit
 // path, so the status is recorded explicitly instead of inferring it there.
+// Only the non-GUI client turns it into a process exit status.
+#ifndef QT_GUI
 static bool fStartupFailed = false;
+#endif
 
 void Shutdown(void */*parg*/) {
     static CCriticalSection cs_Shutdown;
