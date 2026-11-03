@@ -197,7 +197,7 @@ enum ChainIndexStartupAction
  */
 ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB, bool fLMDBEmpty);
 
-/** Returns the chain index backend selected by -dbbackend (default: BDB). */
+/** Returns the chain index backend selected by -dbbackend (default: LMDB). */
 DBBackend GetConfiguredDBBackend();
 
 /** Maximum supported -lmdbmapsize value in MiB for this build. */
@@ -254,8 +254,8 @@ bool HasLMDBChainIndex(const std::filesystem::path& dir);
 /**
  * Checks that the configured backend can use the chain index in dir.  A marker
  * records which backend owns the index, and a legacy LMDB index without a
- * marker is still treated as authoritative.  This prevents a default BDB start
- * from silently loading a stale blkindex.dat after an LMDB migration.
+ * marker is still treated as authoritative.  This prevents a BDB start from
+ * silently loading a stale blkindex.dat after an LMDB migration.
  */
 bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
 
@@ -265,7 +265,7 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend 
  * blkindex.dat on first use.  The Berkeley DB file is left untouched.
  *
  * A blkindex.backend marker records that the data directory has moved to LMDB
- * so that a later default BDB start cannot silently load the stale index.
+ * so that a later BDB start cannot silently load the stale index.
  */
 bool InitLMDBChainDB();
 void CloseLMDBChainDB();

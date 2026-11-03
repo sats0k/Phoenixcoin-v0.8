@@ -94,6 +94,12 @@ Changes since v0.8.3.
   `Wallet backend: LMDB`. Berkeley DB remains available for compatibility
   and recovery with `-walletbackend=bdb`; there is no implicit fallback
   between the two backends. See `doc/lmdb.md`.
+- LMDB is now the production default for the chain index:
+  `-dbbackend` defaults to `lmdb` instead of `bdb`. An existing
+  `blkindex.dat` is copied into `<datadir>/blkindex/` on the first start,
+  and startup prints `Chain index backend: LMDB`. Berkeley DB remains
+  available for compatibility and recovery with `-dbbackend=bdb`; there is
+  no implicit fallback between the two backends.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

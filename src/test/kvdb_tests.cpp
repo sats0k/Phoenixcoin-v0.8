@@ -888,7 +888,7 @@ void RunChainBackendMarker(const std::string &tag)
     BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
     BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
 
-    // Switching to LMDB must block a later default BDB start.
+    // Switching to LMDB must block a later BDB start.
     BOOST_REQUIRE(WriteChainBackendMarker(dir, "lmdb"));
     BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "lmdb");
@@ -918,7 +918,7 @@ void RunChainBackendMarker(const std::string &tag)
     BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
 
     // A truncated placeholder is an incomplete environment, not an index.
-    // Fail closed so a default BDB start cannot silently use a stale
+    // Fail closed so a BDB start cannot silently use a stale
     // blkindex.dat while the user believes the LMDB index is present.
     std::filesystem::resize_file(legacy / "blkindex" / "data.mdb", 0, ec);
     BOOST_REQUIRE(!ec);
@@ -2308,6 +2308,23 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_nosync_crash_consistency)
 BOOST_AUTO_TEST_CASE(chain_backend_marker)
 {
     RunChainBackendMarker("chain_backend_marker");
+}
+
+BOOST_AUTO_TEST_CASE(chain_backend_default_lmdb)
+{
+    ArgOverride backend("-dbbackend");
+
+    // No explicit switch: production selects LMDB.
+    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_LMDB);
+
+    // Explicit Berkeley DB remains available for compatibility and recovery.
+    backend.Set("bdb");
+    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_BDB);
+    backend.Set("BDB");
+    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_BDB);
+
+    backend.Set("lmdb");
+    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_LMDB);
 }
 
 BOOST_AUTO_TEST_CASE(bdb_kvdb_large_value_iteration)

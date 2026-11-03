@@ -1,20 +1,19 @@
 # LMDB chain index backend
 
 Phoenixcoin stores the block index and the transaction/UTXO index in the chain
-database.  Berkeley DB (`blkindex.dat`) remains the default backend; LMDB can be
-selected explicitly with `-dbbackend=lmdb`.
+database.  LMDB is the production default; Berkeley DB (`blkindex.dat`) remains
+available with `-dbbackend=bdb` for compatibility and recovery.
 
 The wallet has a separate backend switch.  LMDB is the production default;
 Berkeley DB `wallet.dat` remains available with `-walletbackend=bdb` for
 compatibility and recovery.  See [Wallet backend](#wallet-backend) below.
 Address storage (`peers.dat`) is unaffected.
 
-## Enabling LMDB
+## Chain index backend
 
 1. Stop Phoenixcoin.
 2. Back up the data directory.
-3. Start with `-dbbackend=lmdb` (or put `dbbackend=lmdb` in
-   `phoenixcoin.conf`).
+3. Start with `-dbbackend=lmdb` (or leave the default in place).
 
 On the first LMDB start Phoenixcoin copies every record from an existing
 `blkindex.dat` into `<datadir>/blkindex/`.  The copy runs in a single LMDB
@@ -24,7 +23,7 @@ start.  `blkindex.dat` is left in place and is not modified.
 After a successful migration Phoenixcoin writes `<datadir>/blkindex.backend`
 containing `lmdb`.  This marker makes the data directory's backend explicit:
 
-- starting without `-dbbackend=lmdb` fails with a clear error instead of
+- starting with `-dbbackend=bdb` fails with a clear error instead of
   silently loading the stale `blkindex.dat`;
 - a datadir that already contains a non-empty `blkindex/data.mdb` but no marker
   (created by an older development build) is treated as an LMDB datadir for the
@@ -38,10 +37,10 @@ containing `lmdb`.  This marker makes the data directory's backend explicit:
 ## Returning to Berkeley DB
 
 Back up the data directory, then remove both `<datadir>/blkindex` and
-`<datadir>/blkindex.backend`.  Phoenixcoin will start with Berkeley DB again and
-use the untouched `blkindex.dat`.  Any blocks imported while LMDB was active
-must be re-downloaded or re-imported, because that work only exists in the LMDB
-index.
+`<datadir>/blkindex.backend` and start with `-dbbackend=bdb`.  Phoenixcoin will
+start with Berkeley DB again and use the untouched `blkindex.dat`.  Any blocks
+imported while LMDB was active must be re-downloaded or re-imported, because
+that work only exists in the LMDB index.
 
 ## Wallet backend
 
@@ -266,7 +265,7 @@ known address proves the data is the state you intended to keep.
 
 ## Options
 
-- `-dbbackend=lmdb|bdb` — chain index backend, default `bdb`.
+- `-dbbackend=lmdb|bdb` — chain index backend, default `lmdb`.
 - `-lmdbmapsize=<MiB>` — initial size of the LMDB chain index map.  The default
   is 4096 MiB on 64-bit platforms and 1024 MiB elsewhere.  If the existing
   environment is larger it is reopened at its current size.  The value must be a

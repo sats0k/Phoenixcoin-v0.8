@@ -617,15 +617,16 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
 - `regression_lmdb_chain_migration.sh` — full Berkeley DB to LMDB chain
-  index handoff: a BDB-backed daemon accepts real mainnet blocks 1-2,
-  the next start with `-dbbackend=lmdb` migrates every block-index and
-  transaction record and writes the `blkindex.backend` marker, the LMDB
-  daemon connects blocks 3-4 through the normal `submitblock` path, and
-  two further restarts preserve the tip, height, block bytes and
-  transaction lookups. Raw record counts are compared with `db_dump` and
-  `mdb_dump` when those tools are installed; otherwise those particular
-  checks are skipped. The RPC port is allocated dynamically, so concurrent
-  runs do not collide, and can be pinned with `PXC_REGTEST_PORT`.
+  index handoff: a daemon started with `-dbbackend=bdb` accepts real mainnet
+  blocks 1-2, the next start with the LMDB default (or explicit
+  `-dbbackend=lmdb`) migrates every block-index and transaction record and
+  writes the `blkindex.backend` marker, the LMDB daemon connects blocks 3-4
+  through the normal `submitblock` path, and two further restarts preserve
+  the tip, height, block bytes and transaction lookups. Raw record counts
+  are compared with `db_dump` and `mdb_dump` when those tools are installed;
+  otherwise those particular checks are skipped. The RPC port is allocated
+  dynamically, so concurrent runs do not collide, and can be pinned with
+  `PXC_REGTEST_PORT`.
 - `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
   copied, keys and labels survive, the migration runs once, an explicit BDB

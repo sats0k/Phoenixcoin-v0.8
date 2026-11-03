@@ -223,8 +223,10 @@ check_dump_key_present() {
 }
 
 echo "== step 1: populate a BDB chain index with real blocks =="
-start_node -walletbackend=bdb || { echo "FAILED: could not start the BDB daemon"; exit 1; }
+start_node -dbbackend=bdb -walletbackend=bdb || { echo "FAILED: could not start the BDB daemon"; exit 1; }
 
+check "startup selected the Berkeley DB chain backend" \
+    "$(grep -q '^Chain index backend: Berkeley DB$' "$DATADIR/debug.log"; echo $?)"
 check "starts with the BDB backend" \
     "$([ -f "$DATADIR/blkindex.dat" ] && [ ! -e "$DATADIR/blkindex" ] && [ ! -e "$DATADIR/blkindex.backend" ]; echo $?)"
 check_height_and_tip 0 "$GENESIS_HASH" "BDB"
@@ -253,6 +255,8 @@ fi
 echo "== step 2: migrate to LMDB on startup =="
 start_node -dbbackend=lmdb -walletbackend=bdb || { echo "FAILED: could not start the LMDB daemon"; exit 1; }
 
+check "startup selected the LMDB chain backend" \
+    "$(grep -q '^Chain index backend: LMDB$' "$DATADIR/debug.log"; echo $?)"
 check "blkindex.backend marker says lmdb" \
     "$([ "$(cat "$DATADIR/blkindex.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
 check "LMDB chain index directory exists" \

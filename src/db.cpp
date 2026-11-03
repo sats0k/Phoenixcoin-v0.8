@@ -360,8 +360,8 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend 
     }
 
     // Older LMDB builds did not write a marker.  Treat an existing LMDB chain
-    // index as authoritative so that a default BDB start cannot silently load
-    // the stale blkindex.dat.
+    // index as authoritative so that a BDB start cannot silently load the
+    // stale blkindex.dat.
     const LMDBOnDiskState state = InspectLMDBEnvironmentOnDisk(dir / "blkindex");
     if (state.fDirectoryExists && !state.fComplete)
         return error("Found an incomplete LMDB chain index at %s: %s. "
@@ -542,7 +542,7 @@ DBBackend GetConfiguredWalletBackend()
 
 DBBackend GetConfiguredDBBackend()
 {
-    std::string strBackend = GetArg("-dbbackend", "bdb");
+    std::string strBackend = GetArg("-dbbackend", "lmdb");
     std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
@@ -1264,10 +1264,13 @@ bool InitLMDBChainDB()
     if (bitdb.IsMock())
         return true;
 
-    if (!CheckChainBackendCompatibility(GetDataDir(), GetConfiguredDBBackend()))
+    const DBBackend configured = GetConfiguredDBBackend();
+    printf("Chain index backend: %s\n",
+           configured == DB_BACKEND_LMDB ? "LMDB" : "Berkeley DB");
+    if (!CheckChainBackendCompatibility(GetDataDir(), configured))
         return false;
 
-    if (GetConfiguredDBBackend() != DB_BACKEND_LMDB)
+    if (configured != DB_BACKEND_LMDB)
         return true;
 
     const std::filesystem::path pathChain = GetDataDir() / "blkindex";

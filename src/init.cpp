@@ -343,7 +343,7 @@ std::string HelpMessage()
 #endif
 #endif
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
-        "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
+        "  -dbbackend=<backend>   " + _("Chain index backend: lmdb or bdb (default: lmdb)") + "\n" +
         "  -lmdbmapsize=<n>       " + _("Initial LMDB chain map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit)") + "\n" +
         "  -lmdbmaxmapsize=<n>    " + _("Automatic LMDB chain map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
         "  -lmdbwalletsize=<n>    " + _("Initial LMDB wallet map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
@@ -468,7 +468,7 @@ bool AppInit2()
     if(strCpMode == "advisory") CheckpointsMode = Checkpoints::ADVISORY;
     if(strCpMode == "permissive") CheckpointsMode = Checkpoints::PERMISSIVE;
 
-    std::string strDBBackend = GetArg("-dbbackend", "bdb");
+    std::string strDBBackend = GetArg("-dbbackend", "lmdb");
     std::transform(strDBBackend.begin(), strDBBackend.end(), strDBBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     if (strDBBackend != "bdb" && strDBBackend != "lmdb")
