@@ -45,6 +45,10 @@ BDB_LIB_SUFFIX =
 BDB_INCLUDE_PATH =
 BDB_LIB_PATH =
 
+LMDB_LIB_SUFFIX =
+LMDB_INCLUDE_PATH =
+LMDB_LIB_PATH =
+
 OPENSSL_LIB_SUFFIX =
 OPENSSL_INCLUDE_PATH =
 OPENSSL_LIB_PATH =
@@ -54,10 +58,12 @@ DEFS = -DBOOST_SPIRIT_THREADSAFE
 TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
 
 INCS = $(addprefix -I,$(CURDIR) $(CURDIR)/obj \
-$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH))
+$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(LMDB_INCLUDE_PATH) \
+$(OPENSSL_INCLUDE_PATH))
 
 LIBS = -L$(DEPSDIR)/lib \
-$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH))
+$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(LMDB_LIB_PATH) \
+$(OPENSSL_LIB_PATH))
 
 ifdef DYNAMIC
 LIBS += \
@@ -74,7 +80,7 @@ LIBS += \
     -l:libboost_thread$(BOOST_LIB_SUFFIX).a \
     -l:libboost_chrono$(BOOST_LIB_SUFFIX).a \
     -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
-    -llmdb \
+    -l:liblmdb$(LMDB_LIB_SUFFIX).a \
     -l:libssl$(OPENSSL_LIB_SUFFIX).a \
     -l:libcrypto$(OPENSSL_LIB_SUFFIX).a
 TESTLIBS += -l:libboost_unit_test_framework$(BOOST_LIB_SUFFIX).a

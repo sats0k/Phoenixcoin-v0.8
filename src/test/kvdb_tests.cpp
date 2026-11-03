@@ -2027,9 +2027,16 @@ void RunLMDBEnvironmentVerify(const std::string &tag)
     std::filesystem::resize_file(truncated / "data.mdb", nMetaBytes, ec);
     BOOST_REQUIRE(!ec);
     BOOST_CHECK(!VerifyLMDBEnvironment(truncated.string(), false, verify));
-    BOOST_CHECK(verify.fOpened);
-    BOOST_CHECK_GT(verify.nRequiredBytes, verify.nDataFileBytes);
     BOOST_CHECK(!verify.fComplete);
+    if (verify.fOpened) {
+        // LMDB 0.9.x opens both meta pages and leaves the size check to us.
+        BOOST_CHECK_GT(verify.nRequiredBytes, verify.nDataFileBytes);
+    } else {
+        // Newer LMDB releases reject the short file in mdb_env_open() before
+        // the meta page can be inspected.  It is still a clean, reported
+        // failure rather than a SIGBUS.
+        BOOST_CHECK(!verify.strError.empty());
+    }
 
     // Zeroed meta pages are not a valid LMDB file.
     const std::filesystem::path corrupt = root / "corrupt";

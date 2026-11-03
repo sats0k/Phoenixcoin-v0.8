@@ -56,6 +56,12 @@ Changes since v0.8.3.
   `sprintf()` calls that formatted the hex representation of a `uint256`
   and the Boost version string became `snprintf()` calls with the size of
   the target buffer, so neither can write past it.
+- `src/Makefile.linux` now links LMDB from `liblmdb.a` when `STATIC=1`.
+  The static branch had used `-llmdb`, so a system with both
+  `/usr/lib/liblmdb.so` and `/usr/lib/liblmdb.a` still produced a binary
+  with a shared LMDB dependency. `LMDB_INCLUDE_PATH`, `LMDB_LIB_PATH` and
+  `LMDB_LIB_SUFFIX` are available for non-default installations, matching
+  the Berkeley DB variables.
 - The hybrid objects in `src/Makefile.linux` rebuilt only when their own
   `.cpp` changed: their rules carried no `-MMD`, so editing a shared
   header such as `wallet.h` rebuilt the rest of the binary but left

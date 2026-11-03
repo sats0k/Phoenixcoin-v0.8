@@ -300,7 +300,7 @@ run_checklmdb "$TRUNC" yes "$TRUNC_OUT"
 check "-checklmdb rejects a truncated data.mdb" \
     "$([ $? -ne 0 ]; echo $?)"
 check "-checklmdb explains the truncation" \
-    "$(grep -qi 'truncated' "$TRUNC_OUT"; echo $?)"
+    "$(grep -Eqi 'truncated|cannot open data.mdb' "$TRUNC_OUT"; echo $?)"
 RPC_TRUNC=$(rpc checklmdb "$TRUNC" true 2>/dev/null)
 check "checklmdb RPC rejects a truncated data.mdb" \
     "$(printf '%s' "$RPC_TRUNC" | json_checklmdb_failed 2>/dev/null; echo $?)"
