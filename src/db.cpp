@@ -2232,6 +2232,81 @@ bool BackupLMDBWallet(const std::string& strDest)
     return true;
 }
 
+bool FlushWalletDB(const std::string& strFile)
+{
+    if (g_fLMDBWalletEnabled)
+    {
+        FlushLMDBWallet(true);
+        return true;
+    }
+
+    TRY_LOCK(bitdb.cs_db, lockDb);
+    if (!lockDb)
+        return false;
+
+    // Don't flush while any database is in use.
+    int nRefCount = 0;
+    for (const auto& entry : bitdb.mapFileUseCount)
+        nRefCount += entry.second;
+    if (nRefCount != 0 || fShutdown)
+        return false;
+
+    const auto mi = bitdb.mapFileUseCount.find(strFile);
+    if (mi == bitdb.mapFileUseCount.end())
+        return false;
+
+    printf("Flushing wallet.dat\n");
+    const int64 nStart = GetTimeMillis();
+
+    // Flush wallet.dat so it is self-contained.
+    bitdb.CloseDb(strFile);
+    bitdb.CheckpointLSN(strFile);
+    bitdb.mapFileUseCount.erase(mi);
+
+    printf("Flushed wallet.dat %" PRI64d "ms\n", GetTimeMillis() - nStart);
+    return true;
+}
+
+bool BackupWalletDB(const std::string& strFile, const std::string& strDest)
+{
+    if (g_fLMDBWalletEnabled)
+        return BackupLMDBWallet(strDest);
+
+    while (!fShutdown)
+    {
+        {
+            LOCK(bitdb.cs_db);
+            const auto mi = bitdb.mapFileUseCount.find(strFile);
+            if (mi == bitdb.mapFileUseCount.end() || mi->second == 0)
+            {
+                // Flush log data to the dat file.
+                bitdb.CloseDb(strFile);
+                bitdb.CheckpointLSN(strFile);
+                bitdb.mapFileUseCount.erase(mi);
+
+                // Copy wallet.dat.
+                std::filesystem::path pathSrc = GetDataDir() / strFile;
+                std::filesystem::path pathDest(strDest);
+                if (std::filesystem::is_directory(pathDest))
+                    pathDest /= strFile;
+
+                try {
+                    std::filesystem::copy_file(pathSrc, pathDest,
+                     std::filesystem::copy_options::overwrite_existing);
+                    printf("copied wallet.dat to %s\n", pathDest.string().c_str());
+                    return true;
+                } catch (const std::filesystem::filesystem_error &e) {
+                    printf("error copying wallet.dat to %s - %s\n",
+                           pathDest.string().c_str(), e.what());
+                    return false;
+                }
+            }
+        }
+        Sleep(100);
+    }
+    return false;
+}
+
 void CDBEnv::CloseDb(const string& strFile)
 {
     {

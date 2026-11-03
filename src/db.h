@@ -40,6 +40,16 @@ extern unsigned int nWalletDBUpdated;
 void ThreadFlushWalletDB(void* parg);
 bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
+/**
+ * Flushes the active wallet database to disk.  Returns false when a Berkeley
+ * DB flush was skipped because the environment was busy; callers should retry
+ * on the next flush interval.  Hides the backend from the wallet loop.
+ */
+bool FlushWalletDB(const std::string& strFile);
+
+/** Copies the active wallet database to strDest. */
+bool BackupWalletDB(const std::string& strFile, const std::string& strDest);
+
 /** Copies the active LMDB wallet to strDest with mdb_env_copy2(). */
 bool BackupLMDBWallet(const std::string& strDest);
 

@@ -554,43 +554,9 @@ void ThreadFlushWalletDB(void* parg)
 
         if (nLastFlushed != nWalletDBUpdated && GetTime() - nLastWalletUpdate >= 2)
         {
-            if (IsLMDBWalletEnabled())
-            {
-                nLastFlushed = nWalletDBUpdated;
-                FlushLMDBWallet(true);
-                continue;
-            }
-
-            TRY_LOCK(bitdb.cs_db,lockDb);
-            if (lockDb)
-            {
-                // Don't do this if any databases are in use
-                int nRefCount = 0;
-                map<string, int>::iterator mi = bitdb.mapFileUseCount.begin();
-                while (mi != bitdb.mapFileUseCount.end())
-                {
-                    nRefCount += (*mi).second;
-                    mi++;
-                }
-
-                if (nRefCount == 0 && !fShutdown)
-                {
-                    map<string, int>::iterator mi = bitdb.mapFileUseCount.find(strFile);
-                    if (mi != bitdb.mapFileUseCount.end())
-                    {
-                        printf("Flushing wallet.dat\n");
-                        nLastFlushed = nWalletDBUpdated;
-                        int64 nStart = GetTimeMillis();
-
-                        // Flush wallet.dat so it's self contained
-                        bitdb.CloseDb(strFile);
-                        bitdb.CheckpointLSN(strFile);
-
-                        bitdb.mapFileUseCount.erase(mi++);
-                        printf("Flushed wallet.dat %" PRI64d "ms\n", GetTimeMillis() - nStart);
-                    }
-                }
-            }
+            const unsigned int nUpdated = nWalletDBUpdated;
+            if (FlushWalletDB(strFile))
+                nLastFlushed = nUpdated;
         }
     }
 }
@@ -599,38 +565,7 @@ bool BackupWallet(const CWallet& wallet, const string& strDest)
 {
     if (!wallet.fFileBacked)
         return false;
-    if (IsLMDBWalletEnabled())
-        return BackupLMDBWallet(strDest);
-    while (!fShutdown)
-    {
-        {
-            LOCK(bitdb.cs_db);
-            if (!bitdb.mapFileUseCount.count(wallet.strWalletFile) || bitdb.mapFileUseCount[wallet.strWalletFile] == 0)
-            {
-                // Flush log data to the dat file
-                bitdb.CloseDb(wallet.strWalletFile);
-                bitdb.CheckpointLSN(wallet.strWalletFile);
-                bitdb.mapFileUseCount.erase(wallet.strWalletFile);
-
-                // Copy wallet.dat
-                std::filesystem::path pathSrc = GetDataDir() / wallet.strWalletFile;
-                std::filesystem::path pathDest(strDest);
-                if(std::filesystem::is_directory(pathDest)) pathDest /= wallet.strWalletFile;
-
-                try {
-                    std::filesystem::copy_file(pathSrc, pathDest,
-                     std::filesystem::copy_options::overwrite_existing);
-                    printf("copied wallet.dat to %s\n", pathDest.string().c_str());
-                    return true;
-                } catch(const std::filesystem::filesystem_error &e) {
-                    printf("error copying wallet.dat to %s - %s\n", pathDest.string().c_str(), e.what());
-                    return false;
-                }
-            }
-        }
-        Sleep(100);
-    }
-    return false;
+    return BackupWalletDB(wallet.strWalletFile, strDest);
 }
 
 //

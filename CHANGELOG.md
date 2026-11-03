@@ -100,6 +100,11 @@ Changes since v0.8.3.
   and startup prints `Chain index backend: LMDB`. Berkeley DB remains
   available for compatibility and recovery with `-dbbackend=bdb`; there is
   no implicit fallback between the two backends.
+- Wallet flushing and backup now dispatch through `FlushWalletDB()` and
+  `BackupWalletDB()` in the database layer instead of branching on
+  `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs
+  to know which backend is underneath; Berkeley DB and LMDB keep their
+  existing on-disk behaviour.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI
