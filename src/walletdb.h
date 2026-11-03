@@ -131,27 +131,43 @@ public:
     bool WriteKey(const CPubKey &vchPubKey, const CPrivKey &vchPrivKey, const CKeyMetadata &keyMeta) {
         nWalletDBUpdated++;
 
-        if(!Write(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta))
-          return(false);
+        // Keep the metadata and the key in one transaction so a crash cannot
+        // leave a key without its creation time (or the reverse).  When the
+        // caller already holds a transaction this joins it instead.
+        const bool fOwnTxn = !IsTransactionActive();
+        if (fOwnTxn && !TxnBegin())
+            return false;
 
-        return(Write(std::make_pair(std::string("key"), vchPubKey.Raw()), vchPrivKey, false));
+        if(!Write(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta) ||
+           !Write(std::make_pair(std::string("key"), vchPubKey.Raw()), vchPrivKey, false)) {
+            if (fOwnTxn)
+                TxnAbort();
+            return(false);
+        }
+
+        return(!fOwnTxn || TxnCommit());
     }
 
     bool WriteCryptedKey(const CPubKey &vchPubKey, const std::vector<uchar> &vchCryptedSecret,
       const CKeyMetadata &keyMeta) {
         nWalletDBUpdated++;
 
-        if(!Write(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta))
-          return(false);
+        // Metadata, the encrypted secret and the removal of any plaintext
+        // copies form one logical update.
+        const bool fOwnTxn = !IsTransactionActive();
+        if (fOwnTxn && !TxnBegin())
+            return false;
 
-        if(!Write(std::make_pair(std::string("ckey"), vchPubKey.Raw()), vchCryptedSecret, false))
-          return(false);
+        if(!Write(std::make_pair(std::string("keymeta"), vchPubKey), keyMeta) ||
+           !Write(std::make_pair(std::string("ckey"), vchPubKey.Raw()), vchCryptedSecret, false) ||
+           !Erase(std::make_pair(std::string("key"), vchPubKey.Raw())) ||
+           !Erase(std::make_pair(std::string("wkey"), vchPubKey.Raw()))) {
+            if (fOwnTxn)
+                TxnAbort();
+            return(false);
+        }
 
-        /* Erase unencrypted keys */
-        Erase(std::make_pair(std::string("key"), vchPubKey.Raw()));
-        Erase(std::make_pair(std::string("wkey"), vchPubKey.Raw()));
-
-        return(true);
+        return(!fOwnTxn || TxnCommit());
     }
 
     bool WriteMasterKey(unsigned int nID, const CMasterKey& kMasterKey)

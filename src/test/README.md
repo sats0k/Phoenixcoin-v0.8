@@ -492,6 +492,18 @@ one-shot, inert until armed, and apply only to the LMDB wallet database
   unchanged after each abort and restart; the next top-up must commit the
   whole pool.
 
+Standalone key writes are themselves atomic: `WriteKey` commits `keymeta` and
+`key` in one transaction, while `WriteCryptedKey` commits `keymeta`, `ckey`
+and both plaintext erasures in one transaction.  A keypool refill batches
+further: `NewKeyPool` commits the cleared pool and the new pool as one
+transaction per phase, and `TopUpKeyPool` commits the whole batch at once.
+Generated keys are written through the refill's existing `CWalletDB`, so the
+batch shares one LMDB writer.  `WriteKey` and `WriteCryptedKey` join an
+already open transaction rather than nesting one.  The crash hook keeps the
+same record-class coverage: `wallet-write-before-commit:<type>` fires as each
+record is staged, while `wallet-write-after-commit:<type>` is deferred until
+the entire transaction is durable.
+
 `CWallet::EnsureHybridKeyPool` was reworked to make the second test possible:
 it stages and encrypts the entire batch, writes the ECDSA and hybrid records
 in a single transaction, and registers the keys in memory only after that

@@ -223,10 +223,13 @@ public:
     void ListLockedCoins(std::vector<COutPoint> &vOutpts);
 
     // keystore implementation
-    // Generate a new key
-    CPubKey GenerateNewKey();
+    // Generate a new key.  When pwalletdb is supplied the key is written
+    // through that handle, which lets a keypool refill batch the whole batch
+    // into one transaction.
+    CPubKey GenerateNewKey(CWalletDB* pwalletdb = nullptr);
     // Adds a key to the store, and saves it to disk.
     bool AddKey(const CKey& key);
+    bool AddKey(const CKey& key, CWalletDB* pwalletdb);
     // Adds a key to the store, without saving it to disk (used by LoadWallet)
     bool LoadKey(const CKey& key) { return CCryptoKeyStore::AddKey(key); }
     /* Load metadata used by LoadWallet() */
@@ -270,6 +273,10 @@ public:
 
     // Adds an encrypted key to the store, and saves it to disk.
     bool AddCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret);
+    // Persists through an existing handle, used by batched key writers.
+    bool AddCryptedKey(const CPubKey &vchPubKey,
+                       const std::vector<unsigned char> &vchCryptedSecret,
+                       CWalletDB* pwalletdb);
     // Adds an encrypted key to the store, without saving it to disk (used by LoadWallet)
     bool LoadCryptedKey(const CPubKey &vchPubKey, const std::vector<unsigned char> &vchCryptedSecret) { SetMinVersion(FEATURE_WALLETCRYPT); return CCryptoKeyStore::AddCryptedKey(vchPubKey, vchCryptedSecret); }
     bool AddCScript(const CScript& redeemScript);

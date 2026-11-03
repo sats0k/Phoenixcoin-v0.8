@@ -1033,6 +1033,7 @@ void CDB::Close()
             kvTxn->Abort();
             kvTxn.reset();
         }
+        kvTxnRecordTypes.clear();
         if (fUseKVWallet)
         {
             fUseKVWallet = false;
@@ -1082,7 +1083,19 @@ bool CDB::ReadKV(const CDBKey& key, CDBValue& value)
 bool CDB::WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite)
 {
     if (kvTxn)
-        return kvTxn->Write(key, value, fOverwrite);
+    {
+        bool fWritten = kvTxn->Write(key, value, fOverwrite);
+        if (fUseKVWallet && fWritten)
+        {
+            const std::string strType = TestWalletRecordType(key);
+            // The record is staged but not durable yet.  A kill here must
+            // leave the whole transaction rolled back.
+            TestWalletCrashPoint(("wallet-write-before-commit:" +
+                                  strType).c_str());
+            kvTxnRecordTypes.push_back(strType);
+        }
+        return fWritten;
+    }
 
     // Outside an explicit transaction, commit every write so readers see it.
     std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(false);
@@ -1102,7 +1115,17 @@ bool CDB::WriteKV(const CDBKey& key, const CDBValue& value, bool fOverwrite)
 bool CDB::EraseKV(const CDBKey& key)
 {
     if (kvTxn)
-        return kvTxn->Erase(key);
+    {
+        bool fErased = kvTxn->Erase(key);
+        if (fUseKVWallet && fErased)
+        {
+            const std::string strType = TestWalletRecordType(key);
+            TestWalletCrashPoint(("wallet-write-before-commit:" +
+                                  strType).c_str());
+            kvTxnRecordTypes.push_back(strType);
+        }
+        return fErased;
+    }
 
     std::unique_ptr<CDBTransaction> txn = BeginKVTransaction(false);
     if (!txn)

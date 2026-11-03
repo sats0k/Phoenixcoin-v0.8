@@ -127,6 +127,17 @@ Changes since v0.8.3.
   `DB_TXN_WRITE_NOSYNC` behaviour; that remains available as an explicit
   opt-in for bulk import and benchmarking.  `MDB_WRITEMAP`, `MDB_MAPASYNC`
   and `MDB_NOMETASYNC` are not enabled.
+- Wallet writes are grouped into fewer LMDB transactions without weakening
+  durability. `WriteKey` commits `keymeta` and `key` together, and
+  `WriteCryptedKey` commits `keymeta`, `ckey` and the plaintext removal
+  together. `NewKeyPool` commits each refill phase as one transaction and
+  `TopUpKeyPool` commits the whole batch at once, instead of one commit per
+  key; keys generated during a refill are written through the refill's
+  existing database handle, so no second LMDB writer is opened. Every
+  remaining commit still fsyncs by default, and the crash regression keeps
+  its per-record coverage through the staged
+  `wallet-write-before-commit:<type>` hook and the post-commit
+  `wallet-write-after-commit:<type>` hook.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

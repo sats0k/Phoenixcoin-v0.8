@@ -31,7 +31,7 @@ struct CompareValueOnly
     }
 };
 
-CPubKey CWallet::GenerateNewKey()
+CPubKey CWallet::GenerateNewKey(CWalletDB* pwalletdb)
 {
     bool fCompressed = CanSupportFeature(FEATURE_COMPRPUBKEY); // default to compressed public keys if we want 0.6.0 wallets
 
@@ -41,7 +41,7 @@ CPubKey CWallet::GenerateNewKey()
 
     // Compressed public keys were introduced in version 0.6.0
     if (fCompressed)
-        SetMinVersion(FEATURE_COMPRPUBKEY);
+        SetMinVersion(FEATURE_COMPRPUBKEY, pwalletdb);
 
     CPubKey pubkey = key.GetPubKey();
 
@@ -50,7 +50,7 @@ CPubKey CWallet::GenerateNewKey()
     mapKeyMetadata[pubkey.GetID()] = CKeyMetadata(nCreationTime);
     UpdateTimeFirstKey(nCreationTime);
 
-    if(!AddKey(key))
+    if(!AddKey(key, pwalletdb))
       throw(std::runtime_error("CWallet::GenerateNewKey() : AddKey() failed"));
 
     return(pubkey);
@@ -58,26 +58,56 @@ CPubKey CWallet::GenerateNewKey()
 
 bool CWallet::AddKey(const CKey& key)
 {
+    return AddKey(key, nullptr);
+}
+
+bool CWallet::AddKey(const CKey& key, CWalletDB* pwalletdb)
+{
     CPubKey pubkey = key.GetPubKey();
     CKeyID keyID = pubkey.GetID();
 
-    if (!CCryptoKeyStore::AddKey(key))
-        return false;
+    if (!IsCrypted())
+    {
+        if (!CCryptoKeyStore::AddKey(key))
+            return false;
 
-    if (!fFileBacked)
-        return true;
+        if (!fFileBacked)
+            return true;
 
-    if (!IsCrypted()) {
+        if (pwalletdb)
+            return pwalletdb->WriteKey(pubkey, key.GetPrivKey(),
+                                       mapKeyMetadata[keyID]);
         return CWalletDB(strWalletFile).WriteKey(
             pubkey,
             key.GetPrivKey(),
             mapKeyMetadata[keyID]);
     }
 
+    // Encrypted wallet: mirror CCryptoKeyStore::AddKey(), but persist the
+    // "ckey" record through the caller's handle when one is supplied.  A
+    // keypool refill holds a single transaction, so opening a second writer
+    // from AddCryptedKey() would fail instead of joining that transaction.
+    {
+        LOCK(cs_KeyStore);
+        if (IsLocked())
+            return false;
+
+        std::vector<unsigned char> vchCryptedSecret;
+        if (!EncryptKeySecret(key, vchCryptedSecret))
+            return false;
+        if (!AddCryptedKey(pubkey, vchCryptedSecret, pwalletdb))
+            return false;
+    }
+
     return true;
 }
 
 bool CWallet::AddCryptedKey(const CPubKey &vchPubKey, const vector<uchar> &vchCryptedSecret) {
+    return AddCryptedKey(vchPubKey, vchCryptedSecret, nullptr);
+}
+
+bool CWallet::AddCryptedKey(const CPubKey &vchPubKey, const vector<uchar> &vchCryptedSecret,
+                            CWalletDB* pwalletdb) {
 
     if(!CCryptoKeyStore::AddCryptedKey(vchPubKey, vchCryptedSecret))
       return(false);
@@ -87,8 +117,9 @@ bool CWallet::AddCryptedKey(const CPubKey &vchPubKey, const vector<uchar> &vchCr
 
     {
         LOCK(cs_wallet);
-        if(pwalletdbEncryption) {
-            return(pwalletdbEncryption->WriteCryptedKey(vchPubKey, vchCryptedSecret,
+        CWalletDB* pdb = pwalletdb ? pwalletdb : pwalletdbEncryption;
+        if(pdb) {
+            return(pdb->WriteCryptedKey(vchPubKey, vchCryptedSecret,
               mapKeyMetadata[vchPubKey.GetID()]));
         } else {
             return(CWalletDB(strWalletFile).WriteCryptedKey(vchPubKey,
@@ -2028,8 +2059,30 @@ bool CWallet::NewKeyPool(unsigned int nSize)
     {
         LOCK(cs_wallet);
         CWalletDB walletdb(strWalletFile);
+
+        // Clear the old pool first.  The erase and the refill are separate
+        // transactions so a locked wallet keeps the previous behaviour: the
+        // old entries are gone and nothing new is generated.
+        if (!walletdb.TxnBegin())
+        {
+            printf("CWallet::NewKeyPool() : TxnBegin failed\n");
+            return false;
+        }
         for (int64 nIndex : setKeyPool)
-            walletdb.ErasePool(nIndex);
+        {
+            if (!walletdb.ErasePool(nIndex))
+            {
+                printf("CWallet::NewKeyPool() : erasing keypool entry %" PRI64d " failed\n",
+                       nIndex);
+                walletdb.TxnAbort();
+                return false;
+            }
+        }
+        if (!walletdb.TxnCommit())
+        {
+            printf("CWallet::NewKeyPool() : committing the cleared keypool failed\n");
+            return false;
+        }
         setKeyPool.clear();
 
         if (IsLocked())
@@ -2037,11 +2090,36 @@ bool CWallet::NewKeyPool(unsigned int nSize)
 
         int64 nKeys = nSize > 0 ? (int64)nSize
                                 : max(GetArg("-keypool", 100), (int64)0);
+
+        // One transaction for the whole refill.  Each key still gets its
+        // keymeta + key pair, but they are committed together with the pool
+        // entry instead of fsyncing once per record.
+        if (!walletdb.TxnBegin())
+        {
+            printf("CWallet::NewKeyPool() : TxnBegin failed\n");
+            return false;
+        }
+        std::vector<int64> vNew;
         for (int i = 0; i < nKeys; i++)
         {
             int64 nIndex = i+1;
-            walletdb.WritePool(nIndex, CKeyPool(GenerateNewKey()));
+            if (!walletdb.WritePool(nIndex, CKeyPool(GenerateNewKey(&walletdb))))
+            {
+                printf("CWallet::NewKeyPool() : writing generated key failed\n");
+                walletdb.TxnAbort();
+                for (int64 nAdded : vNew)
+                    setKeyPool.erase(nAdded);
+                return false;
+            }
             setKeyPool.insert(nIndex);
+            vNew.push_back(nIndex);
+        }
+        if (!walletdb.TxnCommit())
+        {
+            printf("CWallet::NewKeyPool() : committing the new keys failed\n");
+            for (int64 nAdded : vNew)
+                setKeyPool.erase(nAdded);
+            return false;
         }
         printf("CWallet::NewKeyPool wrote %" PRI64d " new keys\n", nKeys);
     }
@@ -2057,22 +2135,44 @@ bool CWallet::TopUpKeyPool()
             return false;
 
         CWalletDB walletdb(strWalletFile);
+        if (!walletdb.TxnBegin())
+        {
+            printf("TopUpKeyPool() : TxnBegin failed\n");
+            return false;
+        }
         fFillingKeyPool = true;
 
         // Top up key pool
         unsigned int nTargetSize = max(GetArg("-keypool", 100), 0LL);
+        std::vector<int64> vAdded;
         while (setKeyPool.size() < (nTargetSize + 1))
         {
             int64 nEnd = 1;
             if (!setKeyPool.empty())
                 nEnd = *(--setKeyPool.end()) + 1;
-            if (!walletdb.WritePool(nEnd, CKeyPool(GenerateNewKey())))
+            if (!walletdb.WritePool(nEnd, CKeyPool(GenerateNewKey(&walletdb))))
+            {
+                fFillingKeyPool = false;
+                walletdb.TxnAbort();
+                for (int64 nAdded : vAdded)
+                    setKeyPool.erase(nAdded);
                 throw runtime_error("TopUpKeyPool() : writing generated key failed");
+            }
             setKeyPool.insert(nEnd);
+            vAdded.push_back(nEnd);
             printf("keypool added key %" PRI64d ", size=%" PRIszu "\n",
               nEnd, setKeyPool.size());
         }
         fFillingKeyPool = false;
+
+        // The pool entries and their keys become visible together.
+        if (!walletdb.TxnCommit())
+        {
+            printf("TopUpKeyPool() : committing the new keys failed\n");
+            for (int64 nAdded : vAdded)
+                setKeyPool.erase(nAdded);
+            return false;
+        }
     }
     return true;
 }

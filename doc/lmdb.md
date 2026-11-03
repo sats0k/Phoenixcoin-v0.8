@@ -787,6 +787,10 @@ included in shutdown.
 asterisk measure the closest persisted operations it does have:
 `AddCScript`, `AddWatchOnly` and `SetAddressBookName`.
 
+The key insertion and keypool refill rows were measured before the write
+batching described below, when each record and each pool key committed
+separately; the current code issues fewer commits for the same work.
+
 The large insertion gap is not a generic Berkeley DB versus LMDB claim.  Every
 wallet write constructs a short-lived `CWalletDB`, and `CDB::Close()` runs
 `txn_checkpoint()` on the Berkeley DB environment.  The wallet therefore pays
@@ -801,6 +805,26 @@ synchronization costs during insertion; LMDB's close includes the final flush.
 Taken as one unit, inserting 2,000 transactions and shutting down took about
 16.75 s on BDB and 0.20 s on LMDB.  The in-memory lookup measures the loaded
 `mapWallet` and wrapper overhead rather than either backend.
+
+### Batched wallet writes
+
+Wallet writes are grouped by logical operation instead of committing once per
+record.  `CWalletDB::WriteKey` keeps `keymeta` and `key` in one transaction;
+`WriteCryptedKey` keeps `keymeta`, `ckey` and the removal of any plaintext
+`key`/`wkey` copies in one transaction.  Both join an already open transaction
+instead of starting a nested one.
+
+A keypool refill batches further.  `CWallet::NewKeyPool` commits the cleared
+pool and the new pool as one transaction per phase, and
+`CWallet::TopUpKeyPool` commits the whole batch at once.  Keys generated during
+the refill are persisted through the refill's existing `CWalletDB` handle, so
+the batch shares one LMDB writer rather than opening a second one for each key.
+
+Batching removes redundant commits; it does not relax durability.  With the
+default `-lmdbnosync=0` every remaining commit still fsyncs, and the crash
+regression keeps its per-record coverage: `wallet-write-before-commit:<type>`
+fires while a record is staged, and `wallet-write-after-commit:<type>` is
+deferred until the whole transaction is durable.
 
 Database sizes need similar care.  The Berkeley DB whole-directory figure
 includes its preallocated `database/` logs.  The LMDB directory still contains

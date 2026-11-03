@@ -433,6 +433,12 @@ protected:
     bool fUseKV;
     bool fUseKVWallet;
 
+    // Record types written through an explicit wallet transaction.  The
+    // test-only crash hook emits its per-record "after commit" point only
+    // once the whole transaction is durable, but still once per record type
+    // so the crash regression can select a record class.
+    std::vector<std::string> kvTxnRecordTypes;
+
     std::unique_ptr<CDBTransaction> BeginKVTransaction(bool fReadOnly)
     {
         return fUseKVWallet ? BeginWalletTransaction(fReadOnly)
@@ -682,12 +688,19 @@ protected:
     }
 
 public:
+    /** True while this handle has an explicit transaction open. */
+    bool IsTransactionActive() const
+    {
+        return fUseKV ? kvTxn.get() != nullptr : activeTxn != nullptr;
+    }
+
     bool TxnBegin()
     {
         if (fUseKV)
         {
             if (kvTxn)
                 return false;
+            kvTxnRecordTypes.clear();
             kvTxn = BeginKVTransaction(false);
             return kvTxn.get() != nullptr;
         }
@@ -713,12 +726,22 @@ public:
             {
                 kvTxn->Abort();
                 kvTxn.reset();
+                kvTxnRecordTypes.clear();
                 return false;
             }
             bool fSuccess = kvTxn->Commit();
             kvTxn.reset();
             if (fUseKVWallet && fSuccess)
+            {
                 TestWalletCrashPoint("wallet-txn-after-commit");
+                // Emit the per-record points after the transaction is
+                // durable, so a kill leaves every record applied rather than
+                // only the record whose point matched.
+                for (const std::string& strType : kvTxnRecordTypes)
+                    TestWalletCrashPoint(("wallet-write-after-commit:" +
+                                          strType).c_str());
+            }
+            kvTxnRecordTypes.clear();
             return fSuccess;
         }
 
@@ -737,6 +760,7 @@ public:
                 return false;
             kvTxn->Abort();
             kvTxn.reset();
+            kvTxnRecordTypes.clear();
             return true;
         }
 

@@ -70,7 +70,7 @@ LIBS += \
     -l:libboost_thread.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_chrono.so$(BOOST_LIB_SUFFIX) \
     -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
-    -llmdb \
+    -l:liblmdb.so$(LMDB_LIB_SUFFIX) \
     -l:libssl.so$(OPENSSL_LIB_SUFFIX) \
     -l:libcrypto.so$(OPENSSL_LIB_SUFFIX)
 TESTDEFS += -DBOOST_TEST_DYN_LINK
@@ -89,7 +89,7 @@ LIBS += \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
     -ldb_cxx$(BDB_LIB_SUFFIX) \
-    -llmdb \
+    -l:liblmdb.so$(LMDB_LIB_SUFFIX) \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
 endif
