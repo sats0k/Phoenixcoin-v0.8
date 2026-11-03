@@ -320,6 +320,7 @@ Implemented functionality includes:
 * Hybrid private-key serialization
 * Encrypted hybrid private-key serialization
 * Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
+* Atomic hybrid-key persistence (the hybrid and legacy ECDSA records are written together) and the `checkhybridkeys` invariant diagnostic
 * Bulk hybrid-key backup/restore via dump file (`dumphybridkeys` / `importhybridkeys`)
 
 Hybrid keys are persisted in `wallet.dat`.
@@ -532,6 +533,7 @@ listhybridaddresses
 gethybridkey
 dumphybridkey / importhybridkey
 dumphybridkeys / importhybridkeys
+checkhybridkeys [deep]
 addhybridmultisigaddress
 signmessage / verifymessage (hybrid addresses)
 encryptmessage / decryptmessage (hybrid addresses)
@@ -548,6 +550,8 @@ Each `hybridpubkey` is the hex-encoded serialized hybrid public key (`pubkey_ser
 It should only be used in a controlled environment where the RPC interface and returned private-key data are appropriately protected.
 
 `importhybridkey "secp_wif" "mldsa_priv_der_b64" ["label"] [rescan]` is the counterpart of `dumphybridkey`: it re-imports an exported hybrid key (the ECDSA half as WIF and the ML-DSA-65 half as Base64-encoded DER), validates it, persists it to the wallet like a wallet-generated key, and performs a wallet rescan by default. It returns the derived hybrid address. An encrypted wallet must be unlocked so the private material can be re-encrypted at rest.
+
+`checkhybridkeys [deep]` verifies the wallet-wide hybrid-key invariant: every hybrid key must have both its `hyb` record and its legacy ECDSA keystore record, the two must describe the same secp256k1 key, and the at-rest encryption state must match the wallet. It returns `ok`, key counts and an `issues` array naming each broken pair. Deep verification (the default) decrypts and re-derives the materialised key; it is skipped while an encrypted wallet is locked. Every generated, pooled or imported hybrid key writes both halves in one `CWalletDB` transaction, and `encryptwallet` refuses to run when the check already fails.
 
 `signmessage` and `encryptmessage` behave as usual for legacy addresses; for hybrid addresses they produce a hybrid message signature / ECIES ciphertext as described in the [Hybrid Message Signatures](#hybrid-message-signatures) section. `verifymessage` and `decryptmessage` verify/decrypt them, `verifymessage` without any wallet access. Both `signmessage` and `decryptmessage` require the wallet to hold the hybrid private key (and an unlocked wallet if encrypted).
 

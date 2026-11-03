@@ -11,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -263,6 +264,76 @@ ReadHybridDiskRecords(const std::map<CDBKey, CDBValue> &records)
         disks[hybridID] = disk;
     }
     return disks;
+}
+
+/** Serializes the key of a (record type, payload) wallet record. */
+static CDBKey MakeRecordKey(const std::string &type,
+                            const std::vector<unsigned char> &payload)
+{
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << type << payload;
+    return CDBKey(ss.begin(), ss.end());
+}
+
+static CDBKey MakeKeyRecordKey(const CPubKey &pubKey)
+{
+    return MakeRecordKey("key", pubKey.Raw());
+}
+
+static CDBKey MakeHybridRecordKey(const CHybridKeyID &hybridID)
+{
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << std::string("hyb") << hybridID;
+    return CDBKey(ss.begin(), ss.end());
+}
+
+/** Serializes a CHybridKeyDisk the way WriteHybridKey() stores it. */
+static CDBValue SerializeHybridDisk(const CHybridKeyDisk &disk)
+{
+    CDataStream ss(SER_DISK, CLIENT_VERSION);
+    ss << disk;
+    return CDBValue(ss.begin(), ss.end());
+}
+
+/** Removes a single record from the live LMDB wallet. */
+static void EraseWalletRecord(const CDBKey &key)
+{
+    WalletDBTestAccess db("wallet.dat", "r+");
+    BOOST_REQUIRE_MESSAGE(db.EraseKV(key), "could not erase wallet record");
+}
+
+/** Overwrites a single record in the live LMDB wallet. */
+static void WriteWalletRecord(const CDBKey &key, const CDBValue &value)
+{
+    WalletDBTestAccess db("wallet.dat", "r+");
+    BOOST_REQUIRE_MESSAGE(db.WriteKV(key, value, true),
+                          "could not write wallet record");
+}
+
+/** Flattens a diagnostic result into a message usable in assertions. */
+static std::string DescribeHybridCheck(const CHybridKeyCheckResult &check)
+{
+    std::ostringstream out;
+    out << "ok=" << check.fOK << " crypted=" << check.fCrypted
+        << " locked=" << check.fLocked
+        << " deep_verified=" << check.fDeepVerified
+        << " loaded=" << check.nHybridKeys
+        << " at_rest=" << check.nHybridDiskRecords
+        << " on_disk=" << check.nHybridRecordsInDatabase
+        << " legacy=" << check.nLegacyKeys;
+    for (const CHybridKeyCheckIssue &issue : check.vIssues)
+        out << "\n  hybrid=" << issue.strHybridID
+            << " legacy=" << issue.strLegacyID << ": " << issue.strProblem;
+    return out.str();
+}
+
+static bool HybridCheckMentions(const CHybridKeyCheckResult &check,
+                                const std::string &needle)
+{
+    for (const CHybridKeyCheckIssue &issue : check.vIssues)
+        if (issue.strProblem.find(needle) != std::string::npos)
+            return true;
+    return false;
 }
 
 template <typename Container>
@@ -920,6 +991,16 @@ static void CheckHybridKeyInvariants(CWallet &wallet, const std::string &phase)
                             phase << ": hybrid ML-DSA signer changed for "
                                   << entry.first.ToString());
     }
+
+    // Exercise the production invariant checker on the same state.  The
+    // callers all require an unlocked wallet, so deep verification is in scope.
+    CHybridKeyCheckResult check;
+    BOOST_REQUIRE_MESSAGE(wallet.CheckHybridKeys(check, true),
+                          phase << ": CWallet::CheckHybridKeys() rejected the "
+                                   "wallet:\n"
+                                << DescribeHybridCheck(check));
+    BOOST_CHECK_MESSAGE(check.fDeepVerified,
+                        phase << ": deep hybrid verification was skipped");
 }
 
 static void CheckHybridSigningWorks(CWallet &wallet,
@@ -1982,6 +2063,274 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
                             "plaintext private key material leaked into "
                             "the LMDB wallet");
     }
+}
+
+/**
+ * The production invariant checker must accept a healthy wallet both before and
+ * after a restart, and it must name each way a hybrid key can be split across
+ * its two persisted representations.  This is the regression guard for the
+ * class of bug where importhybridkey wrote the "hyb" record but not the legacy
+ * ECDSA key.
+ */
+BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_plaintext)
+{
+    TempDirGuard guard("wallet_hybrid_invariants");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE(!wallet->IsLocked());
+    BOOST_REQUIRE_GE(wallet->mapHybridKeys.size(), 2U);
+
+    const CHybridKeyID hybridID = wallet->mapHybridKeys.begin()->first;
+    const CPubKey legacyPub = wallet->mapHybridKeys.begin()->second.secpPub;
+    const CKeyID legacyID = legacyPub.GetID();
+
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "healthy plaintext wallet rejected:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(check.fOK);
+        BOOST_CHECK(check.fDeepVerified);
+        BOOST_CHECK_EQUAL(check.nHybridKeys, wallet->mapHybridKeys.size());
+        BOOST_CHECK_EQUAL(check.nHybridRecordsInDatabase,
+                          CountRecordsOfType(CaptureRecords(), "hyb"));
+        BOOST_CHECK(check.nLegacyKeys >= check.nHybridKeys);
+    }
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "healthy wallet rejected after restart:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(check.fDeepVerified);
+        BOOST_CHECK(wallet->mapHybridKeys.count(hybridID) == 1);
+    }
+
+    // Remove only the legacy ECDSA half of one hybrid key and restart.  The
+    // hybrid record is still loadable, so this is exactly the partial-import
+    // shape the checker has to report instead of silently accepting.
+    wallet.reset();
+    EraseWalletRecord(MakeKeyRecordKey(legacyPub));
+    RestartLMDBWallet(guard.dir);
+
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->mapHybridKeys.count(hybridID) == 1);
+    BOOST_CHECK(!wallet->HaveKey(legacyID));
+    {
+        CHybridKeyCheckResult check;
+        BOOST_CHECK_MESSAGE(!wallet->CheckHybridKeys(check, true),
+                            "checker accepted a hybrid key with no ECDSA "
+                            "half:\n"
+                                << DescribeHybridCheck(check));
+        BOOST_CHECK(!check.fOK);
+        BOOST_CHECK(HybridCheckMentions(
+            check, "legacy ECDSA key record is missing"));
+
+        bool found = false;
+        for (const CHybridKeyCheckIssue &issue : check.vIssues) {
+            if (issue.strLegacyID == legacyID.ToString() &&
+                issue.strProblem.find("legacy ECDSA key record is missing") !=
+                    std::string::npos)
+                found = true;
+        }
+        BOOST_CHECK_MESSAGE(found, "issue did not identify "
+                                       << legacyID.ToString() << ":\n"
+                                       << DescribeHybridCheck(check));
+    }
+
+    // Encryption rewrites both halves; it must refuse while the pair is broken.
+    const SecureString passphrase("correct horse battery staple\n");
+    BOOST_CHECK(!wallet->EncryptWallet(passphrase));
+    BOOST_CHECK(!wallet->IsCrypted());
+}
+
+/**
+ * Corrupt hybrid records must be diagnosed rather than silently ignored: one
+ * record is retargeted to another key's material, and another is unparsable.
+ * Both are present in the database but cannot be tied back to a loaded key.
+ */
+BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_bad_records)
+{
+    TempDirGuard guard("wallet_hybrid_bad_records");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    const std::map<CDBKey, CDBValue> records = CaptureRecords();
+    const std::map<CHybridKeyID, CHybridKeyDisk> disks =
+        ReadHybridDiskRecords(records);
+    BOOST_REQUIRE_GE(disks.size(), 3U);
+
+    auto it = disks.begin();
+    const CHybridKeyDisk sourceDisk = it->second;
+    ++it;
+    const CHybridKeyID targetID = it->first;
+    ++it;
+    const CHybridKeyID corruptID = it->first;
+
+    // The record keyed by targetID now carries another key's material, so the
+    // identifier derived from the payload no longer matches the record key.
+    WriteWalletRecord(MakeHybridRecordKey(targetID),
+                      SerializeHybridDisk(sourceDisk));
+
+    // A payload that cannot be parsed at all must be reported as malformed.
+    WriteWalletRecord(MakeHybridRecordKey(corruptID),
+                      CDBValue{0x00, 0x01, 0x02, 0x03});
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+
+    CHybridKeyCheckResult check;
+    BOOST_CHECK_MESSAGE(!wallet->CheckHybridKeys(check, true),
+                        "checker accepted corrupted hybrid records:\n"
+                            << DescribeHybridCheck(check));
+    BOOST_CHECK(!check.fOK);
+    BOOST_CHECK(HybridCheckMentions(
+        check, "record ID does not match the materialized hybrid key"));
+    BOOST_CHECK(HybridCheckMentions(
+        check, "unreadable hybrid key record " + corruptID.ToString()));
+
+    bool targeted = false;
+    for (const CHybridKeyCheckIssue &issue : check.vIssues) {
+        if (issue.strHybridID == targetID.ToString() &&
+            issue.strProblem.find(
+                "record ID does not match the materialized hybrid key") !=
+                std::string::npos)
+            targeted = true;
+    }
+    BOOST_CHECK_MESSAGE(targeted, "mismatched record " << targetID.ToString()
+                            << " was not identified:\n"
+                            << DescribeHybridCheck(check));
+}
+
+/**
+ * Encryption lifecycle checks for the diagnostics themselves: a healthy
+ * encrypted wallet is consistent while locked (shallow) and while unlocked
+ * (deep), and a legacy plaintext "hyb" record left in an encrypted wallet is
+ * reported until unlocking migrates it.
+ */
+BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_encrypted)
+{
+    TempDirGuard guard("wallet_hybrid_encrypted");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    const SecureString passphrase("correct horse battery staple\n");
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE_GE(wallet->mapHybridKeys.size(), 1U);
+    const CHybridKeyID hybridID = wallet->mapHybridKeys.begin()->first;
+    const CHybridKeyDisk plaintextDisk =
+        CHybridKeyDisk::FromMemory(wallet->mapHybridKeys.begin()->second);
+
+    BOOST_REQUIRE(wallet->EncryptWallet(passphrase));
+    BOOST_CHECK(wallet->IsCrypted());
+    BOOST_CHECK(wallet->IsLocked());
+
+    // A locked wallet can still cross-check both persisted halves; only the
+    // at-rest private material has to be skipped.
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "healthy locked wallet rejected:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(check.fLocked);
+        BOOST_CHECK(!check.fDeepVerified);
+        BOOST_CHECK_EQUAL(check.nHybridKeys, 0U);
+        BOOST_CHECK_EQUAL(check.nHybridDiskRecords,
+                          check.nHybridRecordsInDatabase);
+    }
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->IsCrypted());
+    BOOST_CHECK(wallet->IsLocked());
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "healthy locked wallet rejected after restart:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(!check.fDeepVerified);
+    }
+
+    BOOST_REQUIRE(wallet->Unlock(passphrase));
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "healthy unlocked wallet rejected:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(check.fDeepVerified);
+        BOOST_CHECK_EQUAL(check.nHybridKeys,
+                          check.nHybridRecordsInDatabase);
+    }
+
+    // Inject a legacy plaintext record into the encrypted wallet and restart
+    // locked.  The encryption state no longer matches the wallet, so the
+    // checker must say so instead of treating the record as healthy.
+    BOOST_REQUIRE(wallet->Lock());
+    BOOST_CHECK(wallet->mapHybridKeys.empty());
+    wallet.reset();
+    WriteWalletRecord(MakeHybridRecordKey(hybridID),
+                      SerializeHybridDisk(plaintextDisk));
+    RestartLMDBWallet(guard.dir);
+
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->IsCrypted());
+    BOOST_CHECK(wallet->IsLocked());
+    {
+        CHybridKeyCheckResult check;
+        BOOST_CHECK_MESSAGE(
+            !wallet->CheckHybridKeys(check, true),
+            "checker accepted a plaintext hybrid record in an encrypted "
+            "wallet:\n"
+                << DescribeHybridCheck(check));
+        BOOST_CHECK(HybridCheckMentions(
+            check, "plaintext hybrid record in an encrypted wallet"));
+    }
+
+    // Unlocking performs the documented transitional migration: the plaintext
+    // record is re-encrypted, after which even the deep checks pass.
+    BOOST_REQUIRE(wallet->Unlock(passphrase));
+    {
+        CHybridKeyCheckResult check;
+        BOOST_REQUIRE_MESSAGE(wallet->CheckHybridKeys(check, true),
+                              "wallet rejected after transitional migration:\n"
+                                  << DescribeHybridCheck(check));
+        BOOST_CHECK(check.fDeepVerified);
+    }
+
+    const std::map<CHybridKeyID, CHybridKeyDisk> migrated =
+        ReadHybridDiskRecords(CaptureRecords());
+    const auto migratedDisk = migrated.find(hybridID);
+    BOOST_REQUIRE(migratedDisk != migrated.end());
+    BOOST_CHECK(migratedDisk->second.IsEncrypted());
+    BOOST_CHECK(migratedDisk->second.CheckChecksum());
 }
 
 // Regression: encryptwallet must never report success when the post-encryption

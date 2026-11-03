@@ -533,15 +533,13 @@ static std::string ImportHybridKeyFromComponents(CWallet* pwallet,
                 throw JSONRPCError(RPC_DATABASE_ERROR, "database error");
 
             try {
-                // ECDSA half, written through the same CWalletDB so it joins
-                // this transaction (mirrors CWallet::AddKey persisting).
-                if (fPersistKeyRecord &&
-                    !pwallet->StageKeyRecord(walletdb, secpKey, keyMeta,
-                                             vchCryptedSecret))
-                    throw std::runtime_error("failed to write ECDSA key record");
-
-                if (!walletdb.WriteHybridKey(hybridID, disk))
-                    throw std::runtime_error("failed to write hybrid key");
+                // Both halves are written through the same CWalletDB so they
+                // join this transaction.  StageHybridKey() is the shared
+                // invariant-preserving path used by every generator/importer.
+                if (!pwallet->StageHybridKey(walletdb, hk, secpKey, disk,
+                                             keyMeta, vchCryptedSecret,
+                                             fPersistKeyRecord))
+                    throw std::runtime_error("failed to write hybrid key pair");
 
                 if (!strLabel.empty()) {
                     CHybridAddressEntry entry(strLabel);
@@ -1078,6 +1076,58 @@ Value listhybridaddresses(const Array& params, bool fHelp) {
             appendEntry(it->first, it->second.secpPub, it->second.nCreateTime);
         }
     }
+
+    return result;
+}
+
+Value checkhybridkeys(const Array& params, bool fHelp) {
+    if (fHelp || params.size() > 1) {
+        string msg =
+            "checkhybridkeys [deep]\n"
+            "Verifies that every hybrid key in the wallet has both persisted\n"
+            "representations: its hybrid record and the legacy ECDSA keystore\n"
+            "key, that they describe the same secp256k1 key, and that their\n"
+            "encryption state matches the wallet.  With deep=true (the default)\n"
+            "at-rest private material is decrypted and the record identifier is\n"
+            "re-derived; this is skipped while an encrypted wallet is locked.\n"
+            "\nResult object: ok, wallet_crypted, wallet_locked, deep,\n"
+            "deep_verified, hybrid_keys_in_memory, hybrid_keys_at_rest,\n"
+            "hybrid_records_on_disk, legacy_keys, issues[]\n"
+            "Each issue contains hybrid_id, legacy_id and problem.";
+        throw runtime_error(msg);
+    }
+
+    if (!pwalletMain)
+        throw JSONRPCError(RPC_WALLET_ERROR, "No wallet is loaded");
+
+    const bool fDeep = params.size() > 0 ? params[0].get_bool() : true;
+
+    CHybridKeyCheckResult check;
+    pwalletMain->CheckHybridKeys(check, fDeep);
+
+    Object result;
+    result.push_back(Pair("ok", check.fOK));
+    result.push_back(Pair("wallet_crypted", check.fCrypted));
+    result.push_back(Pair("wallet_locked", check.fLocked));
+    result.push_back(Pair("deep", fDeep));
+    result.push_back(Pair("deep_verified", check.fDeepVerified));
+    result.push_back(Pair("hybrid_keys_in_memory",
+                          (int64_t)check.nHybridKeys));
+    result.push_back(Pair("hybrid_keys_at_rest",
+                          (int64_t)check.nHybridDiskRecords));
+    result.push_back(Pair("hybrid_records_on_disk",
+                          (int64_t)check.nHybridRecordsInDatabase));
+    result.push_back(Pair("legacy_keys", (int64_t)check.nLegacyKeys));
+
+    Array issues;
+    for (const CHybridKeyCheckIssue& problem : check.vIssues) {
+        Object issue;
+        issue.push_back(Pair("hybrid_id", problem.strHybridID));
+        issue.push_back(Pair("legacy_id", problem.strLegacyID));
+        issue.push_back(Pair("problem", problem.strProblem));
+        issues.push_back(issue);
+    }
+    result.push_back(Pair("issues", issues));
 
     return result;
 }

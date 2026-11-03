@@ -77,7 +77,12 @@ private:
     CWalletDB(const CWalletDB&);
     void operator=(const CWalletDB&);
 public:
-    bool LoadAllHybridKeys(std::vector<std::pair<CHybridKeyID, CHybridKeyDisk> > &vKeys);
+    // vMalformed, when non-null, receives the IDs of "hyb" records whose
+    // payload could not be parsed.  They are still present in the database but
+    // are not returned in vKeys, so callers that diagnose the wallet can
+    // report them instead of silently treating them as absent.
+    bool LoadAllHybridKeys(std::vector<std::pair<CHybridKeyID, CHybridKeyDisk> > &vKeys,
+                           std::vector<std::string>* vMalformed = nullptr);
 
     bool WriteHybridKey(const CHybridKeyID &keyID, const CHybridKeyDisk &disk);
 

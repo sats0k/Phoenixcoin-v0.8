@@ -11,6 +11,8 @@
 #include "hs/wallethybrid.h"
 
 #include <memory>
+#include <set>
+#include <string>
 #include <vector>
 #include <stdexcept>
 #include <openssl/rand.h>
@@ -203,6 +205,82 @@ bool CHybridKeyDisk::DecryptPrivate(const CKeyingMaterial& vMasterKey,
         printf("CHybridKeyDisk::DecryptPrivate() : %s\n", e.what());
         return false;
     }
+    return true;
+}
+
+// Decodes an at-rest hybrid record into a live CHybridKey without touching the
+// wallet's maps. Used by the diagnostic check to prove that a record still
+// derives the identifier it is stored under. Returns false and fills strError
+// when the record is malformed or cannot be decrypted.
+static bool MaterializeHybridKeyForCheck(const CHybridKeyDisk& disk,
+                                         const CKeyingMaterial& vMasterKey,
+                                         CHybridKey& out,
+                                         std::string& strError)
+{
+    if (disk.nVersion != HYBRIDKEY_DISK_VERSION &&
+        disk.nVersion != HYBRIDKEY_DISK_VERSION_ENCRYPTED) {
+        strError = "unsupported hybrid key disk version";
+        return false;
+    }
+    if (!disk.CheckChecksum()) {
+        strError = "checksum mismatch";
+        return false;
+    }
+    if (!disk.secpPub.IsValid()) {
+        strError = "invalid secp256k1 public key";
+        return false;
+    }
+    if (disk.IsEncrypted()) {
+        if (disk.vchCryptedPrivate.empty()) {
+            strError = "empty encrypted private blob";
+            return false;
+        }
+    } else {
+        if (disk.secpPriv.empty()) {
+            strError = "missing plaintext secp256k1 private key";
+            return false;
+        }
+        if (disk.mldsaPrivKey.empty()) {
+            strError = "missing plaintext ML-DSA private key";
+            return false;
+        }
+    }
+
+    CPrivKey secpPriv;
+    std::vector<unsigned char> mldsaPriv;
+    if (!disk.DecryptPrivate(vMasterKey, secpPriv, mldsaPriv)) {
+        strError = "cannot decrypt private material";
+        return false;
+    }
+
+    try {
+        out.nCreateTime = disk.nCreateTime;
+        out.secpPriv    = secpPriv;
+        out.secpPub     = disk.secpPub;
+        out.mldsaAlg    = disk.mldsaAlg;
+
+        CKey key;
+        if (!key.SetPrivKey(out.secpPriv) || !key.IsValid())
+            throw std::runtime_error("invalid secp256k1 private key");
+        if (key.GetPubKey() != out.secpPub)
+            throw std::runtime_error("secp256k1 private key does not match public key");
+
+        const unsigned char* p = mldsaPriv.data();
+        EVP_PKEY* pkey = d2i_AutoPrivateKey(nullptr, &p, mldsaPriv.size());
+        std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)> pkey_guard(
+            pkey, &EVP_PKEY_free);
+        if (!pkey || p != mldsaPriv.data() + mldsaPriv.size())
+            throw std::runtime_error("ML-DSA private key decode failed");
+
+        out.mldsaSigner = std::make_unique<MLDSASigner>(pkey_guard.get());
+
+        if (!ValidateHybridKey(out))
+            throw std::runtime_error("hybrid key validation failed");
+    } catch (const std::exception& e) {
+        strError = e.what();
+        return false;
+    }
+
     return true;
 }
 
@@ -434,6 +512,36 @@ CHybridKeyDisk CWallet::MakeHybridKeyDisk(const CHybridKey& hk)
     return CHybridKeyDisk::FromMemory(hk);
 }
 
+bool CWallet::StageHybridKey(CWalletDB& db, const CHybridKey& hk,
+                             const CKey& ecdsa, const CHybridKeyDisk& disk,
+                             const CKeyMetadata& meta,
+                             const std::vector<unsigned char>& vchCryptedSecret,
+                             bool fPersistLegacyKey)
+{
+    try {
+        // The two representations must describe the same secp256k1 key. If a
+        // caller ever passes mismatched halves, refuse before writing either
+        // record instead of committing an inconsistent pair.
+        if (!ecdsa.IsValid() || ecdsa.GetPubKey() != hk.secpPub)
+            return false;
+        if (ecdsa.GetPrivKey() != hk.secpPriv)
+            return false;
+        if (disk.secpPub != hk.secpPub)
+            return false;
+        if (disk.IsEncrypted() != IsCrypted())
+            return false;
+
+        if (fPersistLegacyKey &&
+            !StageKeyRecord(db, ecdsa, meta, vchCryptedSecret))
+            return false;
+
+        return db.WriteHybridKey(hk.GetHybridID(), disk);
+    } catch (const std::exception& e) {
+        printf("StageHybridKey() : %s\n", e.what());
+        return false;
+    }
+}
+
 bool LoadHybridKey(CWallet* wallet, const CHybridKeyDisk& disk,
                    const CKeyingMaterial& vMasterKey)
 {
@@ -557,17 +665,45 @@ bool CWallet::EnsureHybridKey(const CKeyID& keyID)
     // ---- Stage 2: Persist to disk ----
     // Keys are only persisted here while we still have the plaintext copy in
     // memory (i.e. the wallet is either unencrypted or currently unlocked);
-    // an encrypted-but-locked wallet cannot not encrypt new private material.
+    // an encrypted-but-locked wallet cannot encrypt new private material.
+    //
+    // Both representations are written in one transaction.  The legacy ECDSA
+    // record is rewritten even when this key came from the keypool: a caller
+    // may be recovering from a partial import, and reasserting the pair here
+    // is what makes the invariant hold for every created hybrid key.
     CHybridKeyDisk disk;
     bool fDiskPersisted = false;
     if (fFileBacked && (!IsCrypted() || !IsLocked())) {
         try {
             disk = MakeHybridKeyDisk(hk);
-            CWalletDB walletdb(strWalletFile);
 
-            if (!walletdb.WriteHybridKey(hybridID, disk)) {
-                printf("EnsureHybridKey(%s) DB write failed\n", keyID.ToString().c_str());
+            CKeyMetadata meta(hk.nCreateTime);
+            {
+                LOCK(cs_wallet);
+                const std::map<CKeyID, CKeyMetadata>::const_iterator it =
+                    mapKeyMetadata.find(keyID);
+                if (it != mapKeyMetadata.end())
+                    meta = it->second;
+            }
+
+            std::vector<unsigned char> vchCryptedSecret;
+            if (IsCrypted() && !EncryptKeySecret(key, vchCryptedSecret))
                 return false;
+
+            CWalletDB walletdb(strWalletFile);
+            if (!walletdb.TxnBegin())
+                return false;
+
+            try {
+                if (!StageHybridKey(walletdb, hk, key, disk, meta,
+                                    vchCryptedSecret, true))
+                    throw std::runtime_error("failed to write hybrid key pair");
+
+                if (!walletdb.TxnCommit())
+                    throw std::runtime_error("failed to commit hybrid key pair");
+            } catch (...) {
+                walletdb.TxnAbort();
+                throw;
             }
             fDiskPersisted = true;
         } catch (const std::exception& e) {
@@ -597,55 +733,81 @@ void NewHybridKeyPool(CWallet* wallet, int nSize)
     if (wallet->IsCrypted() && wallet->IsLocked())
         return;
 
-    std::vector<std::pair<CHybridKeyID, CHybridKey>> stagedKeys;
-    std::vector<std::pair<CHybridKeyID, CHybridKeyDisk>> stagedDisks;
+    struct StagedHybridKey
+    {
+        CHybridKeyID hybridID;
+        CHybridKey key;
+        CHybridKeyDisk disk;
+        CKey ecdsa;
+        CKeyMetadata metadata;
+        std::vector<unsigned char> cryptedSecret;
+    };
 
-    // Phase 1: Build locally
+    std::vector<StagedHybridKey> staged;
+
+    // Phase 1: Build locally, including the legacy ECDSA half.
     try {
         for (int i = 0; i < nSize; ++i) {
-            CHybridKey hk;
-            GenerateHybridKey(hk);
+            StagedHybridKey entry;
+            GenerateHybridKey(entry.key);
+            if (!ValidateHybridKey(entry.key))
+                throw std::runtime_error("invalid hybrid key");
 
-            CHybridKeyID hybridID = hk.GetHybridID();
-            stagedKeys.emplace_back(hk.GetHybridID(), std::move(hk));
+            entry.hybridID = entry.key.GetHybridID();
+            entry.ecdsa = entry.key.GetCKey();
+            entry.metadata = CKeyMetadata(entry.key.nCreateTime);
+            if (wallet->IsCrypted() &&
+                !wallet->EncryptKeySecret(entry.ecdsa, entry.cryptedSecret))
+                throw std::runtime_error("failed to encrypt ECDSA key");
+
             // MakeHybridKeyDisk encrypts at-rest records for encrypted wallets.
-            stagedDisks.emplace_back(hybridID,
-                                     wallet->MakeHybridKeyDisk(stagedKeys.back().second));
+            entry.disk = wallet->MakeHybridKeyDisk(entry.key);
+            staged.push_back(std::move(entry));
         }
     } catch (const std::exception& e) {
         printf("ERROR: failed to generate hybrid key pool: %s\n", e.what());
         return;
     }
 
-    // Phase 2: Persist to DB
-    {
+    // Phase 2: Persist both representations in one transaction.
+    if (wallet->fFileBacked) {
         CWalletDB walletdb(wallet->strWalletFile);
-        walletdb.TxnBegin();
-        bool success = true;
-        for (const auto& entry : stagedDisks) {
-            if (!walletdb.WriteHybridKey(entry.first, entry.second)) {
-                printf("ERROR: failed to write hybrid key to DB\n");
-                success = false;
-                break;
+        if (!walletdb.TxnBegin())
+            return;
+
+        try {
+            for (const StagedHybridKey& entry : staged) {
+                if (!wallet->StageHybridKey(walletdb, entry.key, entry.ecdsa,
+                                            entry.disk, entry.metadata,
+                                            entry.cryptedSecret, true))
+                    throw std::runtime_error("failed to write hybrid key pair");
             }
-        }
-        if (!success) {
+
+            if (!walletdb.TxnCommit())
+                throw std::runtime_error("failed to commit hybrid key pool");
+        } catch (const std::exception& e) {
             walletdb.TxnAbort();
+            printf("ERROR: failed to write hybrid key pool: %s\n", e.what());
             return;
         }
-        walletdb.TxnCommit();
     }
 
-    // Phase 3: Commit to memory
+    // Phase 3: Commit to memory only after the transaction commits.
     {
         LOCK(wallet->cs_wallet);
-        for (auto& entry : stagedKeys) {
-            wallet->mapHybridKeys.emplace(entry.first, std::move(entry.second));
-        }
-        if (wallet->IsCrypted()) {
-            for (const auto& entry : stagedDisks) {
-                wallet->mapHybridKeyDisk[entry.first] = entry.second;
-            }
+        for (StagedHybridKey& entry : staged) {
+            if (wallet->IsCrypted())
+                wallet->LoadCryptedKey(entry.ecdsa.GetPubKey(),
+                                       entry.cryptedSecret);
+            else
+                wallet->LoadKey(entry.ecdsa);
+            wallet->mapKeyMetadata[entry.ecdsa.GetPubKey().GetID()] =
+                entry.metadata;
+
+            wallet->mapHybridKeys.emplace(entry.hybridID,
+                                          std::move(entry.key));
+            if (wallet->fFileBacked && wallet->IsCrypted())
+                wallet->mapHybridKeyDisk[entry.hybridID] = entry.disk;
         }
     }
     printf("Hybrid key pool of size %d created successfully\n", nSize);
@@ -947,14 +1109,10 @@ bool CWallet::EnsureHybridKeyPool(unsigned int nTarget)
         {
             for (const StagedHybridKey& entry : staged)
             {
-                if (entry.fPersistKey &&
-                    !StageKeyRecord(walletdb, entry.ecdsa, entry.metadata,
-                                    entry.cryptedSecret))
-                    throw std::runtime_error(
-                        "failed to write ECDSA key record");
-
-                if (!walletdb.WriteHybridKey(entry.hybridID, entry.disk))
-                    throw std::runtime_error("failed to write hybrid key");
+                if (!StageHybridKey(walletdb, entry.key, entry.ecdsa,
+                                    entry.disk, entry.metadata,
+                                    entry.cryptedSecret, entry.fPersistKey))
+                    throw std::runtime_error("failed to write hybrid key pair");
             }
 
             if (!walletdb.TxnCommit())
@@ -988,6 +1146,331 @@ bool CWallet::EnsureHybridKeyPool(unsigned int nTarget)
     }
 
     return true;
+}
+
+bool CWallet::CheckHybridKeys(CHybridKeyCheckResult& result, bool fDeep) const
+{
+    LOCK(cs_wallet);
+
+    result = CHybridKeyCheckResult();
+    result.fCrypted = IsCrypted();
+    result.fLocked = IsLocked();
+    result.fDeepVerified = fDeep;
+    result.nHybridKeys = (unsigned int)mapHybridKeys.size();
+    result.nHybridDiskRecords = (unsigned int)mapHybridKeyDisk.size();
+
+    {
+        std::set<CKeyID> legacyKeys;
+        GetKeys(legacyKeys);
+        result.nLegacyKeys = (unsigned int)legacyKeys.size();
+    }
+
+    // The same underlying problem can be reached from the loaded key, the
+    // at-rest cache and the database scan. Keep the report readable.
+    std::set<std::string> seenIssues;
+    const auto addIssue = [&result, &seenIssues](
+        const CHybridKeyID& hybridID, const CKeyID& legacyID,
+        const std::string& problem)
+    {
+        CHybridKeyCheckIssue issue;
+        if (hybridID != CHybridKeyID())
+            issue.strHybridID = hybridID.ToString();
+        if (legacyID != CKeyID())
+            issue.strLegacyID = legacyID.ToString();
+        issue.strProblem = problem;
+
+        const std::string key = issue.strHybridID + "|" + issue.strLegacyID +
+                                "|" + issue.strProblem;
+        if (seenIssues.insert(key).second)
+            result.vIssues.push_back(issue);
+    };
+
+    // Confirms that the legacy keystore has the ECDSA half and that its
+    // public key is exactly the one embedded in the hybrid key.  This is the
+    // check that would have caught the importhybridkey regression.
+    const auto checkLegacyRecord = [this, &addIssue](
+        const CHybridKeyID& hybridID, const CPubKey& secpPub,
+        const std::string& context) -> CKeyID
+    {
+        if (!secpPub.IsValid()) {
+            addIssue(hybridID, CKeyID(),
+                     context + ": invalid secp256k1 public key");
+            return CKeyID();
+        }
+
+        const CKeyID legacyID = secpPub.GetID();
+        if (!HaveKey(legacyID)) {
+            addIssue(hybridID, legacyID,
+                     context + ": legacy ECDSA key record is missing");
+            return legacyID;
+        }
+
+        CPubKey storedPub;
+        if (!GetPubKey(legacyID, storedPub))
+            addIssue(hybridID, legacyID,
+                     context + ": cannot read the legacy ECDSA public key");
+        else if (storedPub != secpPub)
+            addIssue(hybridID, legacyID,
+                     context + ": legacy ECDSA public key does not match "
+                               "the hybrid key");
+
+        return legacyID;
+    };
+
+    // Loaded hybrid keys (unencrypted wallets, or encrypted wallets after
+    // unlock): both halves must be live and carry the same private material.
+    for (const auto& entry : mapHybridKeys)
+    {
+        const CHybridKeyID& hybridID = entry.first;
+        const CHybridKey& hk = entry.second;
+
+        const CKeyID legacyID =
+            checkLegacyRecord(hybridID, hk.secpPub, "loaded hybrid key");
+
+        if (!hk.mldsaSigner || !hk.mldsaSigner->GetKey())
+            addIssue(hybridID, legacyID,
+                     "loaded hybrid key has no ML-DSA signer");
+
+        if (hk.secpPriv.empty()) {
+            addIssue(hybridID, legacyID,
+                     "loaded hybrid key has no secp256k1 private key");
+        } else {
+            try {
+                CKey derived = hk.GetCKey();
+                if (derived.GetPubKey() != hk.secpPub)
+                    addIssue(hybridID, legacyID,
+                             "loaded hybrid key contains mismatched "
+                             "secp256k1 halves");
+            } catch (const std::exception&) {
+                addIssue(hybridID, legacyID,
+                         "loaded hybrid key contains an invalid "
+                         "secp256k1 key pair");
+            }
+        }
+
+        if (!result.fLocked)
+        {
+            CKey ecdsa;
+            if (!GetKey(legacyID, ecdsa)) {
+                addIssue(hybridID, legacyID,
+                         "legacy ECDSA private key is not available");
+            } else {
+                if (ecdsa.GetPubKey() != hk.secpPub)
+                    addIssue(hybridID, legacyID,
+                             "legacy ECDSA public key does not match the "
+                             "loaded hybrid key");
+                if (ecdsa.GetPrivKey() != hk.secpPriv)
+                    addIssue(hybridID, legacyID,
+                             "legacy ECDSA private key does not match the "
+                             "loaded hybrid key");
+            }
+        }
+
+        try {
+            if (hk.GetHybridID() != hybridID)
+                addIssue(hybridID, legacyID,
+                         "loaded hybrid key does not derive its record ID");
+        } catch (const std::exception&) {
+            addIssue(hybridID, legacyID,
+                     "cannot derive the loaded hybrid key ID");
+        }
+    }
+
+    const auto checkDiskRecord = [this, &result, &addIssue, fDeep,
+                                  &checkLegacyRecord](
+        const CHybridKeyID& hybridID, const CHybridKeyDisk& disk,
+        const std::string& context, bool fFromDatabase)
+    {
+        const CKeyID legacyID = disk.secpPub.IsValid()
+                                    ? disk.secpPub.GetID()
+                                    : CKeyID();
+
+        if (!disk.CheckChecksum())
+            addIssue(hybridID, legacyID, context + ": checksum mismatch");
+        if (!disk.secpPub.IsValid())
+            addIssue(hybridID, legacyID,
+                     context + ": invalid secp256k1 public key");
+        else
+            checkLegacyRecord(hybridID, disk.secpPub, context);
+
+        if (disk.IsEncrypted())
+        {
+            if (!result.fCrypted)
+                addIssue(hybridID, legacyID,
+                         context + ": encrypted hybrid record in an "
+                                   "unencrypted wallet");
+            if (disk.vchCryptedPrivate.empty())
+                addIssue(hybridID, legacyID,
+                         context + ": empty encrypted private key blob");
+            if (!disk.secpPriv.empty())
+                addIssue(hybridID, legacyID,
+                         context + ": encrypted hybrid record contains a "
+                                   "plaintext secp256k1 private key");
+            if (!disk.mldsaPrivKey.empty())
+                addIssue(hybridID, legacyID,
+                         context + ": encrypted hybrid record contains a "
+                                   "plaintext ML-DSA private key");
+        }
+        else
+        {
+            if (result.fCrypted)
+                addIssue(hybridID, legacyID,
+                         context + ": plaintext hybrid record in an "
+                                   "encrypted wallet");
+            if (disk.secpPriv.empty())
+                addIssue(hybridID, legacyID,
+                         context + ": plaintext hybrid record has no "
+                                   "secp256k1 private key");
+            if (disk.mldsaPrivKey.empty())
+                addIssue(hybridID, legacyID,
+                         context + ": plaintext hybrid record has no "
+                                   "ML-DSA private key");
+        }
+
+        const auto loaded = mapHybridKeys.find(hybridID);
+        if (loaded != mapHybridKeys.end())
+        {
+            if (loaded->second.secpPub != disk.secpPub)
+                addIssue(hybridID, legacyID,
+                         context + ": secp256k1 public key differs from the "
+                                   "loaded hybrid key");
+            if (!disk.IsEncrypted() &&
+                loaded->second.secpPriv != disk.secpPriv)
+                addIssue(hybridID, legacyID,
+                         context + ": secp256k1 private key differs from the "
+                                   "loaded hybrid key");
+            if (loaded->second.nCreateTime != disk.nCreateTime)
+                addIssue(hybridID, legacyID,
+                         context + ": creation time differs from the loaded "
+                                   "hybrid key");
+        }
+
+        const auto cached = mapHybridKeyDisk.find(hybridID);
+        if (fFromDatabase && cached != mapHybridKeyDisk.end())
+        {
+            if (cached->second.secpPub != disk.secpPub)
+                addIssue(hybridID, legacyID,
+                         context + ": secp256k1 public key differs from the "
+                                   "cached at-rest record");
+            if (cached->second.nVersion != disk.nVersion)
+                addIssue(hybridID, legacyID,
+                         context + ": disk version differs from the cached "
+                                   "at-rest record");
+            if (cached->second.hashChecksum != disk.hashChecksum)
+                addIssue(hybridID, legacyID,
+                         context + ": checksum differs from the cached "
+                                   "at-rest record");
+        }
+
+        const bool fCanVerifyMaterial =
+            !disk.IsEncrypted() || (result.fCrypted && !result.fLocked);
+        if (fDeep && fCanVerifyMaterial)
+        {
+            CHybridKey materialized;
+            std::string error;
+            if (!MaterializeHybridKeyForCheck(disk, GetMasterKey(),
+                                              materialized, error))
+            {
+                addIssue(hybridID, legacyID,
+                         context + ": cannot materialize: " + error);
+            }
+            else
+            {
+                if (materialized.GetKeyID() != legacyID)
+                    addIssue(hybridID, legacyID,
+                             context + ": materialized legacy ECDSA key ID "
+                                       "does not match the record");
+
+                try {
+                    if (materialized.GetHybridID() != hybridID)
+                        addIssue(hybridID, legacyID,
+                                 context + ": record ID does not match the "
+                                           "materialized hybrid key");
+                } catch (const std::exception&) {
+                    addIssue(hybridID, legacyID,
+                             "cannot derive the materialized hybrid key ID");
+                }
+
+                if (loaded != mapHybridKeys.end())
+                {
+                    if (materialized.secpPub != loaded->second.secpPub)
+                        addIssue(hybridID, legacyID,
+                                 context + ": materialized public key differs "
+                                           "from the loaded hybrid key");
+                    if (materialized.secpPriv != loaded->second.secpPriv)
+                        addIssue(hybridID, legacyID,
+                                 context + ": materialized private key differs "
+                                           "from the loaded hybrid key");
+                }
+            }
+        }
+        else if (fDeep && disk.IsEncrypted() && result.fLocked)
+        {
+            result.fDeepVerified = false;
+        }
+    };
+
+    if (fFileBacked)
+    {
+        CWalletDB walletdb(strWalletFile);
+        std::vector<std::pair<CHybridKeyID, CHybridKeyDisk> > records;
+        std::vector<std::string> malformed;
+
+        if (!walletdb.LoadAllHybridKeys(records, &malformed))
+        {
+            addIssue(CHybridKeyID(), CKeyID(),
+                     "cannot read hybrid key records from the wallet database");
+        }
+        else
+        {
+            result.nHybridRecordsInDatabase =
+                (unsigned int)(records.size() + malformed.size());
+
+            for (const std::string& id : malformed)
+                addIssue(CHybridKeyID(), CKeyID(),
+                         "unreadable hybrid key record " + id);
+
+            std::set<CHybridKeyID> dbIDs;
+            for (const auto& entry : records)
+            {
+                dbIDs.insert(entry.first);
+                checkDiskRecord(entry.first, entry.second,
+                                "database hybrid record", true);
+
+                if (!mapHybridKeys.count(entry.first) &&
+                    !mapHybridKeyDisk.count(entry.first))
+                    addIssue(entry.first, entry.second.secpPub.GetID(),
+                             "database hybrid record was not loaded into "
+                             "memory");
+            }
+
+            for (const auto& entry : mapHybridKeys)
+                if (!dbIDs.count(entry.first))
+                    addIssue(entry.first, entry.second.GetKeyID(),
+                             "loaded hybrid key has no database record");
+
+            for (const auto& entry : mapHybridKeyDisk)
+                if (!dbIDs.count(entry.first))
+                    addIssue(entry.first, entry.second.secpPub.GetID(),
+                             "cached at-rest hybrid key has no database record");
+        }
+    }
+    else
+    {
+        for (const auto& entry : mapHybridKeyDisk)
+            checkDiskRecord(entry.first, entry.second,
+                            "at-rest hybrid record", false);
+    }
+
+    if (!result.fCrypted && !mapHybridKeyDisk.empty())
+        addIssue(CHybridKeyID(), CKeyID(),
+                 "unencrypted wallet holds at-rest hybrid key records");
+    if (result.fCrypted && result.fLocked && !mapHybridKeys.empty())
+        addIssue(CHybridKeyID(), CKeyID(),
+                 "locked wallet has decrypted hybrid keys in memory");
+
+    result.fOK = result.vIssues.empty();
+    return result.fOK;
 }
 
 bool CWallet::RebuildUnusedHybridKeySet()

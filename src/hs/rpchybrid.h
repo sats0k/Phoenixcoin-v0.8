@@ -36,6 +36,8 @@ extern json_spirit::Value listhybridaddresses(const json_spirit::Array &params, 
 
 extern json_spirit::Value gethybridkey(const json_spirit::Array &params, bool fHelp);
 
+extern json_spirit::Value checkhybridkeys(const json_spirit::Array &params, bool fHelp);
+
 extern json_spirit::Value addhybridmultisigaddress(const json_spirit::Array &params, bool fHelp);
 
 // Hybrid-aware helper to add size and signature type to a wallet-tx JSON entry.

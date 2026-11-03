@@ -29,9 +29,12 @@ CDataStream StreamFromBytes(const std::vector<unsigned char>& data)
 
 } // namespace
 
-bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &vKeys)
+bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &vKeys,
+                                  std::vector<std::string>* vMalformed)
 {
     vKeys.clear();
+    if (vMalformed)
+        vMalformed->clear();
     std::unique_ptr<CDBScan> scan = GetScan();
     if (!scan) return false;
 
@@ -66,6 +69,8 @@ bool CWalletDB::LoadAllHybridKeys(vector<pair<CHybridKeyID, CHybridKeyDisk> > &v
             // stream serialization version, i.e. CLIENT_VERSION).
             if (!CHybridKeyDisk::FromLegacyDiskFormat(ssValue, disk)) {
                 printf("WARNING: skipping undecipherable hybrid key record\n");
+                if (vMalformed)
+                    vMalformed->push_back(hybridID.ToString());
                 continue;
             }
         }

@@ -245,6 +245,27 @@ public:
     bool StageKeyRecord(CWalletDB& db, const CKey& key, const CKeyMetadata& meta,
                         const std::vector<unsigned char>& vchCryptedSecret);
 
+    // Writes the two representations of a hybrid key -- the legacy ECDSA
+    // keystore record and the "hyb" record -- through the same already-open
+    // CWalletDB transaction.  hk and ecdsa must describe the same secp256k1
+    // key and disk must be the at-rest form of hk.  Set fPersistLegacyKey when
+    // the ECDSA record may be missing (new keys, imports, and recovery from a
+    // partial write); pass false only when that record is already known to be
+    // present in this transaction.  The caller owns the transaction and must
+    // abort it if this returns false.
+    bool StageHybridKey(CWalletDB& db, const CHybridKey& hk, const CKey& ecdsa,
+                        const CHybridKeyDisk& disk, const CKeyMetadata& meta,
+                        const std::vector<unsigned char>& vchCryptedSecret,
+                        bool fPersistLegacyKey);
+
+    // Verifies the wallet-wide invariant that every hybrid key has both its
+    // hybrid record and its legacy ECDSA keystore record, that the two
+    // representations describe the same key, and that their encryption state
+    // matches the wallet.  With fDeep, at-rest private material is decrypted
+    // and re-derived to confirm the record's identifier.  Returns true and
+    // fills result; result.fOK mirrors the return value.
+    bool CheckHybridKeys(CHybridKeyCheckResult& result, bool fDeep = true) const;
+
     bool LoadMinVersion(int nVersion) { nWalletVersion = nVersion; nWalletMaxVersion = std::max(nWalletMaxVersion, nVersion); return true; }
 
     // Adds an encrypted key to the store, and saves it to disk.

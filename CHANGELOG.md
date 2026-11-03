@@ -33,9 +33,23 @@ Changes since v0.8.3.
   `GetHybridKeyIDByLegacyKeyID()` keeps its loaded-only contract, so
   mining, `sendtoaddress` and `EnsureHybridKey` are unchanged while
   locked.
+- A production hybrid-key invariant check, `CWallet::CheckHybridKeys()`,
+  exposed as `checkhybridkeys [deep]`. It proves that every hybrid key has
+  both its `hyb` record and its legacy ECDSA keystore record, that
+  `CHybridKey::GetKeyID()` matches the legacy key ID, that the private and
+  public halves agree, and that the at-rest encryption state matches the
+  wallet. `deep` (the default) decrypts and re-derives the materialised key;
+  it is skipped while an encrypted wallet is locked. `encryptwallet` refuses
+  to convert a wallet whose hybrid keys already violate the invariant.
 
 ### Fixed
 
+- Hybrid key generation and keypool top-up could persist the `hyb` record
+  without the matching legacy ECDSA `key`/`ckey` record, leaving a key whose
+  legacy half was unusable after a restart. A new
+  `CWallet::StageHybridKey()` writes both representations through the
+  caller's existing `CWalletDB` transaction, and `importhybridkey`,
+  `EnsureHybridKey`, `EnsureHybridKeyPool` and `NewHybridKeyPool` all use it.
 - The randomisation in the coin selection (`ApproximateBestSubset()`) used
   `rand()` from the C library, whose sequence is predictable; it now uses
   the `GetRand()` cryptographic source, like the rest of the code. The two

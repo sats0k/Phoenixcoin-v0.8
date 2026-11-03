@@ -437,6 +437,7 @@ static const CRPCCommand vRPCCommands[] =
     { "gethybridaddress",       &gethybridaddress,       false,  false },
     { "listhybridaddresses",    &listhybridaddresses,    false,  false },
     { "gethybridkey",           &gethybridkey,           false,  false },
+    { "checkhybridkeys",        &checkhybridkeys,        false,  false },
     { "zapwallettxes",          &zapwallettxes,          false,  false },
 };
 
@@ -1508,6 +1509,7 @@ Array RPCConvertValues(const std::string &strMethod, const std::vector<std::stri
     //
     if (strMethod == "stop"                   && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "checklmdb"               && n > 1) ConvertTo<bool>(params[1]);
+    if (strMethod == "checkhybridkeys"         && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 0) ConvertTo<bool>(params[0]);
     if (strMethod == "setgenerate"            && n > 1) ConvertTo<int64_t>(params[1]);
     if (strMethod == "sendtoaddress"          && n > 1) ConvertTo<double>(params[1]);

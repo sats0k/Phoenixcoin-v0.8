@@ -373,6 +373,22 @@ bool CWallet::EncryptWallet(const SecureString& strWalletPassphrase)
     if (!crypter.Encrypt(vMasterKey, kMasterKey.vchCryptedKey))
         return false;
 
+    // Refuse to convert a wallet whose hybrid keys are already inconsistent:
+    // encryption rewrites both halves, and doing so would only make a missing
+    // ECDSA record harder to recover.  Checked before anything is modified.
+    {
+        CHybridKeyCheckResult hybridCheck;
+        if (!CheckHybridKeys(hybridCheck, false))
+        {
+            printf("EncryptWallet() : refusing to encrypt a wallet with inconsistent hybrid key state\n");
+            for (const CHybridKeyCheckIssue& issue : hybridCheck.vIssues)
+                printf("  hybrid=%s legacy=%s: %s\n",
+                       issue.strHybridID.c_str(), issue.strLegacyID.c_str(),
+                       issue.strProblem.c_str());
+            return false;
+        }
+    }
+
     {
         LOCK(cs_wallet);
         mapMasterKeys[++nMasterKeyMaxID] = kMasterKey;

@@ -495,7 +495,10 @@ one-shot, inert until armed, and apply only to the LMDB wallet database
 `CWallet::EnsureHybridKeyPool` was reworked to make the second test possible:
 it stages and encrypts the entire batch, writes the ECDSA and hybrid records
 in a single transaction, and registers the keys in memory only after that
-transaction commits.
+transaction commits. All four hybrid-key producers (`importhybridkey`,
+`EnsureHybridKey`, `EnsureHybridKeyPool` and `NewHybridKeyPool`) share
+`CWallet::StageHybridKey()`, which refuses mismatched halves before writing
+either record.
 
 `kvdb_tests` has four named rewrite-failure cases that use a separate hook,
 `SetTestWalletRewriteFailure(point, nSkip)`, to fail each directory step of
@@ -510,6 +513,29 @@ uses the same hooks to force a post-encryption rewrite failure.  It requires
 `EncryptWallet()` to report failure while plaintext bytes are still present
 in `wallet/data.mdb`, then verifies that a successful rewrite removes them
 and the encrypted wallet still restarts, unlocks and signs.
+
+## Hybrid-key invariant diagnostics
+
+`wallet_migration_tests` also drives the production checker
+`CWallet::CheckHybridKeys()` (RPC `checkhybridkeys [deep]`). The shared
+`CheckHybridKeyInvariants` helper used by the migration, import and keypool
+tests now calls it as well, so those paths exercise the same rule operators
+run.
+
+- `wallet_hybrid_invariant_diagnostics_plaintext` accepts a healthy
+  plaintext wallet before and after a restart, removes one legacy ECDSA
+  `key` record and requires the diagnostic to report the missing half with
+  its key ID, and requires `EncryptWallet()` to refuse the now-broken wallet.
+- `wallet_hybrid_invariant_diagnostics_bad_records` retargets one `hyb`
+  record to another key's material and truncates another; both must be
+  reported (identifier mismatch and unreadable record) instead of being
+  silently ignored.
+- `wallet_hybrid_invariant_diagnostics_encrypted` accepts a healthy
+  encrypted wallet while locked (deep materialisation skipped) and after a
+  restart, performs deep verification after unlocking, injects a legacy
+  plaintext `hyb` record into the locked wallet to require an
+  encryption-state issue, and confirms that unlocking migrates the record
+  back to the encrypted form before the deep check passes again.
 
 ## Database health diagnostics
 

@@ -158,6 +158,38 @@ public:
 };
 
 // -----------------------------
+// Invariant / diagnostic checks
+// -----------------------------
+
+// One inconsistency found while checking the two persisted halves of a hybrid
+// key. At least one of the identifiers is populated; strProblem is a stable,
+// human-readable description (no private material is ever included).
+struct CHybridKeyCheckIssue
+{
+    std::string strHybridID;
+    std::string strLegacyID;
+    std::string strProblem;
+};
+
+// Snapshot produced by CWallet::CheckHybridKeys().
+struct CHybridKeyCheckResult
+{
+    bool fOK = true;
+    bool fCrypted = false;
+    bool fLocked = false;
+    // False when deep verification was requested but the wallet is locked and
+    // therefore cannot decrypt the at-rest private material.
+    bool fDeepVerified = true;
+
+    unsigned int nHybridKeys = 0;          // loaded in mapHybridKeys
+    unsigned int nHybridDiskRecords = 0;   // cached in mapHybridKeyDisk
+    unsigned int nHybridRecordsInDatabase = 0;
+    unsigned int nLegacyKeys = 0;          // plaintext or encrypted keystore keys
+
+    std::vector<CHybridKeyCheckIssue> vIssues;
+};
+
+// -----------------------------
 // Hybrid key helpers
 // -----------------------------
 void GenerateHybridKey(CHybridKey& hk);
