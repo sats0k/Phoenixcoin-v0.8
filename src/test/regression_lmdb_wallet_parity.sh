@@ -648,7 +648,7 @@ expect_tags() {
 # ---------------------------------------------------------------------------
 echo "== setup: build a Berkeley DB wallet at a known state =="
 mkdir -p "$BASE_BDB"
-if ! start_at "$BASE_BDB" "$BDB_PORT" -keypool="$KEYPOOL"; then
+if ! start_at "$BASE_BDB" "$BDB_PORT" -walletbackend=bdb -keypool="$KEYPOOL"; then
     echo "FAILED: could not start the base BDB daemon"
     exit 1
 fi
@@ -723,7 +723,7 @@ check "the base wallet is a Berkeley DB wallet" \
 # ---------------------------------------------------------------------------
 echo "== setup: generate independent import material =="
 mkdir -p "$MATERIAL"
-if ! start_at "$MATERIAL" "$BDB_PORT" -keypool=1; then
+if ! start_at "$MATERIAL" "$BDB_PORT" -walletbackend=bdb -keypool=1; then
     echo "FAILED: could not start the material daemon"
     exit 1
 fi
@@ -768,7 +768,7 @@ check "the LMDB branch has an LMDB wallet environment" \
     "$([ -f "$LMDB_DIR/wallet/data.mdb" ]; echo $?)"
 
 echo "== start both wallets independently =="
-if ! start_at "$BDB_DIR" "$BDB_PORT" -keypool="$KEYPOOL"; then
+if ! start_at "$BDB_DIR" "$BDB_PORT" -walletbackend=bdb -keypool="$KEYPOOL"; then
     echo "FAILED: could not start the BDB branch"
     exit 1
 fi
@@ -859,7 +859,7 @@ rpc_dir "$LMDB_DIR" "$LMDB_PORT" encryptwallet "$WALLET_PASSPHRASE" \
 ensure_down_at "$BDB_DIR" || { echo "FAILED: BDB encryptwallet did not stop"; exit 1; }
 ensure_down_at "$LMDB_DIR" || { echo "FAILED: LMDB encryptwallet did not stop"; exit 1; }
 
-if ! start_at "$BDB_DIR" "$BDB_PORT" -keypool="$KEYPOOL"; then
+if ! start_at "$BDB_DIR" "$BDB_PORT" -walletbackend=bdb -keypool="$KEYPOOL"; then
     echo "FAILED: could not restart the encrypted BDB branch"; exit 1
 fi
 if ! start_at "$LMDB_DIR" "$LMDB_PORT" -walletbackend=lmdb \
@@ -906,7 +906,7 @@ echo "== checkpoint 4: keypool growth and random address allocation =="
 # encryption with 50 pool keys and must grow to exactly KEYPOOL_BIG + 1.
 stop_at "$BDB_DIR" "$BDB_PORT" || { echo "FAILED: BDB did not stop"; exit 1; }
 stop_at "$LMDB_DIR" "$LMDB_PORT" || { echo "FAILED: LMDB did not stop"; exit 1; }
-if ! start_at "$BDB_DIR" "$BDB_PORT" -keypool="$KEYPOOL_BIG"; then
+if ! start_at "$BDB_DIR" "$BDB_PORT" -walletbackend=bdb -keypool="$KEYPOOL_BIG"; then
     echo "FAILED: could not restart the BDB branch"; exit 1
 fi
 if ! start_at "$LMDB_DIR" "$LMDB_PORT" -walletbackend=lmdb \
@@ -944,7 +944,7 @@ echo "== checkpoint 5: restart both wallets and compare again =="
 stop_at "$BDB_DIR" "$BDB_PORT" || { echo "FAILED: BDB did not stop"; exit 1; }
 stop_at "$LMDB_DIR" "$LMDB_PORT" || { echo "FAILED: LMDB did not stop"; exit 1; }
 
-if ! start_at "$BDB_DIR" "$BDB_PORT" -keypool="$KEYPOOL_BIG"; then
+if ! start_at "$BDB_DIR" "$BDB_PORT" -walletbackend=bdb -keypool="$KEYPOOL_BIG"; then
     echo "FAILED: could not restart the BDB branch"; exit 1
 fi
 if ! start_at "$LMDB_DIR" "$LMDB_PORT" -walletbackend=lmdb \

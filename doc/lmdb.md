@@ -4,10 +4,10 @@ Phoenixcoin stores the block index and the transaction/UTXO index in the chain
 database.  Berkeley DB (`blkindex.dat`) remains the default backend; LMDB can be
 selected explicitly with `-dbbackend=lmdb`.
 
-The wallet has a separate backend switch.  `wallet.dat` remains the default and
-Berkeley DB is still used unless `-walletbackend=lmdb` is given; see
-[Wallet backend](#wallet-backend-optional-lmdb) below.  Address storage
-(`peers.dat`) is unaffected.
+The wallet has a separate backend switch.  LMDB is the production default;
+Berkeley DB `wallet.dat` remains available with `-walletbackend=bdb` for
+compatibility and recovery.  See [Wallet backend](#wallet-backend) below.
+Address storage (`peers.dat`) is unaffected.
 
 ## Enabling LMDB
 
@@ -43,14 +43,17 @@ use the untouched `blkindex.dat`.  Any blocks imported while LMDB was active
 must be re-downloaded or re-imported, because that work only exists in the LMDB
 index.
 
-## Wallet backend (optional, LMDB)
+## Wallet backend
 
-The wallet backend is independent of the chain index backend.  Both defaults
-remain Berkeley DB, and the wallet is only moved when explicitly requested:
+The wallet backend is independent of the chain index backend.  LMDB is the
+production default; Berkeley DB remains available for compatibility and
+recovery with `-walletbackend=bdb`.  At startup the node prints the selected
+backend, for example `Wallet backend: LMDB`.
+
+To move an existing Berkeley DB `wallet.dat` to LMDB explicitly:
 
 1. Stop Phoenixcoin and back up the data directory.
-2. Start with `-walletbackend=lmdb` (or put `walletbackend=lmdb` in
-   `phoenixcoin.conf`).
+2. Start with `-walletbackend=lmdb` (or leave the default in place).
 
 The LMDB wallet lives in `<datadir>/wallet/`.  The first LMDB start converts an
 existing `wallet.dat`: every record is copied into the new environment inside a
@@ -75,7 +78,7 @@ that the wallet map grows automatically while the node runs, up to
 
 The marker makes ownership explicit:
 
-- starting without `-walletbackend=lmdb` fails instead of silently opening a
+- starting with `-walletbackend=bdb` fails instead of silently opening a
   stale `wallet.dat`;
 - a non-empty `<datadir>/wallet/data.mdb` without a marker is treated as an
   LMDB wallet for the same reason;
@@ -97,10 +100,11 @@ The marker makes ownership explicit:
 directory.  The target must not exist yet or must be empty; an existing
 non-empty target is refused instead of being overwritten.
 
-To return to Berkeley DB, stop the node, back up the data directory, and remove
-both `<datadir>/wallet` and `<datadir>/wallet.backend`.  The untouched
-`wallet.dat` is then used again.  Any keys or transactions created while the
-LMDB wallet was active exist only in the LMDB copy.
+To return to Berkeley DB, stop the node, back up the data directory, remove
+both `<datadir>/wallet` and `<datadir>/wallet.backend`, and start with
+`-walletbackend=bdb`.  The untouched `wallet.dat` is then used again.  Any
+keys or transactions created while the LMDB wallet was active exist only in
+the LMDB copy.
 
 ## Online backup and restore
 
@@ -281,7 +285,7 @@ known address proves the data is the state you intended to keep.
   initial sync.  Transactions remain atomic and consistent.  Set to `0` for
   per-commit durability.  A clean shutdown always flushes the environment.
   This option applies to both LMDB environments.
-- `-walletbackend=lmdb|bdb` — wallet backend, default `bdb`.
+- `-walletbackend=lmdb|bdb` — wallet backend, default `lmdb`.
 - `-lmdbwalletsize=<MiB>` — initial size of the LMDB wallet map, default
   4096 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
   `-lmdbmapsize`, enlarged automatically when the existing wallet or a pending
@@ -601,7 +605,7 @@ real Berkeley DB wallet and verifies the complete handoff:
   migration and after a restart;
 - the migration runs once, the restart does not copy again, and addresses
   created while LMDB is active survive a restart;
-- a default BDB start is refused while `wallet.backend` says `lmdb`;
+- an explicit BDB start is refused while `wallet.backend` says `lmdb`;
 - `backupwallet` produces a restorable LMDB environment;
 - a deliberately unreadable `wallet.dat` fails startup without writing a
   marker or leaving `wallet/` behind, the untouched BDB wallet still starts,

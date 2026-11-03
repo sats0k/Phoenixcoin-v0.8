@@ -88,6 +88,12 @@ Changes since v0.8.3.
 
 ### Changed
 
+- LMDB is now the production default for the wallet: `-walletbackend`
+  defaults to `lmdb` instead of `bdb`. An existing `wallet.dat` is copied
+  into `<datadir>/wallet/` on the first start, and startup prints
+  `Wallet backend: LMDB`. Berkeley DB remains available for compatibility
+  and recovery with `-walletbackend=bdb`; there is no implicit fallback
+  between the two backends. See `doc/lmdb.md`.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

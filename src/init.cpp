@@ -352,7 +352,7 @@ std::string HelpMessage()
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
         "  -checklmdb=<dir>       " + _("Check an offline LMDB environment (for example a backup) and exit") + "\n" +
         "  -checklmdbdeep         " + _("With -checklmdb, read every record instead of only the environment metadata") + "\n" +
-        "  -walletbackend=<b>     " + _("Wallet backend: bdb or lmdb (default: bdb)") + "\n" +
+        "  -walletbackend=<b>     " + _("Wallet backend: lmdb or bdb (default: lmdb)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI
         "  -server                " + _("Accept command line and JSON-RPC commands") + "\n" +
@@ -499,7 +499,7 @@ bool AppInit2()
                                        strError.c_str()));
     }
 
-    std::string strWalletBackend = GetArg("-walletbackend", "bdb");
+    std::string strWalletBackend = GetArg("-walletbackend", "lmdb");
     std::transform(strWalletBackend.begin(), strWalletBackend.end(), strWalletBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     if (strWalletBackend != "bdb" && strWalletBackend != "lmdb")

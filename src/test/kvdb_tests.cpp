@@ -55,6 +55,34 @@ static std::filesystem::path MakeTempDir(const std::string &tag)
     return dir;
 }
 
+/** Temporarily removes or overrides one command-line argument. */
+class ArgOverride
+{
+public:
+    explicit ArgOverride(const std::string &name) : name(name),
+        fHadValue(mapArgs.count(name) != 0)
+    {
+        if (fHadValue)
+            strValue = mapArgs[name];
+        mapArgs.erase(name);
+    }
+
+    ~ArgOverride()
+    {
+        if (fHadValue)
+            mapArgs[name] = strValue;
+        else
+            mapArgs.erase(name);
+    }
+
+    void Set(const std::string &value) { mapArgs[name] = value; }
+
+private:
+    std::string name;
+    std::string strValue;
+    bool fHadValue;
+};
+
 template <typename DBType>
 struct DBGuard
 {
@@ -981,7 +1009,7 @@ void RunWalletBackendMarker(const std::string &tag)
     BOOST_CHECK(HasLMDBWallet(dir));
     BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
 
-    // Switching to LMDB must block a later default BDB start.
+    // Switching to LMDB must block a later BDB start.
     BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
     BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "lmdb");
@@ -2295,6 +2323,23 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_large_value_iteration)
 BOOST_AUTO_TEST_CASE(wallet_backend_marker)
 {
     RunWalletBackendMarker("wallet_backend_marker");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_backend_default_lmdb)
+{
+    ArgOverride backend("-walletbackend");
+
+    // No explicit switch: production selects LMDB.
+    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_LMDB);
+
+    // Explicit Berkeley DB remains available for compatibility and recovery.
+    backend.Set("bdb");
+    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_BDB);
+    backend.Set("BDB");
+    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_BDB);
+
+    backend.Set("lmdb");
+    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_LMDB);
 }
 
 BOOST_AUTO_TEST_CASE(wallet_startup_action)

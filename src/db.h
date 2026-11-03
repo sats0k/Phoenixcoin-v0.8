@@ -283,7 +283,7 @@ enum WalletStartupAction
     WALLET_FAIL_MISSING,
 };
 
-/** Returns the wallet backend selected by -walletbackend (default: BDB). */
+/** Returns the wallet backend selected by -walletbackend (default: LMDB). */
 DBBackend GetConfiguredWalletBackend();
 
 /**
@@ -308,9 +308,9 @@ bool HasLMDBWallet(const std::filesystem::path& dir);
 /**
  * Checks that the configured wallet backend can use the wallet in dir.  A
  * marker records which backend owns the wallet, and a legacy LMDB wallet
- * without a marker is still treated as authoritative.  This prevents a
- * default BDB start from silently creating or loading a stale wallet.dat after
- * an LMDB migration.
+ * without a marker is still treated as authoritative.  This prevents a BDB
+ * start from silently creating or loading a stale wallet.dat after an LMDB
+ * migration.
  */
 bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend configured);
 
@@ -321,7 +321,7 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
  * so a failed or unwanted migration does not destroy the original wallet.
  *
  * A wallet.backend marker records that the data directory has moved to LMDB so
- * that a later default BDB start cannot silently open a stale wallet.dat.
+ * that a later BDB start cannot silently open a stale wallet.dat.
  */
 bool InitLMDBWalletDB();
 void CloseLMDBWalletDB();

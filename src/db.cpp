@@ -500,7 +500,7 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir, DBBackend
     }
 
     // Older LMDB wallets have no marker.  Treat an existing LMDB wallet as
-    // authoritative so that a default BDB start cannot silently open the stale
+    // authoritative so that a BDB start cannot silently open the stale
     // wallet.dat.
     const LMDBOnDiskState state =
         InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir));
@@ -534,7 +534,7 @@ WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
 
 DBBackend GetConfiguredWalletBackend()
 {
-    std::string strBackend = GetArg("-walletbackend", "bdb");
+    std::string strBackend = GetArg("-walletbackend", "lmdb");
     std::transform(strBackend.begin(), strBackend.end(), strBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     return strBackend == "lmdb" ? DB_BACKEND_LMDB : DB_BACKEND_BDB;
@@ -1406,7 +1406,7 @@ public:
 
 // Copies the raw key/value pairs from wallet.dat into the already-open, empty
 // LMDB wallet.  The Berkeley DB file is never modified, so a failed migration
-// can be retried and a default BDB start can still use it.  The caller writes
+// can be retried and a BDB start can still use it.  The caller writes
 // wallet.backend only after this function succeeds.
 bool MigrateWalletToLMDB(const std::filesystem::path& dir)
 {
@@ -1664,7 +1664,7 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
             // The environment was created empty for this attempt and the
             // transaction was aborted, so nothing of value is lost.  Remove it
             // so a failed migration does not leave a wallet/ directory that
-            // would later look authoritative to a default BDB start.
+            // would later look authoritative to a BDB start.
             std::error_code ec;
             std::filesystem::remove_all(pathWallet, ec);
             if (ec)
@@ -2005,6 +2005,8 @@ bool InitLMDBWalletDB()
         return true;
 
     const DBBackend configured = GetConfiguredWalletBackend();
+    printf("Wallet backend: %s\n",
+           configured == DB_BACKEND_LMDB ? "LMDB" : "Berkeley DB");
     if (!CheckWalletBackendCompatibility(GetDataDir(), configured))
         return false;
 

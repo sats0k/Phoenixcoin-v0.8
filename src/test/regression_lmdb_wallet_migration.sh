@@ -11,7 +11,7 @@
 #       -> wallet.backend=lmdb only after the copy commits
 #       -> normal wallet use (signing keys, address book, hybrid keys)
 #       -> restart (no second migration)
-#       -> default BDB start refused while the LMDB marker is present
+#       -> explicit BDB start refused while the LMDB marker is present
 #       -> backupwallet / restore
 #       -> failed migration leaves no marker and no wallet/ behind, then retry
 #
@@ -235,7 +235,7 @@ assert c["marker"]["matches_backend"] is True, c
 }
 
 echo "== step 1: populate a Berkeley DB wallet =="
-start_node || { echo "FAILED: could not start the BDB daemon"; exit 1; }
+start_node -walletbackend=bdb || { echo "FAILED: could not start the BDB daemon"; exit 1; }
 
 ADDR=$(rpc getnewaddress alice 2>/dev/null)
 WIF=$(rpc dumpprivkey "$ADDR" 2>/dev/null)
@@ -262,6 +262,8 @@ check "migration was logged" \
     "$(grep -q 'Migrating wallet from wallet.dat to LMDB' "$DATADIR/debug.log"; echo $?)"
 check "migration completion was logged" \
     "$(grep -q 'Wallet migration complete' "$DATADIR/debug.log"; echo $?)"
+check "startup selected the LMDB wallet backend" \
+    "$(grep -q '^Wallet backend: LMDB$' "$DATADIR/debug.log"; echo $?)"
 key_roundtrip "$ADDR" "$WIF" "LMDB after migration"
 check "hybrid key is unchanged after migration" \
     "$([ "$(rpc dumphybridkey "$HYB" 2>/dev/null)" = "$HYB_KEY" ]; echo $?)"
@@ -309,9 +311,9 @@ stop_node || { echo "FAILED: LMDB daemon did not stop"; exit 1; }
 check "wallet.dat stayed untouched through LMDB writes" \
     "$([ "$(sha256sum "$DATADIR/wallet.dat" | cut -d' ' -f1)" = "$BDB_SUM" ]; echo $?)"
 
-echo "== step 4: default BDB start is refused while the marker is lmdb =="
+echo "== step 4: explicit BDB start is refused while the marker is lmdb =="
 REFUSAL_LOG="$DATADIR/refusal.log"
-timeout 30 "$BIN" -datadir="$DATADIR" >"$REFUSAL_LOG" 2>&1
+timeout 30 "$BIN" -datadir="$DATADIR" -walletbackend=bdb >"$REFUSAL_LOG" 2>&1
 check "BDB start fails during wallet initialization" \
     "$(grep -q 'Error initializing the wallet database' "$REFUSAL_LOG"; echo $?)"
 check "BDB start names the LMDB wallet" \
@@ -346,7 +348,7 @@ key_roundtrip "$ADDR" "$WIF" "original wallet after restore test"
 stop_node || { echo "FAILED: LMDB daemon did not stop"; exit 1; }
 
 echo "== step 6: failed migration leaves no marker and can be retried =="
-start_at "$FAIL_DIR" "$FAIL_PORT" || {
+start_at "$FAIL_DIR" "$FAIL_PORT" -walletbackend=bdb || {
     echo "FAILED: could not create the BDB failure-test wallet"; exit 1;
 }
 FAIL_ADDR=$(rpc_dir "$FAIL_DIR" "$FAIL_PORT" getnewaddress failtest 2>/dev/null)
@@ -377,7 +379,7 @@ rmdir "$FAIL_DIR/wallet.dat" || exit 1
 mv "$FAIL_DIR/wallet.dat.real" "$FAIL_DIR/wallet.dat" || exit 1
 
 # The untouched BDB wallet must still start normally after the failure.
-start_at "$FAIL_DIR" "$FAIL_PORT" || {
+start_at "$FAIL_DIR" "$FAIL_PORT" -walletbackend=bdb || {
     echo "FAILED: BDB wallet did not start after the failed migration"; exit 1;
 }
 key_roundtrip_dir "$FAIL_DIR" "$FAIL_PORT" "$FAIL_ADDR" "$FAIL_WIF" \

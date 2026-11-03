@@ -290,7 +290,7 @@ SEND_BALANCE="88.98000000"
 
 echo "== setup: build a Berkeley DB wallet =="
 mkdir -p "$BASE_BDB"
-if ! start_ready "$BASE_BDB"; then
+if ! start_ready "$BASE_BDB" -walletbackend=bdb; then
     echo "FAILED: could not start the BDB daemon"
     exit 1
 fi
@@ -345,7 +345,7 @@ BDB_SUM=$(sha256sum "$BASE_BDB/wallet.dat" | cut -d' ' -f1)
 # cases add.  Copying the base datadir would reuse its keypool keys.
 MATERIAL_SRC="$WORK/material-src"
 mkdir -p "$MATERIAL_SRC"
-if ! start_ready "$MATERIAL_SRC"; then
+if ! start_ready "$MATERIAL_SRC" -walletbackend=bdb; then
     echo "FAILED: could not start the material daemon"
     exit 1
 fi

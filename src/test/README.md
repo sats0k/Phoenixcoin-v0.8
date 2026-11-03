@@ -628,7 +628,7 @@ prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
   runs do not collide, and can be pinned with `PXC_REGTEST_PORT`.
 - `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
-  copied, keys and labels survive, the migration runs once, a default BDB
+  copied, keys and labels survive, the migration runs once, an explicit BDB
   start is refused while the marker says LMDB, `backupwallet` produces a
   restorable environment, a failed migration leaves no marker so it can
   be retried, and `getdbinfo` reports the migrated wallet as healthy.

@@ -259,7 +259,7 @@ WATCH_ADDR="Pajnrp35dtogiFeTqQxNurGDgsxfVVaUrz"
 WALLET_PASSPHRASE="e2e passphrase with spaces"
 
 echo "== step 1: populate a Berkeley DB wallet =="
-start_node || { echo "FAILED: could not start the BDB daemon"; exit 1; }
+start_node -walletbackend=bdb || { echo "FAILED: could not start the BDB daemon"; exit 1; }
 
 for h in 1 2 3 4 5 6; do
     rpc submitblock "${BLOCK_HEX[$h]}" >/dev/null 2>&1
@@ -354,13 +354,13 @@ check_contains "hybrid key export carries the ML-DSA private key" \
 stop_node || { echo "FAILED: BDB daemon did not stop"; exit 1; }
 
 echo "== step 2: encrypt the BDB wallet =="
-start_node || { echo "FAILED: could not restart the BDB daemon"; exit 1; }
+start_node -walletbackend=bdb || { echo "FAILED: could not restart the BDB daemon"; exit 1; }
 ENCRYPT_RESULT=$(rpc encryptwallet "$WALLET_PASSPHRASE" 2>/dev/null)
 check "encryptwallet returned the restart notice" \
     "$(printf '%s' "$ENCRYPT_RESULT" | grep -qi 'encrypt'; echo $?)"
 wait_down_at "$DATADIR" || { echo "FAILED: encryptwallet did not stop the daemon"; exit 1; }
 
-start_node || { echo "FAILED: encrypted BDB daemon did not restart"; exit 1; }
+start_node -walletbackend=bdb || { echo "FAILED: encrypted BDB daemon did not restart"; exit 1; }
 check_eq "chain is intact after encryption restart" "6" "$(rpc getblockcount 2>/dev/null)"
 check_rpc_fails "encrypted wallet is locked: dumpprivkey is refused" \
     dumpprivkey "$ALICE_ADDR"

@@ -223,7 +223,7 @@ check_dump_key_present() {
 }
 
 echo "== step 1: populate a BDB chain index with real blocks =="
-start_node || { echo "FAILED: could not start the BDB daemon"; exit 1; }
+start_node -walletbackend=bdb || { echo "FAILED: could not start the BDB daemon"; exit 1; }
 
 check "starts with the BDB backend" \
     "$([ -f "$DATADIR/blkindex.dat" ] && [ ! -e "$DATADIR/blkindex" ] && [ ! -e "$DATADIR/blkindex.backend" ]; echo $?)"
@@ -251,7 +251,7 @@ if [ -n "$BDB_RECORDS" ]; then
 fi
 
 echo "== step 2: migrate to LMDB on startup =="
-start_node -dbbackend=lmdb || { echo "FAILED: could not start the LMDB daemon"; exit 1; }
+start_node -dbbackend=lmdb -walletbackend=bdb || { echo "FAILED: could not start the LMDB daemon"; exit 1; }
 
 check "blkindex.backend marker says lmdb" \
     "$([ "$(cat "$DATADIR/blkindex.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
@@ -281,7 +281,7 @@ if [ -n "$LMDB_RECORDS" ]; then
 fi
 
 echo "== step 3: restart on LMDB and connect more blocks =="
-start_node -dbbackend=lmdb || { echo "FAILED: could not restart the LMDB daemon"; exit 1; }
+start_node -dbbackend=lmdb -walletbackend=bdb || { echo "FAILED: could not restart the LMDB daemon"; exit 1; }
 check_height_and_tip 2 "${BLOCK_HASH[2]}" "LMDB restart"
 check_block_records 2 "LMDB restart"
 
@@ -307,7 +307,7 @@ if [ -n "$LMDB_RECORDS_AFTER" ]; then
 fi
 
 echo "== step 4: restart again and verify the new tip persists =="
-start_node -dbbackend=lmdb || { echo "FAILED: could not restart the LMDB daemon"; exit 1; }
+start_node -dbbackend=lmdb -walletbackend=bdb || { echo "FAILED: could not restart the LMDB daemon"; exit 1; }
 check_height_and_tip 4 "${BLOCK_HASH[4]}" "LMDB final restart"
 check_block_records 4 "LMDB final restart"
 
