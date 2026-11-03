@@ -568,6 +568,31 @@ bool BackupWallet(const CWallet& wallet, const string& strDest)
     return BackupWalletDB(wallet.strWalletFile, strDest);
 }
 
+WalletStartupCheckResult CheckWalletDatabaseAtStartup()
+{
+    if (IsLMDBWalletEnabled())
+        return WalletStartupCheckResult::Ok;
+
+    if (GetBoolArg("-salvagewallet"))
+    {
+        // Recover readable keypairs.
+        if (!CWalletDB::Recover(bitdb, "wallet.dat", true))
+            return WalletStartupCheckResult::SalvageFailed;
+    }
+
+    if (std::filesystem::exists(GetDataDir() / "wallet.dat"))
+    {
+        const CDBEnv::VerifyResult r =
+            bitdb.Verify("wallet.dat", CWalletDB::Recover);
+        if (r == CDBEnv::RECOVER_OK)
+            return WalletStartupCheckResult::Recovered;
+        if (r == CDBEnv::RECOVER_FAIL)
+            return WalletStartupCheckResult::VerifyFailed;
+    }
+
+    return WalletStartupCheckResult::Ok;
+}
+
 //
 // Try to (very carefully!) recover wallet.dat if there is a problem.
 //

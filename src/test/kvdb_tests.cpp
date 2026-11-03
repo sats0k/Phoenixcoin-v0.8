@@ -2359,6 +2359,19 @@ BOOST_AUTO_TEST_CASE(wallet_backend_default_lmdb)
     BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_LMDB);
 }
 
+BOOST_AUTO_TEST_CASE(wallet_startup_check_lmdb)
+{
+    const std::filesystem::path dir = MakeTempDir("wallet_startup_check_lmdb");
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    struct Guard {
+        ~Guard() { CloseLMDBWalletDB(); }
+    } guard;
+
+    // The LMDB wallet is validated when its environment opens, so the legacy
+    // wallet.dat salvage/verify pass must not run.
+    BOOST_CHECK(CheckWalletDatabaseAtStartup() == WalletStartupCheckResult::Ok);
+}
+
 BOOST_AUTO_TEST_CASE(wallet_startup_action)
 {
     RunWalletStartupAction("wallet_startup_action");

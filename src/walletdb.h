@@ -38,6 +38,22 @@ enum DBErrors
     DB_NEED_REWRITE
 };
 
+/**
+ * Result of the backend-specific wallet database check performed once during
+ * startup.  LMDB validates its environment when it is opened, so it always
+ * reports Ok.  Berkeley DB may need the legacy salvage/verify pass.
+ */
+enum class WalletStartupCheckResult
+{
+    Ok,
+    Recovered,
+    SalvageFailed,
+    VerifyFailed,
+};
+
+/** Runs the backend-specific wallet database startup check. */
+WalletStartupCheckResult CheckWalletDatabaseAtStartup();
+
 class CKeyMetadata {
 
 public:

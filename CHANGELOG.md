@@ -105,6 +105,10 @@ Changes since v0.8.3.
   `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs
   to know which backend is underneath; Berkeley DB and LMDB keep their
   existing on-disk behaviour.
+- The startup wallet salvage and verification pass is now selected by
+  `CheckWalletDatabaseAtStartup()` in the wallet persistence layer.
+  `init.cpp` handles the result but no longer checks whether the active
+  backend is LMDB or Berkeley DB.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

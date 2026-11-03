@@ -696,29 +696,27 @@ bool AppInit2()
     if (!InitLMDBWalletDB())
         return InitError(_("Error initializing the wallet database"));
 
-    if (!IsLMDBWalletEnabled())
+    switch (CheckWalletDatabaseAtStartup())
     {
-        if (GetBoolArg("-salvagewallet"))
-        {
-            // Recover readable keypairs:
-            if (!CWalletDB::Recover(bitdb, "wallet.dat", true))
-                return false;
-        }
+    case WalletStartupCheckResult::Ok:
+        break;
 
-        if(std::filesystem::exists(GetDataDir() / "wallet.dat")) {
-            CDBEnv::VerifyResult r = bitdb.Verify("wallet.dat", CWalletDB::Recover);
-            if (r == CDBEnv::RECOVER_OK)
-            {
-                string msg = strprintf(_("Warning: wallet.dat corrupt, data salvaged!"
-                                         " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
-                                         " your balance or transactions are incorrect you should"
-                                         " restore from a backup."), strDataDir.c_str());
-                uiInterface.ThreadSafeMessageBox(msg, _("Phoenixcoin"),
-                  CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
-            }
-            if (r == CDBEnv::RECOVER_FAIL)
-                return InitError(_("wallet.dat corrupt, salvage failed"));
-        }
+    case WalletStartupCheckResult::Recovered:
+    {
+        string msg = strprintf(_("Warning: wallet.dat corrupt, data salvaged!"
+                                 " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
+                                 " your balance or transactions are incorrect you should"
+                                 " restore from a backup."), strDataDir.c_str());
+        uiInterface.ThreadSafeMessageBox(msg, _("Phoenixcoin"),
+          CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
+        break;
+    }
+
+    case WalletStartupCheckResult::SalvageFailed:
+        return false;
+
+    case WalletStartupCheckResult::VerifyFailed:
+        return InitError(_("wallet.dat corrupt, salvage failed"));
     }
 
     // ********************************************************* Step 6: network initialization
