@@ -886,7 +886,20 @@ void RunChainBackendMarker(const std::string &tag)
     BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "bdb");
     BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+
+    // A bdb marker is authoritative too: even a leftover blkindex/ directory
+    // must not let an LMDB start adopt the data directory without an explicit
+    // migration.
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    {
+        CLMDBDatabase stale;
+        BOOST_REQUIRE(stale.Open((dir / "blkindex").string()));
+        WriteValue(stale, Key("canary"), Value("stale lmdb index"));
+        stale.Close();
+    }
+    BOOST_CHECK(HasLMDBChainIndex(dir));
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
 
     // Switching to LMDB must block a later BDB start.
     BOOST_REQUIRE(WriteChainBackendMarker(dir, "lmdb"));

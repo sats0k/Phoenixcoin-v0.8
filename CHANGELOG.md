@@ -100,6 +100,11 @@ Changes since v0.8.3.
   and startup prints `Chain index backend: LMDB`. Berkeley DB remains
   available for compatibility and recovery with `-dbbackend=bdb`; there is
   no implicit fallback between the two backends.
+- Chain backend markers are now authoritative in both directions. A
+  `blkindex.backend` marker that says `bdb` refuses `-dbbackend=lmdb` even
+  when a stale `blkindex/` directory exists, matching the wallet behaviour;
+  a `lmdb` marker likewise refuses `-dbbackend=bdb`. Migration from
+  `blkindex.dat` now runs only when no marker exists at all.
 - Wallet flushing and backup now dispatch through `FlushWalletDB()` and
   `BackupWalletDB()` in the database layer instead of branching on
   `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs

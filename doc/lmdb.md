@@ -31,8 +31,13 @@ containing `lmdb`.  This marker makes the data directory's backend explicit:
 - a marker that says `lmdb` requires a non-empty LMDB index.  If `blkindex/` is
   missing, empty, or removed, startup fails rather than silently re-importing
   the migration-time `blkindex.dat` snapshot;
-- migration from `blkindex.dat` only runs when no marker exists (or the marker
-  is `bdb`).
+- a marker that says `bdb` refuses `-dbbackend=lmdb`, even when a leftover
+  `blkindex/` directory exists.  The `bdb` marker is authoritative: to migrate,
+  back up the data directory, remove `blkindex.backend` and any stale
+  `blkindex/` directory, then restart with `-dbbackend=lmdb`.  Removing only
+  the marker would let the stale LMDB index be adopted instead of migrating
+  `blkindex.dat`;
+- migration from `blkindex.dat` only runs when no marker exists at all.
 
 ## Returning to Berkeley DB
 

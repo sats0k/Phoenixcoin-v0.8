@@ -317,6 +317,29 @@ check_block_records 4 "LMDB final restart"
 
 stop_node || { echo "FAILED: LMDB daemon did not shut down"; exit 1; }
 
+echo "== step 6: backend marker authority is symmetric =="
+printf 'bdb\n' > "$DATADIR/blkindex.backend"
+BDB_MARKER_LOG="$DATADIR/refusal-bdb-marker.log"
+timeout 30 "$BIN" -datadir="$DATADIR" -dbbackend=lmdb -walletbackend=bdb \
+    >"$BDB_MARKER_LOG" 2>&1
+check "LMDB start fails while the chain marker says bdb" \
+    "$(grep -q 'Error initializing chain index database' "$BDB_MARKER_LOG"; echo $?)"
+check "LMDB start names the Berkeley DB chain index" \
+    "$(grep -q 'This data directory uses the Berkeley DB chain index' "$DATADIR/debug.log"; echo $?)"
+check "LMDB refusal explains how to migrate" \
+    "$(grep -q -- '-dbbackend=lmdb' "$DATADIR/debug.log"; echo $?)"
+check "LMDB refusal left the chain marker alone" \
+    "$([ "$(cat "$DATADIR/blkindex.backend" 2>/dev/null)" = "bdb" ]; echo $?)"
+
+printf 'lmdb\n' > "$DATADIR/blkindex.backend"
+LMDB_MARKER_LOG="$DATADIR/refusal-lmdb-marker.log"
+timeout 30 "$BIN" -datadir="$DATADIR" -dbbackend=bdb -walletbackend=bdb \
+    >"$LMDB_MARKER_LOG" 2>&1
+check "BDB start fails while the chain marker says lmdb" \
+    "$(grep -q 'Error initializing chain index database' "$LMDB_MARKER_LOG"; echo $?)"
+check "BDB start names the LMDB chain index" \
+    "$(grep -q 'This data directory uses the LMDB chain index' "$DATADIR/debug.log"; echo $?)"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

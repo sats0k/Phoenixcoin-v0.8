@@ -356,6 +356,13 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir, DBBackend 
                          "Start with -dbbackend=lmdb. To revert to Berkeley DB, "
                          "back up the data directory and remove both 'blkindex' "
                          "and 'blkindex.backend'.");
+
+        if (strMarker == "bdb" && configured == DB_BACKEND_LMDB)
+            return error("This data directory uses the Berkeley DB chain index. "
+                         "Start with -dbbackend=bdb. To migrate it to LMDB, "
+                         "back up the data directory, remove blkindex.backend "
+                         "and any existing blkindex directory, then restart with "
+                         "-dbbackend=lmdb.");
         return true;
     }
 
