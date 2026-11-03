@@ -4,6 +4,7 @@
 
 #include "lmdbdb.h"
 #include "datatypes.h"
+#include "util.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -11,15 +12,27 @@
 namespace {
 #if defined(__LP64__) || defined(_WIN64)
 constexpr size_t LMDB_DEFAULT_MAPSIZE = 4096ULL * 1024ULL * 1024ULL; // 4GB
+// A 1 TiB ceiling leaves room for decades of chain growth while still
+// bounding a bug or a runaway import.  The map is virtual address space, not
+// a preallocation.
+constexpr size_t LMDB_DEFAULT_MAX_MAPSIZE = 1024ULL * 1024ULL * 1024ULL * 1024ULL;
 #else
 constexpr size_t LMDB_DEFAULT_MAPSIZE = 1024ULL * 1024ULL * 1024ULL; // 1GB
+constexpr size_t LMDB_DEFAULT_MAX_MAPSIZE = 2048ULL * 1024ULL * 1024ULL; // 2GB
 #endif
 constexpr unsigned int LMDB_MAX_DBS = 64;
+
+size_t AlignDown(size_t nValue, size_t nAlignment)
+{
+    return nAlignment > 0 ? (nValue / nAlignment) * nAlignment : nValue;
 }
+
+} // namespace
 
 CLMDBEnv::CLMDBEnv()
     : env(nullptr), strMapSizeFlag("-lmdbmapsize"), fWriterActive(false),
-      fNoSync(false), fReadOnly(false)
+      fNoSync(false), fReadOnly(false), fAutoGrow(true), nMaxMapSize(0),
+      nActiveTxns(0), fResizePending(false)
 {
 }
 
@@ -30,7 +43,7 @@ CLMDBEnv::~CLMDBEnv()
 
 bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
                     bool fNoSync, const std::string &strMapSizeFlag,
-                    bool fReadOnly)
+                    bool fReadOnly, size_t nMaxMapSize, bool fAutoGrow)
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
     if (env)
@@ -64,6 +77,17 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
         }
         ec.clear();
     }
+
+    if (fReadOnly)
+        fAutoGrow = false;
+    if (!fAutoGrow)
+        nMaxMapSize = nMapSize;
+    else if (nMaxMapSize == 0)
+        nMaxMapSize = LMDB_DEFAULT_MAX_MAPSIZE;
+    if (nMaxMapSize < nMapSize)
+        nMaxMapSize = nMapSize;
+    this->nMaxMapSize = nMaxMapSize;
+    this->fAutoGrow = fAutoGrow;
 
     int rc = mdb_env_create(&env);
     if (rc != 0) {
@@ -113,6 +137,17 @@ bool CLMDBEnv::Open(const std::string &path, bool fCreate, size_t nMapSize,
         return false;
     }
 
+    // The requested maximum is a byte count from configuration.  LMDB maps
+    // whole pages, so round the ceiling down and keep it at least as large as
+    // the initial map.
+    MDB_stat stat;
+    if (fAutoGrow && mdb_env_stat(env, &stat) == 0) {
+        nMaxMapSize = AlignDown(nMaxMapSize, static_cast<size_t>(stat.ms_psize));
+        if (nMaxMapSize < nMapSize)
+            nMaxMapSize = nMapSize;
+        this->nMaxMapSize = nMaxMapSize;
+    }
+
     strPath = path;
     this->fNoSync = fNoSync;
     this->fReadOnly = fReadOnly;
@@ -136,7 +171,9 @@ bool CLMDBEnv::GetStats(CLMDBStats &stats) const
     stats.fReadOnly = fReadOnly;
     stats.fNoSync = fNoSync;
     stats.fWriterActive = fWriterActive.load();
+    stats.fAutoGrow = fAutoGrow;
     stats.nMapSize = static_cast<size_t>(info.me_mapsize);
+    stats.nMaxMapSize = nMaxMapSize;
     stats.nPageSize = static_cast<size_t>(stat.ms_psize);
     stats.nLastPgno = static_cast<size_t>(info.me_last_pgno);
     stats.nLastTxnId = static_cast<size_t>(info.me_last_txnid);
@@ -179,6 +216,108 @@ bool CLMDBEnv::GetDbStats(MDB_dbi dbi, CLMDBDBStats &stats) const
     return true;
 }
 
+void CLMDBEnv::AcquireTransactionLease()
+{
+    std::unique_lock<std::mutex> lock(mutexTxns);
+    cvTxns.wait(lock, [this] { return !fResizePending; });
+    ++nActiveTxns;
+}
+
+void CLMDBEnv::ReleaseTransactionLease()
+{
+    std::lock_guard<std::mutex> lock(mutexTxns);
+    if (nActiveTxns > 0)
+        --nActiveTxns;
+    cvTxns.notify_all();
+}
+
+bool CLMDBEnv::GrowMap(std::string &strError)
+{
+    std::unique_lock<std::mutex> txnsLock(mutexTxns);
+
+    if (!env) {
+        strError = "LMDB environment is not open";
+        return false;
+    }
+    if (fReadOnly) {
+        strError = "LMDB environment is read-only";
+        return false;
+    }
+    if (!fAutoGrow) {
+        strError = "automatic LMDB map growth is disabled";
+        return false;
+    }
+
+    // mdb_env_set_mapsize() requires that no transaction is active in this
+    // process.  New transactions block on fResizePending while we drain the
+    // existing ones.
+    fResizePending = true;
+    cvTxns.wait(txnsLock, [this] { return nActiveTxns == 0; });
+
+    bool fGrown = false;
+    do {
+        std::lock_guard<std::mutex> envLock(mutexEnv);
+        if (!env) {
+            strError = "LMDB environment was closed during resize";
+            break;
+        }
+
+        MDB_envinfo info;
+        MDB_stat stat;
+        if (mdb_env_info(env, &info) != 0 || mdb_env_stat(env, &stat) != 0) {
+            strError = "LMDB could not report the environment size";
+            break;
+        }
+
+        const size_t nPageSize = static_cast<size_t>(stat.ms_psize);
+        const size_t nCurrent = static_cast<size_t>(info.me_mapsize);
+        if (nPageSize == 0) {
+            strError = "LMDB reported an invalid page size";
+            break;
+        }
+
+        size_t nMax = AlignDown(nMaxMapSize, nPageSize);
+        if (nMax < nCurrent)
+            nMax = nCurrent;
+        if (nMax <= nCurrent) {
+            strError = strprintf(
+                "LMDB map is already at its maximum size (%" PRIszu " bytes)",
+                nCurrent);
+            break;
+        }
+
+        // Double the map on each full event.  A transaction that grows past
+        // one doubling simply retries and grows again.  Clamp before
+        // multiplying so the arithmetic cannot overflow.
+        size_t nTarget = nCurrent > nMax / 2 ? nMax : nCurrent * 2;
+        nTarget = AlignDown(nTarget, nPageSize);
+        if (nTarget <= nCurrent) {
+            if (nCurrent > nMax - nPageSize) {
+                nTarget = nMax;
+            } else {
+                nTarget = nCurrent + nPageSize;
+            }
+        }
+
+        const int rc = mdb_env_set_mapsize(env, nTarget);
+        if (rc != 0) {
+            strError = strprintf("mdb_env_set_mapsize(%" PRIszu ") failed: %s",
+                                 nTarget, mdb_strerror(rc));
+            break;
+        }
+
+        printf("LMDB map size increased from %" PRIszu " to %" PRIszu
+               " bytes to recover from a full map (%s, maximum %" PRIszu
+               " bytes)\n",
+               nCurrent, nTarget, strMapSizeFlag.c_str(), nMax);
+        fGrown = true;
+    } while (false);
+
+    fResizePending = false;
+    cvTxns.notify_all();
+    return fGrown;
+}
+
 bool CLMDBEnv::Sync(bool fForce)
 {
     std::lock_guard<std::mutex> lock(mutexEnv);
@@ -216,6 +355,8 @@ void CLMDBEnv::Close()
     strPath.clear();
     fNoSync = false;
     fReadOnly = false;
+    fAutoGrow = true;
+    nMaxMapSize = 0;
 }
 
 bool CLMDBEnv::OpenDbi(const std::string &name, MDB_dbi &dbi, bool fCreate)

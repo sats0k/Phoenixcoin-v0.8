@@ -514,13 +514,31 @@ and the encrypted wallet still restarts, unlocks and signs.
 ## Database health diagnostics
 
 `kvdb_tests/lmdb_kvdb_stats` checks the statistics layer directly:
-`CLMDBEnv::GetStats()` reports the map size, page size, copy-on-write
-footprint, free map space, utilization percentage, last transaction id,
-reader/writer state and open flags; `CLMDBDatabase::GetStats()` reports the
-`mdb_stat()` entry, depth and page counters.  The case writes three records
-inside a transaction, confirms `writer_active` is only true while it is
-open, reopens the environment read-only and requires the same counters and
-three entries.  `kvdb_tests/wallet_lmdb_diagnostics` opens a temporary LMDB
+`CLMDBEnv::GetStats()` reports the map size, growth ceiling, auto-grow flag,
+page size, copy-on-write footprint, free map space, utilization percentage,
+last transaction id, reader/writer state and open flags;
+`CLMDBDatabase::GetStats()` reports the `mdb_stat()` entry, depth and page
+counters.  The case writes three records inside a transaction, confirms
+`writer_active` is only true while it is open, reopens the environment
+read-only and requires the same counters and three entries; the read-only
+environment reports growth disabled with the ceiling equal to the map size.
+
+`kvdb_tests/lmdb_kvdb_runtime_growth` fills a deliberately small map inside one
+write transaction and requires the environment to grow on `MDB_MAP_FULL` with a
+page-aligned size at or below the ceiling.  The transaction then continues and
+commits, and the test proves that the write and erase made before the growth
+were replayed exactly (including a failed `MDB_NOOVERWRITE` insert), so no
+pre-growth work is lost or duplicated.
+`kvdb_tests/lmdb_kvdb_runtime_growth_maximum` writes until the ceiling is
+reached and requires the write to fail, the transaction to roll back
+completely, and the map to stay at the maximum.
+`kvdb_tests/lmdb_kvdb_fixed_map_size` opens with growth disabled and requires
+the map to stay fixed and writes to fail instead of growing.
+`kvdb_tests/lmdb_mapsize_resolution` covers `ResolveLMDBMapSizes`: explicit and
+default sizes, disabling growth, a ceiling below the initial size, and
+malformed input.
+
+`kvdb_tests/wallet_lmdb_diagnostics` opens a temporary LMDB
 wallet through `InitLMDBWalletDBForTest`, calls
 `GetDBDiagnostics(chainDir, walletDir)` with explicit directories so the
 real datadir is never touched, and requires a healthy wallet with a matching

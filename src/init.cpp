@@ -272,8 +272,11 @@ std::string HelpMessage()
 #endif
         "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
         "  -dbbackend=<backend>   " + _("Chain index backend: bdb or lmdb (default: bdb)") + "\n" +
-        "  -lmdbmapsize=<n>       " + _("LMDB memory map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit; values above the platform limit are rejected)") + "\n" +
-        "  -lmdbwalletsize=<n>    " + _("LMDB wallet memory map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
+        "  -lmdbmapsize=<n>       " + _("Initial LMDB chain map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit)") + "\n" +
+        "  -lmdbmaxmapsize=<n>    " + _("Automatic LMDB chain map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
+        "  -lmdbwalletsize=<n>    " + _("Initial LMDB wallet map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
+        "  -lmdbmaxwalletsize=<n> " + _("Automatic LMDB wallet map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
+        "  -lmdbruntimegrow=<0|1> " + _("Grow the LMDB map automatically when it fills (default: 1)") + "\n" +
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 1); recent writes may be lost on a system crash") + "\n" +
         "  -walletbackend=<b>     " + _("Wallet backend: bdb or lmdb (default: bdb)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
@@ -398,12 +401,28 @@ bool AppInit2()
         return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'bdb' or 'lmdb'"),
                                    strDBBackend.c_str()));
 
-    if (mapArgs.count("-lmdbmapsize"))
+    if (mapArgs.count("-lmdbruntimegrow"))
+    {
+        const std::string& strGrow = mapArgs["-lmdbruntimegrow"];
+        if (!strGrow.empty() && strGrow != "0" && strGrow != "1")
+            return InitError(strprintf(_("Invalid -lmdbruntimegrow '%s': expected 0 or 1"),
+                                       strGrow.c_str()));
+    }
+    const bool fLMDBRuntimeGrow = GetBoolArg("-lmdbruntimegrow", true);
+
     {
         size_t nMapSize = 0;
+        size_t nMaxMapSize = 0;
         std::string strError;
-        if (!ParseLMDBMapSize(mapArgs["-lmdbmapsize"], nMapSize, strError))
-            return InitError(strprintf(_("Invalid -lmdbmapsize: %s"), strError.c_str()));
+        const std::string strMapSize = mapArgs.count("-lmdbmapsize")
+            ? mapArgs["-lmdbmapsize"] : std::string();
+        const std::string strMaxMapSize = mapArgs.count("-lmdbmaxmapsize")
+            ? mapArgs["-lmdbmaxmapsize"] : std::string();
+        if (!ResolveLMDBMapSizes(strMapSize, strMaxMapSize,
+                                 GetLMDBDefaultMapSizeMiB(), fLMDBRuntimeGrow,
+                                 nMapSize, nMaxMapSize, strError))
+            return InitError(strprintf(_("Invalid LMDB chain map size: %s"),
+                                       strError.c_str()));
     }
 
     std::string strWalletBackend = GetArg("-walletbackend", "bdb");
@@ -413,12 +432,20 @@ bool AppInit2()
         return InitError(strprintf(_("Invalid -walletbackend '%s': expected 'bdb' or 'lmdb'"),
                                    strWalletBackend.c_str()));
 
-    if (mapArgs.count("-lmdbwalletsize"))
     {
         size_t nMapSize = 0;
+        size_t nMaxMapSize = 0;
         std::string strError;
-        if (!ParseLMDBMapSize(mapArgs["-lmdbwalletsize"], nMapSize, strError))
-            return InitError(strprintf(_("Invalid -lmdbwalletsize: %s"), strError.c_str()));
+        const std::string strMapSize = mapArgs.count("-lmdbwalletsize")
+            ? mapArgs["-lmdbwalletsize"] : std::string();
+        const std::string strMaxMapSize = mapArgs.count("-lmdbmaxwalletsize")
+            ? mapArgs["-lmdbmaxwalletsize"] : std::string();
+        if (!ResolveLMDBMapSizes(strMapSize, strMaxMapSize,
+                                 GetLMDBDefaultWalletMapSizeMiB(),
+                                 fLMDBRuntimeGrow, nMapSize, nMaxMapSize,
+                                 strError))
+            return InitError(strprintf(_("Invalid LMDB wallet map size: %s"),
+                                       strError.c_str()));
     }
 
     if (strWalletBackend == "lmdb" && GetBoolArg("-salvagewallet"))

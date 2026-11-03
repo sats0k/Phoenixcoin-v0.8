@@ -1140,7 +1140,9 @@ void RunLMDBEnvironmentStats(const std::string &tag)
     BOOST_CHECK(!envStats.fReadOnly);
     BOOST_CHECK(envStats.fNoSync);
     BOOST_CHECK(!envStats.fWriterActive);
+    BOOST_CHECK(envStats.fAutoGrow);
     BOOST_CHECK_EQUAL(envStats.nMapSize, nMapSize);
+    BOOST_CHECK_GE(envStats.nMaxMapSize, envStats.nMapSize);
     BOOST_CHECK_GT(envStats.nPageSize, 0U);
     BOOST_CHECK_GT(envStats.nUsedBytes, 0U);
     BOOST_CHECK_LT(envStats.nFreeBytes, envStats.nMapSize);
@@ -1187,12 +1189,232 @@ void RunLMDBEnvironmentStats(const std::string &tag)
     BOOST_REQUIRE(ro.GetStats(envStats));
     BOOST_CHECK(envStats.fReadOnly);
     BOOST_CHECK(!envStats.fNoSync);
+    BOOST_CHECK(!envStats.fAutoGrow);
+    BOOST_CHECK_EQUAL(envStats.nMaxMapSize, envStats.nMapSize);
 
     MDB_dbi dbi = 0;
     BOOST_REQUIRE(ro.OpenDbi("main", dbi, false));
     BOOST_REQUIRE(ro.GetDbStats(dbi, dbStats));
     BOOST_CHECK_EQUAL(dbStats.nEntries, 3U);
     ro.Close();
+}
+
+CDBKey NumberedKey(const char *prefix, unsigned int n)
+{
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%s-%06u", prefix, n);
+    return Key(buf);
+}
+
+void RunLMDBRuntimeGrowth(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    const size_t nMiB = 1024ULL * 1024ULL;
+    const size_t nInitial = 1 * nMiB;
+    const size_t nMax = 8 * nMiB;
+
+    CLMDBEnv env;
+    BOOST_REQUIRE_MESSAGE(
+        env.Open(dir.string(), true, nInitial, true, "-lmdbmapsize", false,
+                  nMax, true),
+        "could not open small LMDB environment");
+    CLMDBDatabase db;
+    BOOST_REQUIRE(db.Open(env, "main", true));
+
+    CLMDBStats stats;
+    BOOST_REQUIRE(env.GetStats(stats));
+    BOOST_CHECK(stats.fAutoGrow);
+    BOOST_CHECK_EQUAL(stats.nMaxMapSize, nMax);
+    BOOST_CHECK_EQUAL(stats.nMapSize, nInitial);
+
+    // Seed committed records so replay can be checked against a non-empty
+    // environment.
+    WriteValue(db, Key("keep"), Value("before"));
+    WriteValue(db, Key("erase-me"), Value("old"));
+    WriteValue(db, Key("dup"), Value("first"));
+
+    std::unique_ptr<CDBTransaction> txn = BeginWrite(db);
+    BOOST_REQUIRE(txn->Write(Key("keep"), Value("after")));
+    BOOST_REQUIRE(txn->Erase(Key("erase-me")));
+
+    // A failed no-overwrite write must not be replayed as a successful one.
+    BOOST_CHECK(!txn->Write(Key("dup"), Value("second"), false));
+
+    const CDBValue large(48 * 1024, 'x');
+    bool fGrew = false;
+    for (unsigned int i = 0; i < 512; ++i) {
+        BOOST_REQUIRE(txn->Write(NumberedKey("bulk", i), large));
+        BOOST_REQUIRE(env.GetStats(stats));
+        if (stats.nMapSize > nInitial) {
+            fGrew = true;
+            break;
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(fGrew, "LMDB map did not grow on MDB_MAP_FULL");
+    BOOST_CHECK_LE(stats.nMapSize, nMax);
+    BOOST_CHECK_GT(stats.nPageSize, 0U);
+    BOOST_CHECK_EQUAL(stats.nMapSize % stats.nPageSize, 0U);
+    BOOST_CHECK_EQUAL(stats.nMaxMapSize % stats.nPageSize, 0U);
+
+    // The transaction continues after replay; writes made after growth commit
+    // together with every replayed record.
+    BOOST_REQUIRE(txn->Write(Key("after-growth"), Value("ok")));
+    BOOST_REQUIRE(txn->Commit());
+
+    CDBValue value;
+    BOOST_REQUIRE(ReadValue(db, Key("keep"), value));
+    BOOST_CHECK(value == Value("after"));
+    BOOST_REQUIRE(ReadValue(db, Key("after-growth"), value));
+    BOOST_CHECK(value == Value("ok"));
+    BOOST_REQUIRE(ReadValue(db, Key("dup"), value));
+    BOOST_CHECK(value == Value("first"));
+    BOOST_CHECK(!ReadValue(db, Key("erase-me"), value));
+    BOOST_REQUIRE(ReadValue(db, Key("bulk-000000"), value));
+    BOOST_CHECK(value == large);
+
+    BOOST_REQUIRE(env.GetStats(stats));
+    BOOST_CHECK_EQUAL(stats.fWriterActive, false);
+
+    db.Close();
+    env.Close();
+}
+
+void RunLMDBRuntimeGrowthMaximum(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    const size_t nMiB = 1024ULL * 1024ULL;
+    const size_t nInitial = 1 * nMiB;
+    const size_t nMax = 2 * nMiB;
+
+    CLMDBEnv env;
+    BOOST_REQUIRE(env.Open(dir.string(), true, nInitial, true,
+                           "-lmdbmapsize", false, nMax, true));
+    CLMDBDatabase db;
+    BOOST_REQUIRE(db.Open(env, "main", true));
+
+    std::unique_ptr<CDBTransaction> txn = BeginWrite(db);
+    const CDBValue large(64 * 1024, 'y');
+    bool fFailed = false;
+    for (unsigned int i = 0; i < 512; ++i) {
+        if (!txn->Write(NumberedKey("exhaust", i), large)) {
+            fFailed = true;
+            break;
+        }
+    }
+    BOOST_REQUIRE_MESSAGE(fFailed, "writes did not fail at the growth ceiling");
+
+    // A failed growth aborts the transaction; nothing it wrote may become
+    // visible, even records written before the first MDB_MAP_FULL.
+    txn->Abort();
+
+    CLMDBStats stats;
+    BOOST_REQUIRE(env.GetStats(stats));
+    BOOST_CHECK_EQUAL(stats.nMapSize, nMax);
+    BOOST_CHECK_EQUAL(stats.nMaxMapSize, nMax);
+    BOOST_CHECK_EQUAL(stats.nMapSize % stats.nPageSize, 0U);
+
+    CDBValue value;
+    BOOST_CHECK(!ReadValue(db, NumberedKey("exhaust", 0), value));
+    BOOST_CHECK(!ReadValue(db, NumberedKey("exhaust", 1), value));
+
+    db.Close();
+    env.Close();
+}
+
+void RunLMDBFixedMapSize(const std::string &tag)
+{
+    const std::filesystem::path dir = MakeTempDir(tag);
+    struct Guard {
+        std::filesystem::path dir;
+        ~Guard() {
+            std::error_code ec;
+            std::filesystem::remove_all(dir, ec);
+        }
+    } guard{dir};
+
+    const size_t nMapSize = 1 * 1024ULL * 1024ULL;
+
+    CLMDBEnv env;
+    // fAutoGrow=false ignores the maximum and fixes the map at nMapSize.
+    BOOST_REQUIRE(env.Open(dir.string(), true, nMapSize, true,
+                           "-lmdbmapsize", false, 8 * 1024ULL * 1024ULL,
+                           false));
+    CLMDBDatabase db;
+    BOOST_REQUIRE(db.Open(env, "main", true));
+
+    CLMDBStats stats;
+    BOOST_REQUIRE(env.GetStats(stats));
+    BOOST_CHECK(!stats.fAutoGrow);
+    BOOST_CHECK_EQUAL(stats.nMapSize, nMapSize);
+    BOOST_CHECK_EQUAL(stats.nMaxMapSize, nMapSize);
+
+    std::unique_ptr<CDBTransaction> txn = BeginWrite(db);
+    const CDBValue large(64 * 1024, 'z');
+    bool fFailed = false;
+    for (unsigned int i = 0; i < 512; ++i) {
+        if (!txn->Write(NumberedKey("fixed", i), large)) {
+            fFailed = true;
+            break;
+        }
+    }
+    BOOST_REQUIRE(fFailed);
+    txn->Abort();
+
+    BOOST_REQUIRE(env.GetStats(stats));
+    BOOST_CHECK_EQUAL(stats.nMapSize, nMapSize);
+
+    db.Close();
+    env.Close();
+}
+
+void RunLMDBMapSizeResolution(const std::string & /*tag*/)
+{
+    size_t nMapSize = 0;
+    size_t nMaxMapSize = 0;
+    std::string strError;
+
+    BOOST_REQUIRE(ResolveLMDBMapSizes("64", "4096", 1024, true,
+                                      nMapSize, nMaxMapSize, strError));
+    BOOST_CHECK_EQUAL(nMapSize, 64ULL * 1024ULL * 1024ULL);
+    BOOST_CHECK_EQUAL(nMaxMapSize, 4096ULL * 1024ULL * 1024ULL);
+
+    // Empty values select the supplied initial default and the build ceiling.
+    BOOST_REQUIRE(ResolveLMDBMapSizes("", "", 1024, true,
+                                      nMapSize, nMaxMapSize, strError));
+    BOOST_CHECK_EQUAL(nMapSize, 1024ULL * 1024ULL * 1024ULL);
+    BOOST_CHECK_EQUAL(nMaxMapSize,
+                      static_cast<size_t>(GetLMDBDefaultMaxMapSizeMiB()) *
+                      1024ULL * 1024ULL);
+
+    // Disabling runtime growth makes the initial map the fixed limit.
+    BOOST_REQUIRE(ResolveLMDBMapSizes("128", "4096", 1024, false,
+                                      nMapSize, nMaxMapSize, strError));
+    BOOST_CHECK_EQUAL(nMapSize, 128ULL * 1024ULL * 1024ULL);
+    BOOST_CHECK_EQUAL(nMaxMapSize, nMapSize);
+
+    // A ceiling below the initial size is a configuration error.
+    BOOST_CHECK(!ResolveLMDBMapSizes("512", "256", 1024, true,
+                                     nMapSize, nMaxMapSize, strError));
+    BOOST_CHECK(!strError.empty());
+
+    BOOST_CHECK(!ResolveLMDBMapSizes("512", "not-a-number", 1024, true,
+                                     nMapSize, nMaxMapSize, strError));
 }
 
 void RunWalletLMDBDiagnostics(const std::string &tag)
@@ -1734,6 +1956,21 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_stats)
     RunLMDBEnvironmentStats("lmdb_stats");
 }
 
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_runtime_growth)
+{
+    RunLMDBRuntimeGrowth("lmdb_runtime_growth");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_runtime_growth_maximum)
+{
+    RunLMDBRuntimeGrowthMaximum("lmdb_runtime_growth_max");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_kvdb_fixed_map_size)
+{
+    RunLMDBFixedMapSize("lmdb_fixed_map");
+}
+
 BOOST_AUTO_TEST_CASE(wallet_lmdb_diagnostics)
 {
     RunWalletLMDBDiagnostics("wallet_lmdb_diagnostics");
@@ -1742,6 +1979,11 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_diagnostics)
 BOOST_AUTO_TEST_CASE(lmdb_mapsize_parsing)
 {
     RunLMDBMapSizeParsing("lmdb_mapsize_parse");
+}
+
+BOOST_AUTO_TEST_CASE(lmdb_mapsize_resolution)
+{
+    RunLMDBMapSizeResolution("lmdb_mapsize_resolution");
 }
 
 BOOST_AUTO_TEST_CASE(lmdb_wallet_migration_mapsize)

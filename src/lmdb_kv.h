@@ -8,19 +8,24 @@
 #include "db_kv.h"
 #include "lmdbdb.h"
 
+#include <deque>
 #include <lmdb.h>
+
+class CLMDBTransaction;
 
 class CLMDBIterator : public CDBIterator
 {
     MDB_cursor *cursor;
     MDB_val key, value;
     CDBKey prefix;
+    CLMDBTransaction *owner;
     bool valid;
     bool fError;
 
     bool MatchesPrefix() const;
 public:
-    CLMDBIterator(MDB_txn *txn, MDB_dbi dbi, const CDBKey &prefix = CDBKey());
+    CLMDBIterator(MDB_txn *txn, MDB_dbi dbi, CLMDBTransaction *owner,
+                  const CDBKey &prefix = CDBKey());
     ~CLMDBIterator();
     bool Valid() const override;
     bool Error() const override { return fError; }
@@ -35,16 +40,51 @@ public:
 
 class CLMDBTransaction : public CDBTransaction
 {
+    struct Mutation
+    {
+        enum Type { WRITE, ERASE } type;
+        CDBKey key;
+        CDBValue value;
+        bool fOverwrite;
+    };
+
     MDB_txn *txn;
     MDB_dbi dbi;
     bool fReadOnly;
     bool fAborted;
     bool fCommitted;
-    CLMDBEnv *writerEnv;
+    bool fWriterHeld;
+    bool fLeaseHeld;
+    int nActiveIterators;
+    CLMDBEnv *env;
+    // A deque never relocates existing elements on push_back, so recorded
+    // wallet values are not copied (and left behind in freed memory) as the
+    // log grows.  ClearMutations() cleanses every record before release.
+    std::deque<Mutation> mutations;
 
     void ReleaseWriter();
+    void ReleaseLease();
+    void ClearMutations();
+    void RecordWrite(const CDBKey &key, const CDBValue &value, bool fOverwrite);
+    void RecordErase(const CDBKey &key);
+
+    /**
+     * Aborts the current transaction and replays its recorded mutations in a
+     * newly grown map.  Used only after MDB_MAP_FULL, so callers never observe
+     * a partially committed transaction.  Requires the writer lock and no
+     * open cursors: replaying through a fresh transaction would invalidate
+     * them, so such a transaction fails safely instead.
+     */
+    bool RecoverFromMapFull();
+    int ReplayMutations();
+
+    friend class CLMDBIterator;
+    void IteratorOpened();
+    void IteratorClosed();
+
 public:
-    CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool fReadOnly, CLMDBEnv *env = nullptr);
+    CLMDBTransaction(MDB_txn *tx, MDB_dbi d, bool fReadOnly, CLMDBEnv *env,
+                     bool fWriterHeld, bool fLeaseHeld);
     ~CLMDBTransaction();
     bool Read(const CDBKey &key, CDBValue &value) override;
     bool Write(const CDBKey &key, const CDBValue &value, bool fOverwrite = true) override;

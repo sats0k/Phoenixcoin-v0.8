@@ -171,12 +171,36 @@ DBBackend GetConfiguredDBBackend();
 /** Maximum supported -lmdbmapsize value in MiB for this build. */
 int64 GetLMDBMaxMapSizeMiB();
 
+/** Default -lmdbmapsize / -lmdbwalletsize value in MiB for this build. */
+int64 GetLMDBDefaultMapSizeMiB();
+int64 GetLMDBDefaultWalletMapSizeMiB();
+
+/**
+ * Default automatic growth ceiling in MiB for this build: 1 TiB on 64-bit
+ * platforms and 2048 MiB on 32-bit platforms.
+ */
+int64 GetLMDBDefaultMaxMapSizeMiB();
+
 /**
  * Parses a -lmdbmapsize value in MiB and converts it to a page-aligned byte
  * count.  Fails for non-numeric, non-positive, unrepresentable, unsupported and
  * unaligned values, filling strError with a user-facing reason.
  */
 bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError);
+
+/**
+ * Resolves the initial map size and automatic growth ceiling for one LMDB
+ * environment.  Empty option strings select nDefaultInitialMiB and the build's
+ * default ceiling.  When fAutoGrow is false the map is fixed at the initial
+ * size.  The maximum must be at least as large as the initial size.
+ */
+bool ResolveLMDBMapSizes(const std::string& strMapSize,
+                         const std::string& strMaxMapSize,
+                         int64 nDefaultInitialMiB,
+                         bool fAutoGrow,
+                         size_t& nMapSize,
+                         size_t& nMaxMapSize,
+                         std::string& strError);
 
 /**
  * Returns the map size to use for a migration from a wallet.dat of

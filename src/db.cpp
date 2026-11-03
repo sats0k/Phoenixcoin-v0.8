@@ -146,6 +146,8 @@ bool g_fLMDBWalletEnabled = false;
 std::mutex g_mutexWalletKV;
 std::atomic<int> g_nWalletKVHandles(0);
 size_t g_nWalletMapSize = 0;
+size_t g_nWalletMaxMapSize = 0;
+bool g_fWalletAutoGrow = true;
 bool g_fWalletNoSync = true;
 // Directory that owns the open LMDB wallet.  The production startup path uses
 // GetDataDir(), but tests open the wallet in a temporary directory; rewrite
@@ -484,6 +486,28 @@ int64 GetLMDBMaxMapSizeMiB()
     return LMDB_MAX_MAPSIZE_MIB;
 }
 
+int64 GetLMDBDefaultMapSizeMiB()
+{
+    return LMDB_DEFAULT_MAPSIZE_MIB;
+}
+
+int64 GetLMDBDefaultWalletMapSizeMiB()
+{
+    return LMDB_DEFAULT_WALLET_MAPSIZE_MIB;
+}
+
+int64 GetLMDBDefaultMaxMapSizeMiB()
+{
+    // The map is virtual address space, not a preallocation.  A 1 TiB ceiling
+    // leaves ample room for chain growth while still bounding a runaway import
+    // or a bug; 32-bit builds cannot map more than about 2 GiB.
+#if defined(__LP64__) || defined(_WIN64)
+    return 1024LL * 1024LL; // 1 TiB
+#else
+    return 2048; // 2 GiB
+#endif
+}
+
 bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& strError)
 {
     int64 nMiB = 0;
@@ -524,6 +548,42 @@ bool ParseLMDBMapSize(const std::string& strValue, size_t& nBytes, std::string& 
     }
 
     nBytes = nCandidate;
+    return true;
+}
+
+bool ResolveLMDBMapSizes(const std::string& strMapSize,
+                         const std::string& strMaxMapSize,
+                         int64 nDefaultInitialMiB,
+                         bool fAutoGrow,
+                         size_t& nMapSize,
+                         size_t& nMaxMapSize,
+                         std::string& strError)
+{
+    const std::string strInitial = strMapSize.empty()
+        ? std::to_string(nDefaultInitialMiB) : strMapSize;
+    if (!ParseLMDBMapSize(strInitial, nMapSize, strError))
+        return false;
+
+    if (!fAutoGrow) {
+        // With runtime growth disabled the initial map is the fixed limit.
+        nMaxMapSize = nMapSize;
+        return true;
+    }
+
+    const std::string strMaximum = strMaxMapSize.empty()
+        ? std::to_string(GetLMDBDefaultMaxMapSizeMiB()) : strMaxMapSize;
+    if (!ParseLMDBMapSize(strMaximum, nMaxMapSize, strError))
+        return false;
+
+    if (nMaxMapSize < nMapSize) {
+        strError = strprintf(
+            "maximum map size (%s MiB) is smaller than the initial map size "
+            "(%s MiB)",
+            std::to_string(nMaxMapSize / (1024ULL * 1024ULL)).c_str(),
+            std::to_string(nMapSize / (1024ULL * 1024ULL)).c_str());
+        return false;
+    }
+
     return true;
 }
 
@@ -1140,12 +1200,17 @@ bool InitLMDBChainDB()
         return error("InitLMDBChainDB(): failed to open database environment");
 
     const std::string strMapSize = mapArgs.count("-lmdbmapsize")
-        ? mapArgs["-lmdbmapsize"]
-        : std::to_string(LMDB_DEFAULT_MAPSIZE_MIB);
+        ? mapArgs["-lmdbmapsize"] : std::string();
+    const std::string strMaxMapSize = mapArgs.count("-lmdbmaxmapsize")
+        ? mapArgs["-lmdbmaxmapsize"] : std::string();
+    const bool fAutoGrow = GetBoolArg("-lmdbruntimegrow", true);
     size_t nMapSize = 0;
+    size_t nMaxMapSize = 0;
     std::string strMapSizeError;
-    if (!ParseLMDBMapSize(strMapSize, nMapSize, strMapSizeError))
-        return error("InitLMDBChainDB(): invalid -lmdbmapsize: %s",
+    if (!ResolveLMDBMapSizes(strMapSize, strMaxMapSize, LMDB_DEFAULT_MAPSIZE_MIB,
+                             fAutoGrow, nMapSize, nMaxMapSize,
+                             strMapSizeError))
+        return error("InitLMDBChainDB(): invalid LMDB map size: %s",
                      strMapSizeError.c_str());
 
     // Match Berkeley DB's DB_TXN_WRITE_NOSYNC behaviour unless durability was
@@ -1153,7 +1218,8 @@ bool InitLMDBChainDB()
     // but skips the per-commit fsync that otherwise dominates block import.
     const bool fNoSync = GetBoolArg("-lmdbnosync", true);
 
-    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync))
+    if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync,
+                             "-lmdbmapsize", false, nMaxMapSize, fAutoGrow))
         return error("InitLMDBChainDB(): failed to open LMDB environment %s",
                      pathChain.string().c_str());
 
@@ -1418,6 +1484,8 @@ void RecoverInterruptedWalletRewrite(const std::filesystem::path& dir)
 
 bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
                               size_t nMapSize,
+                              size_t nMaxMapSize,
+                              bool fAutoGrow,
                               bool fNoSync)
 {
     const std::filesystem::path pathWallet = dir / "wallet";
@@ -1460,8 +1528,13 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
         }
     }
 
+    // A migration may have raised the initial map above the configured
+    // ceiling.  Keep growth meaningful for the environment that was opened.
+    if (nMaxMapSize < nMapSize)
+        nMaxMapSize = nMapSize;
+
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, nMapSize, fNoSync,
-                              "-lmdbwalletsize"))
+                              "-lmdbwalletsize", false, nMaxMapSize, fAutoGrow))
         return error("InitLMDBWalletDB(): failed to open LMDB environment %s",
                      pathWallet.string().c_str());
 
@@ -1520,6 +1593,8 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
 
     g_fLMDBWalletEnabled = true;
     g_nWalletMapSize = nMapSize;
+    g_nWalletMaxMapSize = nMaxMapSize;
+    g_fWalletAutoGrow = fAutoGrow;
     g_fWalletNoSync = fNoSync;
     g_pathLMDBWalletDir = dir;
     printf("Wallet database: LMDB (%s%s)\n", pathWallet.string().c_str(),
@@ -1537,7 +1612,8 @@ bool ReopenLMDBWallet(const std::filesystem::path& pathWallet,
         return false;
 
     if (!g_lmdbWalletEnv.Open(pathWallet.string(), true, g_nWalletMapSize,
-                              g_fWalletNoSync, "-lmdbwalletsize"))
+                              g_fWalletNoSync, "-lmdbwalletsize", false,
+                              g_nWalletMaxMapSize, g_fWalletAutoGrow))
         return false;
 
     if (!g_lmdbWalletDb.Open(g_lmdbWalletEnv, "main", true))
@@ -1840,24 +1916,35 @@ bool InitLMDBWalletDB()
         return true;
 
     const std::string strMapSize = mapArgs.count("-lmdbwalletsize")
-        ? mapArgs["-lmdbwalletsize"]
-        : std::to_string(LMDB_DEFAULT_WALLET_MAPSIZE_MIB);
+        ? mapArgs["-lmdbwalletsize"] : std::string();
+    const std::string strMaxMapSize = mapArgs.count("-lmdbmaxwalletsize")
+        ? mapArgs["-lmdbmaxwalletsize"] : std::string();
+    const bool fAutoGrow = GetBoolArg("-lmdbruntimegrow", true);
     size_t nMapSize = 0;
+    size_t nMaxMapSize = 0;
     std::string strMapSizeError;
-    if (!ParseLMDBMapSize(strMapSize, nMapSize, strMapSizeError))
-        return error("InitLMDBWalletDB(): invalid -lmdbwalletsize: %s",
+    if (!ResolveLMDBMapSizes(strMapSize, strMaxMapSize,
+                             LMDB_DEFAULT_WALLET_MAPSIZE_MIB, fAutoGrow,
+                             nMapSize, nMaxMapSize, strMapSizeError))
+        return error("InitLMDBWalletDB(): invalid LMDB wallet map size: %s",
                      strMapSizeError.c_str());
 
-    return InitLMDBWalletDBInternal(GetDataDir(), nMapSize,
-                                    GetBoolArg("-lmdbnosync", true));
+    return InitLMDBWalletDBInternal(GetDataDir(), nMapSize, nMaxMapSize,
+                                    fAutoGrow, GetBoolArg("-lmdbnosync", true));
 }
 
 bool InitLMDBWalletDBForTest(const std::filesystem::path& dir)
 {
     if (g_fLMDBWalletEnabled)
         CloseLMDBWalletDB();
-    return InitLMDBWalletDBInternal(dir, LMDB_DEFAULT_WALLET_MAPSIZE_MIB *
-                                   1024ULL * 1024ULL, true);
+    const size_t nMapSize =
+        LMDB_DEFAULT_WALLET_MAPSIZE_MIB * 1024ULL * 1024ULL;
+    // Tests use the same automatic growth ceiling as production; cases that
+    // need a small, exhausted map open CLMDBEnv directly with an explicit
+    // maximum.
+    return InitLMDBWalletDBInternal(dir, nMapSize,
+                                    GetLMDBDefaultMaxMapSizeMiB() * 1024ULL * 1024ULL,
+                                    true, true);
 }
 
 void CloseLMDBWalletDB()

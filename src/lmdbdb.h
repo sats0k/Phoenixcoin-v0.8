@@ -6,6 +6,7 @@
 #define LMDBDB_H
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
 #include <map>
 #include <mutex>
@@ -27,7 +28,9 @@ struct CLMDBStats
     bool fReadOnly = false;
     bool fNoSync = false;
     bool fWriterActive = false;
+    bool fAutoGrow = false;
     size_t nMapSize = 0;
+    size_t nMaxMapSize = 0;
     size_t nPageSize = 0;
     size_t nLastPgno = 0;
     size_t nLastTxnId = 0;
@@ -73,11 +76,16 @@ public:
      * system crash may lose the most recent transactions.  The database stays
      * consistent (MDB_WRITEMAP is not used) and the data is flushed when the
      * environment is closed.
+     *
+     * nMaxMapSize bounds automatic growth when fAutoGrow is true.  A zero
+     * maximum selects the build's default ceiling; disabling growth makes the
+     * initial map size the fixed limit.
      */
     bool Open(const std::string &path, bool fCreate = true, size_t nMapSize = 0,
               bool fNoSync = false,
               const std::string &strMapSizeFlag = "-lmdbmapsize",
-              bool fReadOnly = false);
+              bool fReadOnly = false, size_t nMaxMapSize = 0,
+              bool fAutoGrow = true);
     void Close();
 
     /** Flushes the memory map to disk.  Returns false when there is no open environment. */
@@ -127,6 +135,24 @@ public:
     bool TryAcquireWriter();
     void ReleaseWriter();
 
+    /**
+     * Transaction resize gate.  Every transaction holds a lease for its
+     * lifetime.  GrowMap() blocks new leases and waits for the active count to
+     * reach zero before calling mdb_env_set_mapsize(); LMDB explicitly
+     * requires that no transaction is active during a resize.
+     */
+    void AcquireTransactionLease();
+    void ReleaseTransactionLease();
+
+    /**
+     * Grows the memory map to the next page-aligned size, at most the
+     * configured maximum.  The caller must hold the writer lock.  The call
+     * waits for active readers and writers to drain before resizing.  Returns
+     * false when growth is disabled, the maximum has been reached, or LMDB
+     * rejects the new size.
+     */
+    bool GrowMap(std::string &strError);
+
 private:
     MDB_env *env;
     std::string strPath;
@@ -135,7 +161,14 @@ private:
     std::atomic<bool> fWriterActive;
     bool fNoSync;
     bool fReadOnly;
+    bool fAutoGrow;
+    size_t nMaxMapSize;
     mutable std::mutex mutexEnv;
+
+    mutable std::mutex mutexTxns;
+    mutable std::condition_variable cvTxns;
+    unsigned int nActiveTxns;
+    bool fResizePending;
 };
 
 #endif // LMDBDB_H

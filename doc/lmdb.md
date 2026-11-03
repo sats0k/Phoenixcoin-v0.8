@@ -70,8 +70,8 @@ the marker is written then.
 The map for the one-shot copy is sized from `wallet.dat` itself, so a wallet
 larger than `-lmdbwalletsize` still migrates; the startup log reports
 `LMDB wallet map size increased ... to fit the wallet.dat migration`.  After
-that, if the wallet reaches its map limit, writes fail with an `LMDB map is
-full` message naming `-lmdbwalletsize`; restart with a larger value.
+that the wallet map grows automatically while the node runs, up to
+`-lmdbmaxwalletsize`; see [Map usage and growth](#map-usage-and-growth).
 
 The marker makes ownership explicit:
 
@@ -105,22 +105,33 @@ LMDB wallet was active exist only in the LMDB copy.
 ## Options
 
 - `-dbbackend=lmdb|bdb` — chain index backend, default `bdb`.
-- `-lmdbmapsize=<MiB>` — maximum size of the LMDB chain index map.  The default
-  is 4096 MiB on 64-bit platforms and 1024 MiB elsewhere.  The map size is a
-  limit, not a preallocation.  The value must be a positive integer; values that
-  are not representable or that exceed the platform's LMDB address-space limit
-  are rejected at startup.  32-bit builds accept at most 2048 MiB, and the
-  converted byte count must be a multiple of the system page size.
+- `-lmdbmapsize=<MiB>` — initial size of the LMDB chain index map.  The default
+  is 4096 MiB on 64-bit platforms and 1024 MiB elsewhere.  If the existing
+  environment is larger it is reopened at its current size.  The value must be a
+  positive integer; values that are not representable or that exceed the
+  platform's LMDB address-space limit are rejected at startup.  32-bit builds
+  accept at most 2048 MiB, and the converted byte count must be a multiple of
+  the system page size.
+- `-lmdbmaxmapsize=<MiB>` — automatic chain index map growth ceiling, default
+  1 TiB on 64-bit platforms and 2048 MiB elsewhere.  If `-lmdbmaxmapsize` is less
+  than `-lmdbmapsize` startup fails.
+- `-lmdbruntimegrow=<0|1>` — default `1`.  Grow the LMDB map automatically when
+  a write transaction would exhaust the map.  When disabled the map is fixed at
+  `-lmdbmapsize` (and `-lmdbmaxmapsize` is ignored).
 - `-lmdbnosync=<0|1>` — default `1`.  Commits do not fsync, matching Berkeley
   DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per block during
   initial sync.  Transactions remain atomic and consistent.  Set to `0` for
   per-commit durability.  A clean shutdown always flushes the environment.
   This option applies to both LMDB environments.
 - `-walletbackend=lmdb|bdb` — wallet backend, default `bdb`.
-- `-lmdbwalletsize=<MiB>` — maximum size of the LMDB wallet map, default
+- `-lmdbwalletsize=<MiB>` — initial size of the LMDB wallet map, default
   4096 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
-  `-lmdbmapsize` and enlarged automatically when the existing wallet or a
-  pending `wallet.dat` migration needs more room.
+  `-lmdbmapsize`, enlarged automatically when the existing wallet or a pending
+  `wallet.dat` migration needs more room, and grows automatically at runtime
+  subject to `-lmdbmaxwalletsize`.
+- `-lmdbmaxwalletsize=<MiB>` — automatic wallet map growth ceiling, default
+  1 TiB on 64-bit platforms and 2048 MiB elsewhere.  If less than
+  `-lmdbwalletsize` startup fails.
 
 ## Map usage and growth
 
@@ -130,16 +141,49 @@ At startup Phoenixcoin prints how much of the LMDB map is in use:
 LMDB chain index: 123.4 of 4096.0 MiB used
 ```
 
-When the mapped file is already larger than the configured map size, the map is
-enlarged automatically, so a datadir created with a larger `-lmdbmapsize` can be
-started without repeating the option.  The wallet behaves the same way: an
-existing `wallet/` is reopened large enough for `data.mdb`, and a pending
-`wallet.dat` migration reserves space from the source file before the copy
-starts.  If the index or wallet reaches the map limit, writes fail with an
-`LMDB map is full` message; stop the node and restart with a larger
-`-lmdbmapsize` or `-lmdbwalletsize`.
+When the mapped file is already larger than the configured initial map size,
+the map is enlarged automatically at open time, so a datadir created with a
+larger `-lmdbmapsize` can be started without repeating the option.  The wallet
+behaves the same way: an existing `wallet/` is reopened large enough for
+`data.mdb`, and a pending `wallet.dat` migration reserves space from the source
+file before the copy starts.
 
-Online resizing while the node is running is not implemented.
+With `-lmdbruntimegrow=1` (the default), a write that exhausts the map does not
+fail the operation.  Phoenixcoin aborts the LMDB transaction, waits until no
+other transaction in the process is active, doubles the map (clamped to the
+page-aligned ceiling), and replays the writes and erases already performed by
+the caller in a fresh transaction.  The whole retry happens inside the original
+`Write()`, `Erase()` or `Commit()` call, so callers still see a single
+transaction and a partially committed state is never visible.  If the grown map
+is still too small for the transaction, the sequence repeats until
+`-lmdbmaxmapsize` or `-lmdbmaxwalletsize` is reached.  Each growth is logged:
+
+```
+LMDB map size increased from 1073741824 to 2147483648 bytes to recover from a
+full map (-lmdbmapsize, maximum 1099511627776 bytes)
+```
+
+Replay records logical operations (a write with its overwrite flag, or an
+erase), not the pages they dirtied, so a transaction containing a failed
+`MDB_NOOVERWRITE` write such as a duplicate-key insert is replayed with the same
+outcome.  Recorded keys and values are cleansed when the transaction ends.
+
+Two limits apply:
+
+- Replay needs a fresh LMDB transaction.  A transaction that has an open cursor
+  or iterator cannot be replayed, because the cursor would still point into the
+  aborted transaction.  Such a write fails safely with a message naming the map
+  option; abort the transaction and retry it.
+- Automatic growth stops at the configured ceiling.  A write that still fails
+  there reports `LMDB map is full` and names both the initial-size and ceiling
+  options.  Stop the node and raise `-lmdbmapsize` / `-lmdbmaxmapsize` (or the
+  wallet equivalents) before restarting.
+
+`-lmdbruntimegrow=0` disables online growth: the initial map size is the fixed
+limit and a full map fails the write with the same message.  This is useful when
+map size must be fixed by deployment policy.  Growth changes only the
+address-space limit; the data file stays sparse, and `utilization_percent`
+continues to describe committed pages.
 
 ## Health diagnostics
 
@@ -169,6 +213,8 @@ The result has a `chain` and a `wallet` object with the same shape:
     },
     "environment" : {
       "map_size" : 4294967296,
+      "max_map_size" : 1099511627776,
+      "auto_grow" : true,
       "page_size" : 4096,
       "used_bytes" : 184549376,
       "free_bytes" : 4110417920,
@@ -207,11 +253,13 @@ Field meanings:
   database handle opened successfully.  `environment_open`, `database_open`
   and `error` narrow down a false value.  Berkeley DB reports `opened_cleanly`
   as true and leaves the LMDB counters at zero.
-- `environment.map_size` is the configured or automatically enlarged map
-  limit, not a preallocated file size.  `used_bytes` is the copy-on-write
-  file footprint, `(last_page + 1) * page_size`.  `free_bytes` is the
-  remaining map space before writes fail with `MDB_MAP_FULL`, and
-  `utilization_percent` is `used_bytes / map_size`.
+- `environment.map_size` is the current map limit (the configured initial size
+  or a size chosen while opening or growing), not a preallocated file size.
+  `max_map_size` is the automatic growth ceiling and `auto_grow` reports
+  whether runtime growth is enabled.  `used_bytes` is the copy-on-write file
+  footprint, `(last_page + 1) * page_size`.  `free_bytes` is the remaining map
+  space before writes fail with `MDB_MAP_FULL`, and `utilization_percent` is
+  `used_bytes / map_size`.
 - `environment.readers`, `max_readers` and `writer_active` show current LMDB
   transaction state.  `read_only` and `nosync` report the environment open
   flags.
@@ -221,8 +269,10 @@ Field meanings:
 The free-space figure is an estimate: LMDB reuses free pages inside the file
 before extending it, so `used_bytes` tracks the high-water mark rather than
 the sum of live records.  A growing `utilization_percent` with a small
-`free_bytes` is the signal to stop the node and raise `-lmdbmapsize` or
-`-lmdbwalletsize`.
+`free_bytes` is the signal to stop the node and raise the initial size or the
+growth ceiling (`-lmdbmapsize` / `-lmdbmaxmapsize`, or the wallet equivalents).
+When `auto_grow` is true and `map_size` equals `max_map_size`, the next full map
+can no longer grow.
 
 `getdbinfo` only reads counters in a short-lived read transaction; it does not
 modify either environment.

@@ -219,6 +219,8 @@ static Object DBBackendDiagnosticsToJSON(const DBBackendDiagnostics& diag)
 
     Object env;
     env.push_back(Pair("map_size", (int64_t)diag.env.nMapSize));
+    env.push_back(Pair("max_map_size", (int64_t)diag.env.nMaxMapSize));
+    env.push_back(Pair("auto_grow", diag.env.fAutoGrow));
     env.push_back(Pair("page_size", (int64_t)diag.env.nPageSize));
     env.push_back(Pair("used_bytes", (int64_t)diag.env.nUsedBytes));
     env.push_back(Pair("free_bytes", (int64_t)diag.env.nFreeBytes));
