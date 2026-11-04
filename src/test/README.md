@@ -703,6 +703,15 @@ any failure:
   otherwise those particular checks are skipped. The RPC port is allocated
   dynamically, so concurrent runs do not collide, and can be pinned with
   `PXC_REGTEST_PORT`.
+- `regression_lmdb_import_batch.sh` — `-loadblock` / `bootstrap.dat` bulk
+  import on the LMDB chain index. A clean four-block file must commit as one
+  batch and preserve the tip, block bytes and transaction lookups across a
+  restart; importing the same file again must skip known blocks instead of
+  stopping at the first duplicate; and a file with a corrupted middle block
+  must collapse the whole uncommitted batch, leave the node at genesis with
+  blocks 1-2 absent from the index, and allow a later clean import to reach
+  the correct four-block tip. The debug log records the committed and
+  rolled-back batch sizes, so the test proves the batching path actually ran.
 - `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
   copied, keys and labels survive, the migration runs once, an explicit BDB

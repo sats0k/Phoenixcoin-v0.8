@@ -469,6 +469,47 @@ fails, the transaction is aborted and the newly created in-memory
 `mapBlockIndex` entry is removed again, so a failed write cannot leave an index
 entry whose database record was rolled back.  This applies to both backends.
 
+### Bulk block import
+
+`-loadblock` (and a `bootstrap.dat` file at startup) normally writes each block
+in its own transaction.  While the node is below the checkpoint estimate, the
+importer groups consecutive best-chain blocks into one chain-index
+transaction.  A batch only starts when all of the following hold:
+
+- the chain index uses LMDB;
+- the node is in initial block download and `nBestHeight` is below
+  `Checkpoints::GetTotalBlocksEstimate()`;
+- the mempool and both orphan pools are empty;
+- the next block extends the current best tip.
+
+This keeps the batch on the linear startup import path and away from the
+height where `ConnectInputs()` starts performing full signature checks.  A
+batch is capped at 1000 blocks or 64 MiB of serialized block data, whichever
+comes first.  A side chain, a reorganisation, a non-contiguous file or the end
+of the checkpoint-free window commits the open batch and then uses the normal
+per-block path.
+
+The in-memory block index, `pindexBest`, `nBestHeight`, `bnBestChainWork` and
+the `pnext` links still advance block by block, so the next block in the file
+validates against the correct predecessor.  If a block is rejected, or the
+batch commit fails, the whole uncommitted unit is aborted: every block-index
+entry added since the batch began is removed from `mapBlockIndex` and deleted,
+the saved globals and `pnext` link are restored, and the import stops.
+`LoadExternalBlockFile()` counts only blocks whose transaction committed.
+
+Blocks are appended to `blkNNNN.dat` before their index transaction, so an
+aborted batch leaves unreferenced raw block bytes behind, exactly like a failed
+single-block write.  A restart ignores them because only the chain index is
+loaded.  `ConnectBlock()` still updates the wallet one transaction at a time
+through its own database; a failure can therefore leave wallet history ahead
+of the rolled-back chain index, the same limitation as the pre-existing
+per-block failure path.  Batching does not relax durability: the batch commit
+fsyncs with the default `-lmdbnosync=0`.
+
+Re-importing a file that was partially processed skips blocks already present
+in `mapBlockIndex` and continues scanning.  A genuinely rejected block stops
+the import instead of retrying the same file position forever.
+
 ## Recovery
 
 LMDB never overwrites committed pages in place, so an interrupted process leaves
@@ -500,6 +541,11 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   suites.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
+- `regression_lmdb_import_batch.sh` passed 39/39 checks in the normal build:
+  a four-block `-loadblock` import commits as one batch and survives a
+  restart, a re-import skips known blocks and creates no second batch, and a
+  corrupted middle block rolls the uncommitted batch back to genesis before a
+  later clean import reaches the correct tip.
 - The full unit suite passed 182 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive

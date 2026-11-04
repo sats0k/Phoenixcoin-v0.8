@@ -258,6 +258,7 @@ check-lmdb-backup:
 nightly-lmdb: check-lmdb-backup
 	./test/regression_lmdb_wallet_migration.sh ./phoenixcoind
 	./test/regression_lmdb_chain_migration.sh ./phoenixcoind
+	./test/regression_lmdb_import_batch.sh ./phoenixcoind
 
 # On-disk wallet backend benchmark.  Kept separate from the Boost suite so the
 # default tests keep using the in-memory mock Berkeley DB environment.

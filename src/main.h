@@ -26,6 +26,7 @@
 class CWallet;
 class CBlock;
 class CBlockIndex;
+class CChainImportBatch;
 class CKeyItem;
 class CReserveKey;
 
@@ -162,7 +163,7 @@ class CTxIndex;
 void RegisterWallet(CWallet* pwalletIn);
 void UnregisterWallet(CWallet* pwalletIn);
 void SyncWithWallets(const CTransaction& tx, const CBlock* pblock = nullptr, bool fUpdate = false);
-bool ProcessBlock(CNode* pfrom, CBlock* pblock);
+bool ProcessBlock(CNode* pfrom, CBlock* pblock, CChainImportBatch* pBatch = nullptr);
 bool CheckDiskSpace(uint64 nAdditionalBytes=0);
 FILE* OpenBlockFile(unsigned int nFile, unsigned int nBlockPos, const char* pszMode="rb");
 FILE* AppendBlockFile(unsigned int& nFileRet);
@@ -1140,13 +1141,13 @@ public:
     bool DisconnectBlock(CTxDB& txdb, CBlockIndex* pindex);
     bool ConnectBlock(CTxDB& txdb, CBlockIndex* pindex, bool fJustCheck=false);
     bool ReadFromDisk(const CBlockIndex* pindex, bool fReadTransactions=true);
-    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive = false);
-    bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos);
+    bool SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive = false, bool fDeferCommit = false);
+    bool AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, CChainImportBatch* pBatch = nullptr);
     bool CheckBlock(bool fCheckPOW=true, bool fCheckMerkleRoot=true) const;
-    bool AcceptBlock();
+    bool AcceptBlock(CChainImportBatch* pBatch = nullptr);
 
 private:
-    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew);
+    bool SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool fDeferCommit = false);
 };
 
 

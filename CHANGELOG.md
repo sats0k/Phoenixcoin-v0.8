@@ -224,6 +224,18 @@ Changes since v0.8.3.
   the in-memory transaction, order position and spent flags before the
   existing broadcast attempt continues, so the wallet never exposes a
   partially applied update.
+- Bulk block import through `-loadblock` / `bootstrap.dat` now groups
+  consecutive best-chain blocks below the checkpoint estimate into one
+  chain-index transaction. A batch is limited to 1000 blocks or 64 MiB, starts
+  only with an empty mempool and orphan pool, and never covers a side chain or
+  reorganisation. Every block still advances the in-memory block index and
+  best-chain pointers, so the next block validates against the correct
+  predecessor. A rejected block or failed commit aborts the whole uncommitted
+  batch, removes the entries it added to `mapBlockIndex`, restores the saved
+  tip, height, work and `pnext` link, and stops the import. Known blocks are
+  skipped when a file is imported again, and a rejected block no longer makes
+  the scanner retry the same file position forever. The batch commit still
+  fsyncs with `-lmdbnosync=0`.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

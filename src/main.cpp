@@ -15,6 +15,7 @@
 #include <limits>
 #include <tuple>
 #include <cstdlib>
+#include <memory>
 
 #include <filesystem>
 #include <fstream>
@@ -1839,7 +1840,7 @@ bool static Reorganize(CTxDB& txdb, CBlockIndex* pindexNew)
 
 
 // Called from inside SetBestChain: attaches a block to the new best chain being built
-bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
+bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew, bool fDeferCommit)
 {
     uint256 hash = GetHash();
 
@@ -1850,7 +1851,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
         InvalidChainFound(pindexNew);
         return false;
     }
-    if (!txdb.TxnCommit())
+    if (!fDeferCommit && !txdb.TxnCommit())
         return error("SetBestChain() : TxnCommit failed");
 
     // Add to current best branch
@@ -1863,7 +1864,7 @@ bool CBlock::SetBestChainInner(CTxDB& txdb, CBlockIndex *pindexNew)
     return true;
 }
 
-bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
+bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive, bool fDeferCommit)
 {
     uint256 hash = GetHash();
 
@@ -1880,17 +1881,27 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
     {
         if (!txdb.WriteHashBestChain(hash))
             return error("SetBestChain() : WriteHashBestChain failed");
-        if (!txdb.TxnCommit())
+        if (!fDeferCommit && !txdb.TxnCommit())
             return error("SetBestChain() : TxnCommit failed");
         pindexGenesisBlock = pindexNew;
     }
     else if (hashPrevBlock == hashBestChain)
     {
-        if (!SetBestChainInner(txdb, pindexNew))
+        if (!SetBestChainInner(txdb, pindexNew, fDeferCommit))
             return error("SetBestChain() : SetBestChainInner failed");
     }
     else
     {
+        // A deferred commit is only used while importing a linear block file.
+        // Reorganising inside the same transaction would need the branch
+        // disconnect and reconnect steps to move to a different commit
+        // boundary, so refuse it instead of silently committing early.
+        if (fDeferCommit)
+        {
+            txdb.TxnAbort();
+            return error("SetBestChain() : cannot defer a reorganisation");
+        }
+
         // the first block in the new chain that will cause it to become the new best chain
         CBlockIndex *pindexIntermediate = pindexNew;
 
@@ -1936,12 +1947,16 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
         }
     }
 
-    // Update best block in wallet (so we can detect restored wallets)
+    // Update best block in wallet (so we can detect restored wallets).  A
+    // deferred import batch keeps the notification until its commit succeeds.
     bool fIsInitialDownload = IsInitialBlockDownload();
-    if (!fIsInitialDownload)
+    if (!fDeferCommit)
     {
-        const CBlockLocator locator(pindexNew);
-        ::SetBestChain(locator);
+        if (!fIsInitialDownload)
+        {
+            const CBlockLocator locator(pindexNew);
+            ::SetBestChain(locator);
+        }
     }
 
     // New best block
@@ -1979,7 +1994,7 @@ bool CBlock::SetBestChain(CTxDB& txdb, CBlockIndex* pindexNew, bool fTxnActive)
 
     std::string strCmd = GetArg("-blocknotify", "");
 
-    if (!fIsInitialDownload && !strCmd.empty())
+    if (!fDeferCommit && !fIsInitialDownload && !strCmd.empty())
     {
         // Replace every "%s" placeholder with the block hash.
         std::string strHash = hashBestChain.GetHex();
@@ -2045,8 +2060,221 @@ private:
 
 } // namespace
 
+namespace {
 
-bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
+// Bounds for the multi-block chain-index transaction used while importing an
+// external block file.  A batch is capped by both block count and serialized
+// block bytes so a file of very large blocks cannot make one transaction
+// unbounded.
+const size_t MAX_IMPORT_BATCH_BLOCKS = 1000;
+const size_t MAX_IMPORT_BATCH_BYTES = 64 * 1024 * 1024;
+
+// Last coinbase transaction announced to the UI as part of the best block.
+uint256 hashPrevBestCoinBase;
+
+} // namespace
+
+
+/**
+ * Accumulates the chain-index writes of several consecutive best-chain blocks
+ * into one transaction while an external block file is imported.
+ *
+ * The import loop only enables a batch below the checkpoint estimate, with an
+ * empty mempool and only for blocks that extend the current best tip.  Every
+ * block still updates the in-memory block index, best-chain pointers and
+ * heights immediately so the next block in the file validates against the
+ * right predecessor.  A failed block or commit aborts the whole uncommitted
+ * unit and restores that in-memory state to the snapshot taken by Begin().
+ */
+class CChainImportBatch
+{
+public:
+    CChainImportBatch()
+        : fActive(false), nBlocks(0), nBytes(0), hashLastCoinbase(0),
+          savedBestChain(0), savedBest(nullptr), savedGenesis(nullptr),
+          savedBestHeight(-1), savedBestWork(0), savedTimeBestReceived(0),
+          savedTransactionsUpdated(0), savedFBBHLast(nullptr),
+          savedBestNext(nullptr) {}
+
+    ~CChainImportBatch()
+    {
+        if (fActive)
+            Abort();
+    }
+
+    /** True when this block may join a new or existing import batch. */
+    static bool IsEligible(const CBlock& block)
+    {
+        return IsLMDBChainEnabled()
+            && IsInitialBlockDownload()
+            && nBestHeight < Checkpoints::GetTotalBlocksEstimate()
+            && mempool.size() == 0
+            && mapOrphanBlocks.empty()
+            && mapOrphanBlocksByPrev.empty()
+            && pindexBest != nullptr
+            && block.hashPrevBlock == hashBestChain;
+    }
+
+    bool IsActive() const { return fActive; }
+    size_t PendingBlocks() const { return vEntries.size(); }
+
+    bool CanAppend(const CBlock& block, size_t nBlockBytes) const
+    {
+        return fActive
+            && nBlocks < MAX_IMPORT_BATCH_BLOCKS
+            && nBytes + nBlockBytes <= MAX_IMPORT_BATCH_BYTES
+            && IsEligible(block);
+    }
+
+    bool Begin()
+    {
+        if (fActive || !txdb.TxnBegin())
+            return false;
+
+        savedBestChain = hashBestChain;
+        savedBest = pindexBest;
+        savedGenesis = pindexGenesisBlock;
+        savedBestHeight = nBestHeight;
+        savedBestWork = bnBestChainWork;
+        savedTimeBestReceived = nTimeBestReceived;
+        savedTransactionsUpdated = nTransactionsUpdated;
+        savedFBBHLast = pblockindexFBBHLast;
+        savedBestNext = pindexBest ? pindexBest->pnext : nullptr;
+
+        vEntries.clear();
+        nBlocks = 0;
+        nBytes = 0;
+        hashLastCoinbase = 0;
+        fActive = true;
+        return true;
+    }
+
+    /** True when this block belongs on the current best tip inside the batch. */
+    bool IsExtending(const uint256& hashPrev, const CBigNum& work) const
+    {
+        return fActive && hashPrev == hashBestChain && work > bnBestChainWork;
+    }
+
+    CTxDB& DB() { return txdb; }
+
+    void Record(const uint256& hash, CBlockIndex* pindex,
+                const uint256& hashCoinbase)
+    {
+        vEntries.push_back(Entry(hash, pindex));
+        ++nBlocks;
+        hashLastCoinbase = hashCoinbase;
+    }
+
+    void AddBytes(size_t nBlockBytes) { nBytes += nBlockBytes; }
+
+    bool Commit()
+    {
+        if (!fActive)
+            return true;
+
+        // TxnCommit() either makes the transaction durable or discards it.
+        // Clear the flag first so the destructor never aborts a transaction
+        // that the commit failure path already closed.
+        fActive = false;
+        bool fSuccess = txdb.TxnCommit();
+        txdb.Close();
+
+        if (!fSuccess)
+        {
+            RollbackMemory();
+            return false;
+        }
+
+        if (!vEntries.empty())
+        {
+            printf("CChainImportBatch: committed %" PRIszu " blocks\n",
+              vEntries.size());
+            UpdatedTransaction(hashPrevBestCoinBase);
+            hashPrevBestCoinBase = hashLastCoinbase;
+            uiInterface.NotifyBlocksChanged();
+        }
+
+        vEntries.clear();
+        nBlocks = 0;
+        nBytes = 0;
+        hashLastCoinbase = 0;
+        return true;
+    }
+
+    void Abort()
+    {
+        if (!fActive)
+            return;
+
+        fActive = false;
+        txdb.TxnAbort();
+        txdb.Close();
+        printf("CChainImportBatch: rolled back %" PRIszu " blocks\n",
+          vEntries.size());
+        RollbackMemory();
+    }
+
+private:
+    struct Entry
+    {
+        Entry(const uint256& hashIn, CBlockIndex* pindexIn)
+            : hash(hashIn), pindex(pindexIn) {}
+        uint256 hash;
+        CBlockIndex* pindex;
+    };
+
+    void RollbackMemory()
+    {
+        // Delete in reverse order so a child is unlinked before its parent.
+        for (auto it = vEntries.rbegin(); it != vEntries.rend(); ++it)
+        {
+            CBlockIndex* pindex = it->pindex;
+            if (pindex->pprev && pindex->pprev->pnext == pindex)
+                pindex->pprev->pnext = nullptr;
+
+            BlockMap::iterator mi = mapBlockIndex.find(it->hash);
+            if (mi != mapBlockIndex.end() && mi->second == pindex)
+                mapBlockIndex.erase(mi);
+            delete pindex;
+        }
+
+        hashBestChain = savedBestChain;
+        pindexBest = savedBest;
+        pindexGenesisBlock = savedGenesis;
+        nBestHeight = savedBestHeight;
+        bnBestChainWork = savedBestWork;
+        nTimeBestReceived = savedTimeBestReceived;
+        nTransactionsUpdated = savedTransactionsUpdated;
+        pblockindexFBBHLast = savedFBBHLast;
+        if (savedBest)
+            savedBest->pnext = savedBestNext;
+
+        vEntries.clear();
+        nBlocks = 0;
+        nBytes = 0;
+        hashLastCoinbase = 0;
+    }
+
+    CTxDB txdb;
+    bool fActive;
+    size_t nBlocks;
+    size_t nBytes;
+    std::vector<Entry> vEntries;
+    uint256 hashLastCoinbase;
+
+    uint256 savedBestChain;
+    CBlockIndex* savedBest;
+    CBlockIndex* savedGenesis;
+    int savedBestHeight;
+    CBigNum savedBestWork;
+    int64 savedTimeBestReceived;
+    unsigned int savedTransactionsUpdated;
+    CBlockIndex* savedFBBHLast;
+    CBlockIndex* savedBestNext;
+};
+
+
+bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos, CChainImportBatch* pBatch)
 {
     // Check for duplicate
     uint256 hash = GetHash();
@@ -2067,40 +2295,79 @@ bool CBlock::AddToBlockIndex(unsigned int nFile, unsigned int nBlockPos)
     }
     pindexNew->bnChainWork = (pindexNew->pprev ? pindexNew->pprev->bnChainWork : 0) + pindexNew->GetBlockWork();
 
+    const bool fBatch = (pBatch != nullptr && pBatch->IsActive());
+
+    // In import-batch mode the caller owns the transaction and the rollback of
+    // every entry recorded since the batch began.  Only a block that extends
+    // the current best tip can share that transaction: a side chain would need
+    // the reorganisation path, which has its own commit boundaries.
+    if (fBatch && !pBatch->IsExtending(hashPrevBlock, pindexNew->bnChainWork))
+    {
+        BlockMap::iterator miNew = mapBlockIndex.find(hash);
+        if (miNew != mapBlockIndex.end() && miNew->second == pindexNew)
+            mapBlockIndex.erase(miNew);
+        delete pindexNew;
+        return error("AddToBlockIndex() : block does not extend the import batch");
+    }
+
     // Every failure path below (including an exception while opening the
     // database) must remove the in-memory entry again.
     CBlockIndexRollbackGuard rollback(hash, pindexNew);
+    if (fBatch)
+    {
+        // The batch keeps this entry until it commits; aborting the batch
+        // removes it from the map and deletes it.
+        pBatch->Record(hash, pindexNew, vtx[0].GetHash());
+        rollback.Disarm();
+    }
 
-    CTxDB txdb;
-    if (!txdb.TxnBegin())
-        return error("AddToBlockIndex() : TxnBegin failed");
-    if (!txdb.WriteBlockIndex(CDiskBlockIndex(pindexNew)))
+    std::unique_ptr<CTxDB> txdbOwned;
+    CTxDB* ptxdb = nullptr;
+    if (fBatch)
+    {
+        ptxdb = &pBatch->DB();
+    }
+    else
+    {
+        txdbOwned.reset(new CTxDB());
+        ptxdb = txdbOwned.get();
+        if (!ptxdb->TxnBegin())
+            return error("AddToBlockIndex() : TxnBegin failed");
+    }
+
+    if (!ptxdb->WriteBlockIndex(CDiskBlockIndex(pindexNew)))
         return error("AddToBlockIndex() : WriteBlockIndex failed");
 
     // New best.  SetBestChain() reuses the open transaction so the block index
     // and the best-chain update are committed together.
     if (pindexNew->bnChainWork > bnBestChainWork)
     {
-        if (!SetBestChain(txdb, pindexNew, true))
+        if (!SetBestChain(*ptxdb, pindexNew, true, fBatch))
             return error("AddToBlockIndex() : SetBestChain failed");
     }
-    else if (!txdb.TxnCommit())
+    else if (!ptxdb->TxnCommit())
     {
         return error("AddToBlockIndex() : TxnCommit failed");
     }
 
-    txdb.Close();
-    rollback.Disarm();
-
-    if (pindexNew == pindexBest)
+    if (txdbOwned)
     {
-        // Notify UI to display prev block's coinbase if it was ours
-        static uint256 hashPrevBestCoinBase;
-        UpdatedTransaction(hashPrevBestCoinBase);
-        hashPrevBestCoinBase = vtx[0].GetHash();
+        txdbOwned->Close();
+        rollback.Disarm();
     }
 
-    uiInterface.NotifyBlocksChanged();
+    // A batch reports its best block once, when its transaction commits.
+    if (!fBatch)
+    {
+        if (pindexNew == pindexBest)
+        {
+            // Notify UI to display prev block's coinbase if it was ours
+            UpdatedTransaction(hashPrevBestCoinBase);
+            hashPrevBestCoinBase = vtx[0].GetHash();
+        }
+
+        uiInterface.NotifyBlocksChanged();
+    }
     return true;
 }
 
@@ -2167,7 +2434,7 @@ bool CBlock::CheckBlock(bool fCheckPOW, bool fCheckMerkleRoot) const
     return true;
 }
 
-bool CBlock::AcceptBlock()
+bool CBlock::AcceptBlock(CChainImportBatch* pBatch)
 {
     // Check for duplicate
     uint256 hash = GetHash();
@@ -2298,24 +2565,28 @@ bool CBlock::AcceptBlock()
     unsigned int nBlockPos = 0;
     if (!WriteToDisk(nFile, nBlockPos))
         return error("AcceptBlock() : WriteToDisk failed");
-    if (!AddToBlockIndex(nFile, nBlockPos))
+    if (!AddToBlockIndex(nFile, nBlockPos, pBatch))
         return error("AcceptBlock() : AddToBlockIndex failed");
 
-    /* Relay inventory, but don't relay old inventory during initial block download */
-    int nBlockEstimate = Checkpoints::GetTotalBlocksEstimate();
-    if(hashBestChain == hash) {
-        LOCK(cs_vNodes);
-        for (CNode *pnode : vNodes) {
-            if(nBestHeight > (pnode->nStartingHeight !=
-              -1 ? pnode->nStartingHeight - 2000 : nBlockEstimate)) {
-                pnode->PushInventory(CInv(MSG_BLOCK, hash));
+    const bool fBatched = (pBatch != nullptr && pBatch->IsActive());
+    if (!fBatched)
+    {
+        /* Relay inventory, but don't relay old inventory during initial block download */
+        int nBlockEstimate = Checkpoints::GetTotalBlocksEstimate();
+        if(hashBestChain == hash) {
+            LOCK(cs_vNodes);
+            for (CNode *pnode : vNodes) {
+                if(nBestHeight > (pnode->nStartingHeight !=
+                  -1 ? pnode->nStartingHeight - 2000 : nBlockEstimate)) {
+                    pnode->PushInventory(CInv(MSG_BLOCK, hash));
+                }
             }
         }
-    }
 
-    /* Process a pending sync checkpoint;
-     * disabled during initial block download to accelerate processing speed */
-    if(!IsInitialBlockDownload()) Checkpoints::AcceptPendingSyncCheckpoint();
+        /* Process a pending sync checkpoint;
+         * disabled during initial block download to accelerate processing speed */
+        if(!IsInitialBlockDownload()) Checkpoints::AcceptPendingSyncCheckpoint();
+    }
 
     return(true);
 }
@@ -2332,7 +2603,7 @@ bool CBlockIndex::IsSuperMajority(int minVersion, const CBlockIndex* pstart, uns
     return (nFound >= nRequired);
 }
 
-bool ProcessBlock(CNode *pfrom, CBlock *pblock) {
+bool ProcessBlock(CNode *pfrom, CBlock *pblock, CChainImportBatch* pBatch) {
     uint256 hash = pblock->GetHash();
 
     /* Duplicate block check */
@@ -2385,7 +2656,7 @@ bool ProcessBlock(CNode *pfrom, CBlock *pblock) {
     }
 
     // Store to disk
-    if (!pblock->AcceptBlock())
+    if (!pblock->AcceptBlock(pBatch))
         return error("ProcessBlock() : AcceptBlock FAILED");
 
     // Recursively process any orphan blocks that depended on this one
@@ -2746,6 +3017,7 @@ bool LoadExternalBlockFile(FILE* fileIn)
     int nLoaded = 0;
     {
         LOCK(cs_main);
+        CChainImportBatch batch;
         try {
             CAutoFile blkdat(fileIn, SER_DISK, CLIENT_VERSION);
             unsigned char pchData[65536];
@@ -2794,19 +3066,86 @@ bool LoadExternalBlockFile(FILE* fileIn)
                 fseek(blkdat, nPos, SEEK_SET);
                 unsigned int nSize;
                 blkdat >> nSize;
-                if (nSize > 0 && nSize <= MAX_BLOCK_SIZE)
+                if (nSize == 0 || nSize > MAX_BLOCK_SIZE)
                 {
-                    CBlock block;
-                    blkdat >> block;
-                    if (ProcessBlock(nullptr,&block))
+                    printf("LoadExternalBlockFile() : invalid block size %u at %u, stopping\n",
+                      nSize, nPos);
+                    break;
+                }
+
+                CBlock block;
+                blkdat >> block;
+
+                // A block file may be imported again after a partial run.
+                // Skipping known blocks keeps the scan moving instead of
+                // treating the duplicate as a rejection and stopping.
+                uint256 hashBlock = block.GetHash();
+                if (mapBlockIndex.count(hashBlock) || mapOrphanBlocks.count(hashBlock))
+                {
+                    nPos += 4 + nSize;
+                    continue;
+                }
+
+                // Stop an existing batch at its boundary before handling a
+                // block that cannot join it (side chain, full batch, or the
+                // end of the checkpoint-free import window).
+                if (batch.IsActive() && !batch.CanAppend(block, nSize))
+                {
+                    size_t nPending = batch.PendingBlocks();
+                    if (!batch.Commit())
                     {
-                        nLoaded++;
-                        nPos += 4 + nSize;
+                        nLoaded = std::max(0, nLoaded - static_cast<int>(nPending));
+                        printf("LoadExternalBlockFile() : batch commit failed, stopping\n");
+                        break;
                     }
+                }
+
+                bool fBatch = batch.IsActive();
+                if (!fBatch && CChainImportBatch::IsEligible(block))
+                    fBatch = batch.Begin();
+
+                if (ProcessBlock(nullptr, &block, fBatch ? &batch : nullptr))
+                {
+                    if (fBatch)
+                        batch.AddBytes(nSize);
+                    nLoaded++;
+                    nPos += 4 + nSize;
+                }
+                else
+                {
+                    // A rejected block stops the scan.  The previous code left
+                    // nPos unchanged and retried the same block forever.
+                    if (batch.IsActive())
+                    {
+                        size_t nPending = batch.PendingBlocks();
+                        batch.Abort();
+                        nLoaded = std::max(0, nLoaded - static_cast<int>(nPending));
+                    }
+                    printf("LoadExternalBlockFile() : block at file position %u rejected, stopping\n", nPos);
+                    break;
+                }
+            }
+
+            // Keep the blocks imported before shutdown or end of file.
+            if (batch.IsActive())
+            {
+                size_t nPending = batch.PendingBlocks();
+                if (!batch.Commit())
+                {
+                    nLoaded = std::max(0, nLoaded - static_cast<int>(nPending));
+                    printf("LoadExternalBlockFile() : final batch commit failed\n");
                 }
             }
         }
         catch (std::exception &e) {
+            // The destructor would abort the batch too, but the loaded count
+            // must not include blocks whose commit was rolled back.
+            if (batch.IsActive())
+            {
+                size_t nPending = batch.PendingBlocks();
+                batch.Abort();
+                nLoaded = std::max(0, nLoaded - static_cast<int>(nPending));
+            }
             printf("%s() : Deserialize or I/O error caught during load\n",
                    __PRETTY_FUNCTION__);
         }
