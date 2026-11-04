@@ -493,18 +493,20 @@ made after the original migration, so prefer a backup when one exists.
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 
-- `kvdb_tests` passed 33/33 test cases in the normal build.  The chain-index
+- `kvdb_tests` passed 48/48 test cases in the normal build.  The chain-index
   subset that existed at the time (24 cases, 1238 assertions) also passed under
-  AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports.
+  AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports;
+  that sanitizer run predates the later wallet, backup and runtime-growth
+  suites.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- The full unit suite passed 153 test cases with no errors in the normal build.
-  Under sanitizers it passed 140/141 test cases (40534/40535 assertions).  The
-  only failure was the timing-sensitive `DoS_tests/DoS_checkSig` under
-  sanitizer slowdown.  There were no AddressSanitizer errors.  The eight
-  UndefinedBehaviorSanitizer reports were all in pre-existing non-LMDB code
-  (`Hash160` on an empty vector, base32/base64 decoding, and empty-vector
-  handling in `EvalScript`).
+- The full unit suite passed 178 test cases with no errors in the normal build.
+  Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
+  (40534/40535 assertions).  The only failure was the timing-sensitive
+  `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
+  AddressSanitizer errors.  The eight UndefinedBehaviorSanitizer reports were
+  all in pre-existing non-LMDB code (`Hash160` on an empty vector,
+  base32/base64 decoding, and empty-vector handling in `EvalScript`).
 
 Crash recovery was checked at two points:
 
@@ -911,6 +913,11 @@ builds:
 | `regression_lmdb_wallet_parity.sh` | 118/118 |
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
 | full unit suite | 158 cases |
+
+These runs were recorded on the 158-case tree that existed when the wallet
+backend was validated. The current normal-build suite is 178 cases; the
+later database atomicity, keypool-staging and invariant tests were added
+after these sanitizer runs.
 
 The targeted unit runs used LeakSanitizer (`detect_leaks=1`) and reported no
 leaks.  Broad runs used `detect_leaks=0` because of pre-existing RPC/asio

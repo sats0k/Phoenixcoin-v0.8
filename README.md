@@ -321,13 +321,17 @@ Implemented functionality includes:
 * Encrypted hybrid private-key serialization
 * Persisted hybrid key usage (already-issued hybrid addresses are never re-issued)
 * Atomic hybrid-key persistence (the hybrid and legacy ECDSA records are written together) and the `checkhybridkeys` invariant diagnostic
+* Atomic wallet-key persistence and keypool refills: a generated key and its metadata enter the in-memory keystore only after the enclosing transaction commits
+* Verified LMDB wallet backup/restore (`backupwallet`) and offline checking (`-checklmdb` / `checklmdb`)
 * Bulk hybrid-key backup/restore via dump file (`dumphybridkeys` / `importhybridkeys`)
 
-Hybrid keys are persisted in `wallet.dat`.
+Hybrid keys are persisted in the wallet database: the LMDB environment under
+`<datadir>/wallet/` by default, or `wallet.dat` when the Berkeley DB backend is
+selected with `-walletbackend=bdb`.
 
 The wallet maintains the classical secp256k1 component together with the corresponding ML-DSA private key.
 
-Hybrid ownership checks (`IsMine()`, and therefore coin selection) resolve through a reverse index from a legacy ECDSA key ID to its `CHybridKeyID`, instead of re-hashing the public key of every hybrid key in the wallet. The index covers the encrypted `wallet.dat` records too (`secpPub` is stored in the clear), so a locked wallet still answers ownership questions, and it is rebuilt whenever either key map changes size or the wallet is locked. On a wallet holding 3,462 hybrid keys this brought `listunspent` from 8.5-31.4s down to 0.14-0.20s (1,374 UTXOs).
+Hybrid ownership checks (`IsMine()`, and therefore coin selection) resolve through a reverse index from a legacy ECDSA key ID to its `CHybridKeyID`, instead of re-hashing the public key of every hybrid key in the wallet. The index covers the encrypted at-rest wallet records too (`secpPub` is stored in the clear), so a locked wallet still answers ownership questions, and it is rebuilt whenever either key map changes size or the wallet is locked. On a wallet holding 3,462 hybrid keys this brought `listunspent` from 8.5-31.4s down to 0.14-0.20s (1,374 UTXOs).
 
 While locked, every hybrid script form the wallet fully owns — `P2PKH`-style `TX_HYBRID_PUBKEYHASH`, direct `TX_HYBRID_PUBKEY` and `TX_HYBRID_MULTISIG` — is reported as watch-only: visible in `listhybridaddresses`, `listunspent`, the balance and coin control, but marked non-spendable by `AvailableCoins()` so it can never reach `SignSignature()`. Keys are never decrypted to answer these queries; unlocking restores full spendability.
 
@@ -350,6 +354,32 @@ The encrypted format uses:
 Modification of authenticated encrypted-key data causes decryption to fail.
 
 See [`SECURITY.md`](SECURITY.md) for the detailed cryptographic security model.
+
+---
+
+# Database Backends
+
+The chain index and the wallet each use their own database backend. LMDB is
+the production default for both. Berkeley DB remains available for
+compatibility and recovery with `-dbbackend=bdb` / `-walletbackend=bdb`; there
+is no implicit fallback between the two backends.
+
+On the first LMDB start an existing `blkindex.dat` or `wallet.dat` is copied
+into its LMDB environment. The source file is left untouched, and a failed copy
+leaves no marker so the migration can be retried. Wallet migration verifies
+every copied record inside the transaction before committing; chain-index
+migration copies the records and commits them as one transaction. The selected
+backend is recorded in `blkindex.backend` / `wallet.backend`, printed at
+startup, and enforced: a marker for one backend refuses a start configured for
+the other.
+
+LMDB commits fsync by default (`-lmdbnosync=0`), the map grows automatically as
+it fills up to `-lmdbmaxmapsize` / `-lmdbmaxwalletsize`, and `backupwallet`
+writes a compacted, verified copy of the wallet environment. `getdbinfo`
+reports live backend and map statistics, while `-checklmdb` /
+`-checklmdbdeep` and the `checklmdb <path> [full]` RPC verify an offline
+environment such as a backup. See [`doc/lmdb.md`](doc/lmdb.md) for migration,
+options, backup, recovery and health diagnostics.
 
 ---
 
@@ -427,7 +457,8 @@ The Quantum implementation currently uses:
 | OpenSSL EVP       | ML-DSA key/signature interface           |
 | OpenSSL providers | Cryptographic algorithm/provider support |
 | NeoScrypt         | Proof of work                            |
-| LevelDB           | Blockchain/wallet database storage       |
+| LMDB              | Default chain-index/wallet database      |
+| Berkeley DB       | Optional chain-index/wallet database     |
 
 ---
 
@@ -439,6 +470,10 @@ Minimum versions used by this development branch include:
 
 * **OpenSSL 3.5 or newer**
 * **Boost 1.89 or newer**
+* **LMDB and Berkeley DB C/C++ libraries** (both are linked; LMDB is the
+  default backend, Berkeley DB remains available for compatibility and
+  recovery)
+* **libsecp256k1** for the classical secp256k1 key operations
 * C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
   `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
   the compiler default)
@@ -476,6 +511,12 @@ make NATIVE=1    # tune for the build machine with -march=native
 machines, and works for the Qt build as well (`qmake NATIVE=1`); the Qt
 project applies LTO to ELF targets. Release builds also enable
 `-fstack-protector-strong` and `_FORTIFY_SOURCE=2`.
+
+`STATIC=1` links the static LMDB archive (`liblmdb.a`) instead of the shared
+library, matching the Berkeley DB, Boost and OpenSSL branches. For a
+non-default installation, `LMDB_INCLUDE_PATH`, `LMDB_LIB_PATH` and
+`LMDB_LIB_SUFFIX` select the include directory, library directory and filename
+suffix, as the existing Berkeley DB variables do.
 
 Before attempting to build or run Quantum, verify the installed OpenSSL version:
 
@@ -539,6 +580,11 @@ signmessage / verifymessage (hybrid addresses)
 encryptmessage / decryptmessage (hybrid addresses)
 ```
 
+Database and backup RPCs are described in [Database Backends](#database-backends):
+`getdbinfo` reports live backend and LMDB statistics, `checklmdb <path> [full]`
+verifies an offline environment, and `backupwallet` writes a compacted,
+verified LMDB wallet copy.
+
 `listhybridaddresses` also works on a locked (encrypted) wallet: it lists the addresses from the encrypted at-rest records as well as the decrypted keys, with their labels and creation times. `gethybridaddress` still requires an unlocked wallet, because it must derive a fresh address from key material the master key protects.
 
 `addhybridmultisigaddress <n-required> <'["hybridpubkey",...]'> [account]` creates an N-of-M hybrid multisignature P2SH address from hybrid public keys and adds it to the wallet.
@@ -590,7 +636,7 @@ Testing has covered:
 * Hybrid-key pool invariants (top-ups, uniqueness, locked-wallet refusal)
 * Legacy-key-ID reverse index invalidation (index cross-checked against the
   original linear scan across growth, `Lock()`/unlock and negative lookups)
-* Locked-wallet hybrid visibility: at-rest `wallet.dat` records are
+* Locked-wallet hybrid visibility: at-rest wallet records are
   indexed, every fully owned hybrid script form reports `MINE_WATCH_ONLY`
   while the keys are encrypted, and the signability probe and
   materialised-ID lookup still refuse
@@ -619,8 +665,23 @@ Testing has covered:
   round trip, atomic import under injected mid-transaction write failure,
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
+* Berkeley DB to LMDB chain-index and wallet migration, including
+  byte-for-byte record copying, semantic wallet equality and cross-backend
+  parity
+* Wallet crash safety under `SIGKILL` at every migration, marker, write and
+  encryption-rewrite boundary
+* Verified LMDB backup/restore and offline structural verification
+* Wallet write-boundary, hybrid-key and keypool rollback atomicity,
+  including the staged keys that must not enter memory before a refill
+  commits
 
-An automated unit-test suite covers these scenarios under `src/test/hybrid_multisig_tests.cpp` (33 test cases), alongside the re-enabled legacy Boost suites (script, multisig, transaction, P2SH, miner, DoS); the full suite reports **116 test cases** and passes with no errors:
+An automated unit-test suite covers these scenarios under
+`src/test/hybrid_multisig_tests.cpp` (33 test cases), `kvdb_tests.cpp` (48
+cases for the database backends and LMDB operations) and
+`wallet_migration_tests.cpp` (13 cases for migration semantics, atomicity and
+hybrid invariants), alongside the re-enabled legacy Boost suites (script,
+multisig, transaction, P2SH, miner, DoS). The full suite reports **178 test
+cases** and passes with no errors:
 
 ```bash
 cd src
@@ -672,6 +733,13 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Locked-wallet hybrid visibility: hybrid addresses, balances and all
       fully owned hybrid output forms are listed as watch-only while the
       wallet is encrypted, and stay non-spendable until unlocked
+* [x] LMDB as the default chain-index and wallet backend, with first-start
+      migration from Berkeley DB, authoritative backend markers and no
+      implicit fallback
+* [x] Verified LMDB wallet backup/restore, offline `checklmdb` verification
+      and live `getdbinfo` health diagnostics
+* [x] Automatic LMDB map growth and per-commit fsync by default
+* [x] Atomic wallet writes, hybrid-key pairs and keypool refills
 
 ### Remaining deployment work
 
@@ -773,14 +841,16 @@ src/wallet.cpp
 
 Hybrid RPC integration is implemented through the wallet/RPC sources.
 
-Automated hybrid unit/regression tests are located under:
+Automated hybrid, database and migration tests are located under:
 
 ```text
 src/test/hybrid_multisig_tests.cpp
+src/test/kvdb_tests.cpp
+src/test/wallet_migration_tests.cpp
 ```
 
-Full-daemon shell regression scripts for the hybrid key export/import
-file operations live beside it:
+Full-daemon shell regression scripts for the hybrid key export/import file
+operations and the LMDB database workflows live beside them:
 
 ```text
 src/test/regression_atomic_importhybridkey.sh
@@ -789,7 +859,16 @@ src/test/regression_hybridkeys_file.sh
 src/test/regression_hybridkeys_malformed.sh
 src/test/regression_importhybridkey.sh
 src/test/regression_privkey_roundtrip.sh
+src/test/regression_lmdb_chain_migration.sh
+src/test/regression_lmdb_wallet_backup.sh
+src/test/regression_lmdb_wallet_crash.sh
+src/test/regression_lmdb_wallet_e2e.sh
+src/test/regression_lmdb_wallet_migration.sh
+src/test/regression_lmdb_wallet_parity.sh
 ```
+
+The LMDB backend, migration, backup, recovery and diagnostics are documented
+in [`doc/lmdb.md`](doc/lmdb.md).
 
 ---
 

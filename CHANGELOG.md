@@ -41,6 +41,28 @@ Changes since v0.8.3.
   wallet. `deep` (the default) decrypts and re-derives the materialised key;
   it is skipped while an encrypted wallet is locked. `encryptwallet` refuses
   to convert a wallet whose hybrid keys already violate the invariant.
+- A verified LMDB wallet backup and restore workflow. `backupwallet` copies
+  the live environment compactly into a staging directory, scans every
+  staged record, compares the committed entry count with the source, and
+  only then renames the verified copy into place. Non-empty destinations and
+  regular files are refused, and staging is cleaned up on every failure
+  path. `-checklmdb` / `-checklmdbdeep` and the `checklmdb <path> [full]`
+  RPC verify an offline environment (meta pages, file length against the
+  active meta page, the main sub-database and an optional full record scan)
+  using `MDB_RDONLY | MDB_NOLOCK`, so a backup is never modified and no
+  `lock.mdb` is created.
+- `getdbinfo`, a read-only health diagnostic reporting the configured and
+  active chain and wallet backends, the backend markers, whether each LMDB
+  environment opened cleanly, map size and utilisation, reader/writer state,
+  `mdb_stat()` counters, and an additive `data_file` description of the
+  on-disk state.
+- Automatic LMDB map growth. A write that exhausts the map aborts its
+  transaction, waits for other transactions to drain, grows the map to the
+  next page-aligned doubling bounded by `-lmdbmaxmapsize` /
+  `-lmdbmaxwalletsize`, and replays the recorded writes and erases in a
+  fresh transaction, so callers still see one atomic `Write`/`Erase`/
+  `Commit`. `-lmdbruntimegrow` (default on) controls it, and `getdbinfo`
+  reports `max_map_size` and `auto_grow`.
 
 ### Fixed
 
@@ -98,6 +120,38 @@ Changes since v0.8.3.
   a host that has no fonts in the compile-time prefix directory;
   `QT_QPA_FONTDIR` points at a system font directory when the caller has
   not chosen one.
+- An interrupted or failed `RewriteWalletLMDB()` could disable LMDB while
+  `wallet.backend` still marked LMDB as authoritative, after which
+  `CDB("wallet.dat")` routed writes to Berkeley DB and committed data
+  disappeared on the next LMDB start. Every path that closes the live
+  environment now either reopens a usable one or stops: a failed rename
+  keeps and reopens `wallet/`, a failed install restores and reopens
+  `wallet.old`, an unreadable compacted copy is parked with `wallet.old`
+  restored, a failed removal of `wallet.old` keeps the new environment live
+  and reports failure, and only a failure with no recoverable environment
+  exits. Startup also repairs an interrupted rewrite by installing
+  `wallet.rewrite` or restoring `wallet.old`, removing stale staging
+  directories and `wallet.backend.tmp`, and re-running a discarded partial
+  migration. `EncryptWallet()` checks `CDB::Rewrite()` and exits on
+  failure, so encryption cannot leave plaintext keys in the old copy.
+- A failed database read was treated as end-of-data by the wallet loaders,
+  so a truncated wallet could finish loading silently. `CDBIterator` now
+  exposes `Error()`, both backends set it for failures other than
+  "not found", the Berkeley DB iterator copies its own key/value data
+  instead of reusing static buffers, and `CDBScan` provides a
+  backend-neutral scan handle that owns the read transaction and iterator.
+  Wallet record iteration uses it; the chain index keeps its cursor reads
+  but now distinguishes a failed cursor operation from end-of-data.
+- `AddToBlockIndex()` inserted a new `CBlockIndex` into `mapBlockIndex`
+  before opening the combined block-index/best-chain transaction, so a
+  failed begin, write, `SetBestChain()` or commit left an in-memory entry
+  whose database record had been rolled back. An RAII rollback now removes
+  the candidate after the transaction aborts, clears partial `pnext`/cache
+  links, and checks the genesis `WriteHashBestChain()` result.
+- A `blkindex.backend` marker that says `lmdb` no longer re-imports the
+  migration-time `blkindex.dat` snapshot when the LMDB index is missing or
+  empty: startup fails instead, and a deliberate re-import requires removing
+  the marker.
 
 ### Changed
 
@@ -118,6 +172,13 @@ Changes since v0.8.3.
   when a stale `blkindex/` directory exists, matching the wallet behaviour;
   a `lmdb` marker likewise refuses `-dbbackend=bdb`. Migration from
   `blkindex.dat` now runs only when no marker exists at all.
+- The unused bundled `src/leveldb/` tree is gone. LMDB and Berkeley DB are
+  the only database backends, and no code or build rule references LevelDB.
+- `-lmdbmapsize` is parsed strictly instead of through `atoi64`:
+  non-positive, unrepresentable and non-page-multiple values are rejected
+  before conversion, and 32-bit builds are capped at 2048 MiB so a large
+  request cannot wrap during the `size_t` conversion. The equivalent
+  validation applies to the wallet map-size options.
 - Wallet flushing and backup now dispatch through `FlushWalletDB()` and
   `BackupWalletDB()` in the database layer instead of branching on
   `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs
@@ -230,8 +291,24 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 117 test cases. New coverage:
+The Boost suite is at 178 test cases. The database work added two new
+suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
+LMDB environments, migration, backup/verification and runtime map growth)
+and `wallet_migration_tests` (13 cases for wallet migration semantics,
+encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
+New coverage:
 
+- `kvdb_tests`: the backend-neutral interfaces, cursor/iterator error
+  reporting, LMDB environment handling and concurrency, BDB-to-LMDB chain
+  index and wallet migration, record verification, `backupwallet` staging
+  and restore, offline `checklmdb` verification, `getdbinfo` counters,
+  runtime map growth and its ceiling, fixed-map map-full handling, and
+  map-size parsing limits.
+- `wallet_migration_tests`: migration from Berkeley DB with key, label and
+  encryption-state equality, cross-backend parity, the staged hybrid-key
+  write path, `checkhybridkeys`, write-boundary rollback, explicit LMDB
+  rewrite failure injection, and ECDSA keypool refill rollback through the
+  staged `CStagedKey` path.
 - `util_ParseConfigStream`: covers the configuration file parser, i.e.
   the option/value pairs with the surrounding whitespace trimmed, the `#`
   and `;` comments, the quoted values and the values that contain an `=`,

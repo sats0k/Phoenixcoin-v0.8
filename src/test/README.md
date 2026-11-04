@@ -14,6 +14,7 @@ The currently enabled test sources are:
 ```
 test_bitcoin.cpp
 hybrid_multisig_tests.cpp
+wallet_migration_tests.cpp
 accounting_tests.cpp
 allocator_tests.cpp
 base32_tests.cpp
@@ -360,10 +361,19 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 116 test cases...
+Running 178 test cases...
 
 *** No errors detected
 ```
+
+The full suite is 178 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
+(33), `wallet_migration_tests` (13), `util_tests` (12) and the re-enabled
+legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
+wallet migration, encryption-state equality, cross-backend parity,
+write-boundary rollback, explicit rewrite-failure handling and hybrid-key
+invariants; `kvdb_tests.cpp` covers the backend abstraction, cursor error
+reporting, LMDB environments, migration, verified backup/restore,
+`checklmdb`, `getdbinfo` and runtime map growth.
 
 The hybrid message-key suite now also covers the `dumphybridkey` /
 `importhybridkey` round trip: a key exported as WIF + Base64-DER is
@@ -612,10 +622,13 @@ definitions and a sample result are in `doc/lmdb.md`, "Health diagnostics".
 In addition to the Boost unit suite, this directory contains shell
 regression scripts that drive full `phoenixcoind` daemons end to end.
 They exercise the hybrid private-key export/import flows and the
-Berkeley DB to LMDB chain-index handoff that need a real wallet and
-database. Each script takes an optional path to a
-`phoenixcoind` binary (defaults to the freshly built `src/phoenixcoind`),
-prints a `PASS`/`FAIL` tally, and exits non-zero on any failure:
+Berkeley DB to LMDB wallet and chain-index workflows that need a real
+wallet and database: migration, verified backup/restore, offline
+`checklmdb`, `SIGKILL` crash safety at each durability boundary, the full
+wallet lifecycle and cross-backend parity. Each script takes an optional
+path to a `phoenixcoind` binary (defaults to the freshly built
+`src/phoenixcoind`), prints a `PASS`/`FAIL` tally, and exits non-zero on
+any failure:
 
 - `regression_importhybridkey.sh` — an `importhybridkey`-imported hybrid
   key is readable (`dumphybridkey`) immediately and after a full daemon
