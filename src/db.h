@@ -375,11 +375,13 @@ bool InitLMDBWalletDBForTest(const std::filesystem::path& dir);
  * the surrounding transaction, which is what the atomicity tests exercise.
  *
  * SetTestWalletCommitFailure makes the next wallet transaction commit fail and
- * abort instead.  Both hooks are one-shot, apply only to wallet databases and
- * are inert until armed.  They are used by the failure-injection tests only.
+ * abort instead; nSkip lets earlier commits succeed when one logical
+ * operation uses more than one transaction.  Both hooks are one-shot, apply
+ * only to wallet databases and are inert until armed.  They are used by the
+ * failure-injection tests only.
  */
 void SetTestWalletWriteFailure(const std::string& strType, int nSkip = 0);
-void SetTestWalletCommitFailure();
+void SetTestWalletCommitFailure(int nSkip = 0);
 void ClearTestWalletWriteFailures();
 bool TestWalletWriteFailureArmed();
 bool TestWalletWriteFailureMatches(const std::string& strType);

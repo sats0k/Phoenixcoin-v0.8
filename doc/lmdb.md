@@ -574,11 +574,11 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
-Wallet write atomicity is covered by three failure-injection tests in
+Wallet write atomicity is covered by five failure-injection tests in
 `wallet_migration_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
-matching LMDB wallet write (after an optional skip count) or the next wallet
-commit fail.  The hooks are one-shot, inert until armed, and never affect
+matching LMDB wallet write or wallet commit fail after an optional skip count.
+The hooks are one-shot, inert until armed, and never affect
 Berkeley DB or the chain index.  `wallet_atomic_write_boundaries` fails every
 existing `CWalletDB` write boundary inside one explicit transaction -- `keymeta`
 and `key`, `ckey`, `tx`, `name`, `bestblock`, `pool`, `cscript`, `watch`,
@@ -591,15 +591,27 @@ do not exist.  `wallet_atomic_hybrid_import_rollback` repeats the hybrid
 `importhybridkey` transaction (ECDSA key, `hyb` record, label) with the failure
 injected at each write and at the commit, then proves none of the new state is
 visible in memory or after a restart and that the identical retry succeeds.
-`wallet_atomic_hybrid_keypool_rollback` does the same for a keypool top-up,
-failing the first, second and third `hyb` write; a final uninjected top-up must
-commit the whole pool.
+`wallet_atomic_hybrid_keypool_rollback` does the same for a hybrid keypool
+top-up, failing the first, second and third `hyb` write; a final uninjected
+top-up must commit the whole pool.
+
+The ordinary ECDSA keypool has the same guarantee, with separate coverage for
+each refill shape.  `wallet_atomic_ecdsa_new_key_pool_rollback` fails a
+`keymeta` write, a `key` write and the refill commit in `NewKeyPool()`; the
+pool was already cleared before the batch, but the failed batch must add no key
+or metadata in memory, leave no records from the aborted batch, and match that
+state after a restart.  `wallet_atomic_ecdsa_top_up_key_pool_rollback` does the
+same for `TopUpKeyPool()`, where the entire wallet and database must remain
+unchanged.  Both tests then run the same refill without injection and verify
+the persisted pool entries, keys and metadata after another restart.
 
 The keypool top-up path itself was made atomic for these tests:
 `CWallet::EnsureHybridKeyPool` now generates and encrypts the whole batch
 first, writes the ECDSA records and hybrid records in one database transaction,
 and only registers the keys in memory after that transaction commits.  A
-failure at any point leaves no partial pool behind.
+failure at any point leaves no partial pool behind.  The ordinary refill uses
+`CWallet::StageNewKey()` and `CWallet::AddStagedKeyToMemory()` for the same
+stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
@@ -819,6 +831,10 @@ pool and the new pool as one transaction per phase, and
 `CWallet::TopUpKeyPool` commits the whole batch at once.  Keys generated during
 the refill are persisted through the refill's existing `CWalletDB` handle, so
 the batch shares one LMDB writer rather than opening a second one for each key.
+They are also staged outside the in-memory keystore and inserted only after the
+batch commits.  A failed `keymeta`/`key` write or a failed commit therefore
+leaves no orphaned key or metadata behind in the running wallet, matching the
+rolled-back on-disk state.
 
 Batching removes redundant commits; it does not relax durability.  With the
 default `-lmdbnosync=0` every remaining commit still fsyncs, and the crash

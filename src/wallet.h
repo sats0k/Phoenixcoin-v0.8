@@ -78,6 +78,21 @@ private:
     bool SelectCoins(int64 nTargetValue, std::set<std::pair<const CWalletTx *, uint> > &setCoinsRet,
       int64 &nValueRet, const CCoinControl *coinControl = nullptr) const;
 
+    // A generated key written through an open database transaction but not
+    // yet visible to the in-memory keystore.  A keypool refill stages every
+    // key, commits the whole batch, and only then calls
+    // AddStagedKeyToMemory(), so a failed write or commit cannot leave
+    // orphaned keys in the running wallet.
+    struct CStagedKey
+    {
+        CKey key;
+        CPubKey pubkey;
+        CKeyMetadata metadata;
+        std::vector<unsigned char> vchCryptedSecret;
+    };
+    bool StageNewKey(CWalletDB& db, CStagedKey& staged);
+    void AddStagedKeyToMemory(const CStagedKey& staged);
+
     CWalletDB *pwalletdbEncryption;
 
     // the current wallet version: clients below this version are not able to load the wallet

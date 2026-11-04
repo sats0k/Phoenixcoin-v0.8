@@ -1882,6 +1882,252 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_keypool_rollback)
 }
 
 /**
+ * Requires every persisted keypool entry to have both a key in the keystore
+ * and its metadata in memory.  This is the invariant a refill must preserve
+ * even after a failed batch.
+ */
+static void CheckEcdsaKeyPoolEntriesOwned(CWallet &wallet,
+                                          const std::string &phase)
+{
+    CWalletDB db("wallet.dat", "r");
+    for (int64 nIndex : wallet.setKeyPool) {
+        CKeyPool entry;
+        BOOST_REQUIRE_MESSAGE(db.ReadPool(nIndex, entry),
+                              phase << ": keypool entry " << nIndex
+                                    << " is unreadable");
+        const CKeyID keyID = entry.vchPubKey.GetID();
+        BOOST_CHECK_MESSAGE(wallet.HaveKey(keyID),
+                            phase << ": keypool entry " << nIndex
+                                  << " has no keystore key");
+        BOOST_CHECK_MESSAGE(wallet.mapKeyMetadata.count(keyID) == 1,
+                            phase << ": keypool entry " << nIndex
+                                  << " has no key metadata");
+    }
+}
+
+/**
+ * NewKeyPool() clears the old pool in one committed transaction and then
+ * stages a whole new batch.  A failure while writing keymetadata or the key,
+ * or at the batch commit, must leave no generated key or metadata behind in
+ * the running wallet.  The old pool is already gone by design; the keystore
+ * must still contain exactly the keys it had before the refill.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_new_key_pool_rollback)
+{
+    TempDirGuard guard("wallet_ecdsa_newpool_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    BOOST_CHECK_EQUAL(baseline.keyPool.size(), 4U);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+
+    // The old pool is committed as removed before the refill starts, so the
+    // expected state after any refill failure is the baseline without pool
+    // records.  The keys and metadata must be untouched.
+    WalletSnapshot cleared = baseline;
+    cleared.keyPool.clear();
+    cleared.keyPoolEntries.clear();
+    std::map<CDBKey, CDBValue> clearedRecords;
+    for (const auto &record : baselineRecords) {
+        if (RecordType(record.first) != "pool")
+            clearedRecords.insert(record);
+    }
+    BOOST_CHECK_EQUAL(CountRecordsOfType(clearedRecords, "pool"), 0U);
+
+    struct Injection
+    {
+        const char *type;
+        int skip;
+        bool commit;
+        int commitSkip;
+    };
+    const Injection injections[] = {
+        {"keymeta", 1, false, 0},
+        {"key", 1, false, 0},
+        {"", 0, true, 1},
+    };
+
+    for (const Injection &injection : injections) {
+        const std::string tag = injection.commit
+            ? std::string("commit")
+            : std::string(injection.type);
+        if (injection.commit)
+            SetTestWalletCommitFailure(injection.commitSkip);
+        else
+            SetTestWalletWriteFailure(injection.type, injection.skip);
+
+        bool fSucceeded = true;
+        try {
+            fSucceeded = wallet->NewKeyPool(3);
+        } catch (const std::exception &) {
+            fSucceeded = false;
+        }
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            tag << ": injected failure did not fail NewKeyPool()");
+        BOOST_CHECK_MESSAGE(wallet->setKeyPool.empty(),
+                            tag << ": failed refill left keypool entries");
+        CheckSnapshotsEqual(cleared,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after failed refill");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == clearedRecords,
+            tag << ": failed refill left records behind ("
+                << DescribeRecordDelta(clearedRecords, CaptureRecords())
+                << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        BOOST_CHECK_MESSAGE(wallet->setKeyPool.empty(),
+                            tag << ": keypool entries survived a restart");
+        CheckSnapshotsEqual(cleared,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after restart");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == clearedRecords,
+            tag << ": failed refill survived a restart ("
+                << DescribeRecordDelta(clearedRecords, CaptureRecords())
+                << ")");
+    }
+
+    // The one-shot injections are consumed; the same refill must now succeed
+    // and persist every pool entry together with its key and metadata.
+    BOOST_REQUIRE(wallet->NewKeyPool(3));
+    const WalletSnapshot retried = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    BOOST_CHECK_EQUAL(wallet->setKeyPool.size(), 3U);
+    BOOST_CHECK_EQUAL(retried.keyIDs.size(), baseline.keyIDs.size() + 3);
+    BOOST_CHECK_EQUAL(retried.keyMetadata.size(),
+                      baseline.keyMetadata.size() + 3);
+    CheckEcdsaKeyPoolEntriesOwned(*wallet, "retry");
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    CheckSnapshotsEqual(retried,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "retry after restart");
+    CheckEcdsaKeyPoolEntriesOwned(*wallet, "retry after restart");
+    BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "pool"), 3U);
+}
+
+/**
+ * TopUpKeyPool() adds keys without clearing the existing pool.  A failure in
+ * keymetadata, the key record or the final commit must leave the pool,
+ * keystore, metadata and database byte-for-byte unchanged, before and after a
+ * restart.  The next top-up must add the missing keys normally.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_top_up_key_pool_rollback)
+{
+    TempDirGuard guard("wallet_ecdsa_topup_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    KeyPoolArgGuard keyPoolArg("6");
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    BOOST_CHECK_EQUAL(baseline.keyPool.size(), 4U);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+
+    struct Injection
+    {
+        const char *type;
+        int skip;
+        bool commit;
+    };
+    const Injection injections[] = {
+        {"keymeta", 1, false},
+        {"key", 1, false},
+        {"", 0, true},
+    };
+
+    for (const Injection &injection : injections) {
+        const std::string tag = injection.commit
+            ? std::string("commit")
+            : std::string(injection.type);
+        if (injection.commit)
+            SetTestWalletCommitFailure();
+        else
+            SetTestWalletWriteFailure(injection.type, injection.skip);
+
+        bool fSucceeded = true;
+        try {
+            fSucceeded = wallet->TopUpKeyPool();
+        } catch (const std::exception &) {
+            fSucceeded = false;
+        }
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            tag << ": injected failure did not fail TopUpKeyPool()");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after failed top-up");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed top-up changed the database ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after restart");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed top-up survived a restart ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+    }
+
+    BOOST_REQUIRE(wallet->TopUpKeyPool());
+    const WalletSnapshot retried = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    BOOST_CHECK_EQUAL(wallet->setKeyPool.size(), 7U);
+    BOOST_CHECK_EQUAL(retried.keyIDs.size(), baseline.keyIDs.size() + 3);
+    BOOST_CHECK_EQUAL(retried.keyMetadata.size(),
+                      baseline.keyMetadata.size() + 3);
+    CheckEcdsaKeyPoolEntriesOwned(*wallet, "retry");
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    CheckSnapshotsEqual(retried,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "retry after restart");
+    CheckEcdsaKeyPoolEntriesOwned(*wallet, "retry after restart");
+    BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "pool"), 7U);
+}
+
+/**
  * Encryption lifecycle on a migrated wallet:
  *
  *   unencrypted -> migrate -> sign -> encrypt -> restart

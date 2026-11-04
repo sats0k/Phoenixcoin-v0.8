@@ -164,6 +164,39 @@ bool CWallet::StageKeyRecord(CWalletDB& db, const CKey& key,
     return db.WriteKey(pubkey, key.GetPrivKey(), meta);
 }
 
+bool CWallet::StageNewKey(CWalletDB& db, CStagedKey& staged)
+{
+    const bool fCompressed = CanSupportFeature(FEATURE_COMPRPUBKEY);
+
+    RandAddSeedPerfmon();
+    staged.key.MakeNewKey(fCompressed);
+
+    if (fCompressed)
+        SetMinVersion(FEATURE_COMPRPUBKEY, &db);
+
+    staged.pubkey = staged.key.GetPubKey();
+    staged.metadata = CKeyMetadata(GetTime());
+    staged.vchCryptedSecret.clear();
+
+    if (IsCrypted() &&
+        !EncryptKeySecret(staged.key, staged.vchCryptedSecret))
+        return false;
+
+    return StageKeyRecord(db, staged.key, staged.metadata,
+                          staged.vchCryptedSecret);
+}
+
+void CWallet::AddStagedKeyToMemory(const CStagedKey& staged)
+{
+    if (IsCrypted())
+        LoadCryptedKey(staged.pubkey, staged.vchCryptedSecret);
+    else
+        LoadKey(staged.key);
+
+    mapKeyMetadata[staged.pubkey.GetID()] = staged.metadata;
+    UpdateTimeFirstKey(staged.metadata.nCreateTime);
+}
+
 bool CWallet::AddCScript(const CScript& redeemScript) {
 
     if(!CCryptoKeyStore::AddCScript(redeemScript))
@@ -2093,33 +2126,47 @@ bool CWallet::NewKeyPool(unsigned int nSize)
 
         // One transaction for the whole refill.  Each key still gets its
         // keymeta + key pair, but they are committed together with the pool
-        // entry instead of fsyncing once per record.
+        // entry instead of fsyncing once per record.  Keys stay out of the
+        // in-memory keystore until that transaction commits.
         if (!walletdb.TxnBegin())
         {
             printf("CWallet::NewKeyPool() : TxnBegin failed\n");
             return false;
         }
-        std::vector<int64> vNew;
+
+        struct StagedPoolEntry
+        {
+            int64 nIndex;
+            CStagedKey key;
+        };
+        std::vector<StagedPoolEntry> vStaged;
         for (int i = 0; i < nKeys; i++)
         {
-            int64 nIndex = i+1;
-            if (!walletdb.WritePool(nIndex, CKeyPool(GenerateNewKey(&walletdb))))
+            StagedPoolEntry entry;
+            entry.nIndex = i + 1;
+            if (!StageNewKey(walletdb, entry.key))
+            {
+                printf("CWallet::NewKeyPool() : staging generated key failed\n");
+                walletdb.TxnAbort();
+                return false;
+            }
+            if (!walletdb.WritePool(entry.nIndex, CKeyPool(entry.key.pubkey)))
             {
                 printf("CWallet::NewKeyPool() : writing generated key failed\n");
                 walletdb.TxnAbort();
-                for (int64 nAdded : vNew)
-                    setKeyPool.erase(nAdded);
                 return false;
             }
-            setKeyPool.insert(nIndex);
-            vNew.push_back(nIndex);
+            vStaged.push_back(std::move(entry));
         }
         if (!walletdb.TxnCommit())
         {
             printf("CWallet::NewKeyPool() : committing the new keys failed\n");
-            for (int64 nAdded : vNew)
-                setKeyPool.erase(nAdded);
             return false;
+        }
+        for (const StagedPoolEntry& entry : vStaged)
+        {
+            setKeyPool.insert(entry.nIndex);
+            AddStagedKeyToMemory(entry.key);
         }
         printf("CWallet::NewKeyPool wrote %" PRI64d " new keys\n", nKeys);
     }
@@ -2142,26 +2189,39 @@ bool CWallet::TopUpKeyPool()
         }
         fFillingKeyPool = true;
 
-        // Top up key pool
+        // Top up key pool.  As in NewKeyPool(), the generated keys are
+        // staged to disk but stay out of the in-memory keystore until the
+        // whole batch commits.
         unsigned int nTargetSize = max(GetArg("-keypool", 100), 0LL);
-        std::vector<int64> vAdded;
-        while (setKeyPool.size() < (nTargetSize + 1))
+        struct StagedPoolEntry
         {
-            int64 nEnd = 1;
-            if (!setKeyPool.empty())
-                nEnd = *(--setKeyPool.end()) + 1;
-            if (!walletdb.WritePool(nEnd, CKeyPool(GenerateNewKey(&walletdb))))
+            int64 nIndex;
+            CStagedKey key;
+        };
+        std::vector<StagedPoolEntry> vAdded;
+        int64 nEnd = 1;
+        if (!setKeyPool.empty())
+            nEnd = *(--setKeyPool.end()) + 1;
+        while (setKeyPool.size() + vAdded.size() < (nTargetSize + 1))
+        {
+            StagedPoolEntry entry;
+            entry.nIndex = nEnd;
+            if (!StageNewKey(walletdb, entry.key))
             {
                 fFillingKeyPool = false;
                 walletdb.TxnAbort();
-                for (int64 nAdded : vAdded)
-                    setKeyPool.erase(nAdded);
                 throw runtime_error("TopUpKeyPool() : writing generated key failed");
             }
-            setKeyPool.insert(nEnd);
-            vAdded.push_back(nEnd);
+            if (!walletdb.WritePool(entry.nIndex, CKeyPool(entry.key.pubkey)))
+            {
+                fFillingKeyPool = false;
+                walletdb.TxnAbort();
+                throw runtime_error("TopUpKeyPool() : writing generated key failed");
+            }
+            vAdded.push_back(std::move(entry));
             printf("keypool added key %" PRI64d ", size=%" PRIszu "\n",
-              nEnd, setKeyPool.size());
+              nEnd, setKeyPool.size() + vAdded.size());
+            ++nEnd;
         }
         fFillingKeyPool = false;
 
@@ -2169,9 +2229,12 @@ bool CWallet::TopUpKeyPool()
         if (!walletdb.TxnCommit())
         {
             printf("TopUpKeyPool() : committing the new keys failed\n");
-            for (int64 nAdded : vAdded)
-                setKeyPool.erase(nAdded);
             return false;
+        }
+        for (const StagedPoolEntry& entry : vAdded)
+        {
+            setKeyPool.insert(entry.nIndex);
+            AddStagedKeyToMemory(entry.key);
         }
     }
     return true;

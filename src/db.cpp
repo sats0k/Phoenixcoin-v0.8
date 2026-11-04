@@ -1927,6 +1927,7 @@ struct TestWalletFailureState
     bool fCommitArmed = false;
     std::string strType;
     int nSkip = 0;
+    int nCommitSkip = 0;
 };
 
 TestWalletFailureState g_testWalletFailure;
@@ -1941,16 +1942,18 @@ void SetTestWalletWriteFailure(const std::string& strType, int nSkip)
     g_testWalletFailure.fCommitArmed = false;
     g_testWalletFailure.strType = strType;
     g_testWalletFailure.nSkip = std::max(nSkip, 0);
+    g_testWalletFailure.nCommitSkip = 0;
     g_fTestWalletFailureArmed.store(true);
 }
 
-void SetTestWalletCommitFailure()
+void SetTestWalletCommitFailure(int nSkip)
 {
     LOCK(g_testWalletFailure.cs);
     g_testWalletFailure.fWriteArmed = false;
     g_testWalletFailure.fCommitArmed = true;
     g_testWalletFailure.strType.clear();
     g_testWalletFailure.nSkip = 0;
+    g_testWalletFailure.nCommitSkip = std::max(nSkip, 0);
     g_fTestWalletFailureArmed.store(true);
 }
 
@@ -1962,6 +1965,7 @@ void ClearTestWalletWriteFailures()
         g_testWalletFailure.fCommitArmed = false;
         g_testWalletFailure.strType.clear();
         g_testWalletFailure.nSkip = 0;
+        g_testWalletFailure.nCommitSkip = 0;
     }
     g_fTestWalletFailureArmed.store(false);
 }
@@ -1992,6 +1996,11 @@ bool ConsumeTestWalletCommitFailure()
     LOCK(g_testWalletFailure.cs);
     if (!g_testWalletFailure.fCommitArmed)
         return false;
+    if (g_testWalletFailure.nCommitSkip > 0)
+    {
+        --g_testWalletFailure.nCommitSkip;
+        return false;
+    }
     g_testWalletFailure.fCommitArmed = false;
     g_fTestWalletFailureArmed.store(false);
     return true;

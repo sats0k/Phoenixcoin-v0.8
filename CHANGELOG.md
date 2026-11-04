@@ -50,6 +50,13 @@ Changes since v0.8.3.
   `CWallet::StageHybridKey()` writes both representations through the
   caller's existing `CWalletDB` transaction, and `importhybridkey`,
   `EnsureHybridKey`, `EnsureHybridKeyPool` and `NewHybridKeyPool` all use it.
+- A failed ECDSA keypool refill no longer leaves orphaned generated keys in
+  the running wallet. `NewKeyPool` and `TopUpKeyPool` now stage each new
+  `keymeta`/`key` record through the refill's transaction and add the key and
+  metadata to the in-memory keystore only after the batch commits. A failed
+  key or metadata write, or a failed final commit, leaves the keystore and
+  keypool consistent with the rolled-back database, and the next refill can
+  proceed normally.
 - The randomisation in the coin selection (`ApproximateBestSubset()`) used
   `rand()` from the C library, whose sequence is predictable; it now uses
   the `GetRand()` cryptographic source, like the rest of the code. The two
