@@ -3079,6 +3079,146 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
 }
 
 /**
+ * AddToWallet() also discovers wallet-owned coins spent by a transaction it
+ * records (a restored wallet, an imported key, or a self-created transaction
+ * seen again).  The incoming transaction record and the spent flags of its
+ * wallet-owned inputs share one durable commit.  Previously the transaction
+ * record committed first and WalletUpdateSpent() wrote the flags afterwards,
+ * so a crash in between could leave the transaction persisted while its inputs
+ * still looked unspent.  A failure at any record or at the commit must roll
+ * both back, and the retry must persist both before and after a restart.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_spent_batch)
+{
+    TempDirGuard guard("wallet_add_spent_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE_EQUAL(built.txids.size(), 2U);
+
+    const uint256 prevHash = built.txids[0];
+    CScript payScript;
+    payScript.SetDestination(built.pubKeys[1].GetID());
+
+    BOOST_REQUIRE(wallet->mapWallet.count(prevHash));
+    BOOST_REQUIRE_EQUAL(wallet->mapWallet[prevHash].vout.size(), 2U);
+    BOOST_REQUIRE_MESSAGE(wallet->mapWallet[prevHash].IsSpent(0),
+                          "fixture: output 0 should start spent");
+    BOOST_REQUIRE_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                          "fixture: output 1 should start unspent");
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+
+    // Spending output 1 makes AddToWallet() both insert the new transaction
+    // and mark a wallet-owned input spent.  It pays pubKeys[1], not the default
+    // key, so no keypool rotation interferes with the record order.
+    CWalletTx wtx = MakeCommitTransactionTestTx(*wallet, prevHash, {1},
+                                                {payScript}, 9300001);
+    const uint256 hash = wtx.GetHash();
+
+    struct Injection
+    {
+        const char *type;
+        int skip;
+        bool commit;
+        const char *tag;
+    };
+    const Injection injections[] = {
+        {"orderposnext", 0, false, "orderposnext"},
+        {"tx", 0, false, "tx-new"},
+        {"tx", 1, false, "tx-spent-coin"},
+        {"", 0, true, "commit"},
+    };
+
+    for (const Injection &injection : injections)
+    {
+        if (injection.commit)
+            SetTestWalletCommitFailure();
+        else
+            SetTestWalletWriteFailure(injection.type, injection.skip);
+
+        const bool fSucceeded = wallet->AddToWallet(wtx);
+        ClearTestWalletWriteFailures();
+
+        const std::string tag = injection.tag;
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            tag << ": injected failure did not fail "
+                                   "AddToWallet()");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed batch left the tx in memory");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            tag << ": failed batch advanced nOrderPosNext");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": failed batch marked the input spent");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after failed batch");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed batch changed the database ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed batch appeared after restart");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": input is spent after restart");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after restart");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed batch survived a restart ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+    }
+
+    // The one-shot injections are consumed: the transaction and the spent
+    // flag now commit together.
+    BOOST_REQUIRE(wallet->AddToWallet(wtx));
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "tx"),
+                      CountRecordsOfType(baselineRecords, "tx") + 1);
+
+    const WalletSnapshot committed = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> committedRecords = CaptureRecords();
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
+    CheckSnapshotsEqual(committed,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "spent batch: committed state after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == committedRecords,
+                        "spent batch: committed state did not survive a "
+                        "restart ("
+                            << DescribeRecordDelta(committedRecords,
+                                                   CaptureRecords())
+                            << ")");
+}
+
+/**
  * CommitTransaction() is the send path: the new wallet transaction, its order
  * position and the spent flags of every input share one durable commit.  The
  * unit test chain has no index entry for these wallet coins, so the broadcast

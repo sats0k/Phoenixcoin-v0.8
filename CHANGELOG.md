@@ -210,12 +210,13 @@ Changes since v0.8.3.
   transaction writes `orderposnext` and its `tx` record in one transaction,
   and a replacement `defaultkey` plus its empty address-book `name` entry
   join that transaction when the payment spends the current default key.
-  In-memory `mapWallet`, `nOrderPosNext`, `vchDefaultKey` and
-  `mapAddressBook` change only after the commit succeeds, and a failed write
-  or commit rolls an updated transaction back to its previous value. The
-  replacement key is selected before the transaction opens because the
-  keypool path uses its own writer, so only an already-consumed pool key
-  survives a later failure.
+  Wallet-owned coins spent by the incoming transaction are marked and their
+  `tx` records rewritten in the same transaction instead of a separate
+  `WalletUpdateSpent()` write after the commit. A failed write or commit
+  restores the previous `mapWallet` entry, `nOrderPosNext`, `vchDefaultKey`,
+  `mapAddressBook` and spent flags. The replacement key is selected before the
+  transaction opens because the keypool path uses its own writer, so only an
+  already-consumed pool key survives a later failure.
 - `CommitTransaction()` now commits the new wallet transaction, its
   `orderposnext` record, any replacement `defaultkey`/`name` pair and every
   spent-coin `tx` record in one transaction. An already-spent input is still
@@ -322,10 +323,10 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 184 test cases. The database work added two new
+The Boost suite is at 185 test cases. The database work added two new
 suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
 LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (19 cases for wallet migration semantics,
+and `wallet_migration_tests` (20 cases for wallet migration semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
@@ -339,9 +340,11 @@ New coverage:
   encryption-state equality, cross-backend parity, the staged hybrid-key
   write path, `checkhybridkeys`, write-boundary rollback, explicit LMDB
   rewrite failure injection, and ECDSA keypool refill rollback through the
-  staged `CStagedKey` path. Two `AddToWallet()` cases inject a failed
-  `orderposnext`/`tx` write, a failed update `tx` write or commit and a
-  failed default-key rotation, then require the retried write to persist the
+  staged `CStagedKey` path. Three `AddToWallet()` cases inject a failed
+  `orderposnext`/`tx` write, a failed update `tx` write or commit, a failed
+  default-key rotation, and a transaction whose new `tx` record and
+  spent-coin `tx` record must share one batch; a failure at either record or
+  at the commit must roll both back, and the retried write must persist the
   whole update and survive a restart. Four `CommitTransaction()` cases do
   the same for the send path: a failed order-position, new-transaction, first
   or second spent-coin write or commit must roll the wallet back before and

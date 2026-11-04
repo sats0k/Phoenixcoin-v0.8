@@ -546,7 +546,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   restart, a re-import skips known blocks and creates no second batch, and a
   corrupted middle block rolls the uncommitted batch back to genesis before a
   later clean import reaches the correct tip.
-- The full unit suite passed 184 test cases with no errors in the normal build.
+- The full unit suite passed 185 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -622,7 +622,7 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
-Wallet write atomicity is covered by eleven failure-injection tests in
+Wallet write atomicity is covered by twelve failure-injection tests in
 `wallet_migration_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
@@ -668,6 +668,16 @@ remain unchanged apart from the already-consumed keypool entry, and the retried
 call must commit the transaction, replacement key and label together.  (The
 rotation test injects record failures rather than a commit failure because the
 key selection's own keypool transactions consume the one-shot commit hook.)
+
+`wallet_atomic_add_to_wallet_spent_batch` covers a transaction that both
+arrives in the wallet and spends one of its coins.  It fails the
+`orderposnext` write, the new `tx` write, the spent-coin `tx` write and the
+commit.  After each failure the new transaction must be absent,
+`nOrderPosNext` must keep its old value, the spent flag must remain clear, and
+the record set must match the pre-call state before and after a restart.  The
+retried call must persist the transaction, its order position and the spent
+flag together and keep them after another restart.  Before the spent-coin
+staging this case left the new transaction committed with the input unspent.
 
 `wallet_atomic_commit_transaction_spent_batch` covers the send path.  It fails
 the `orderposnext` write, the new `tx` write, each spent-coin `tx` write in a
@@ -954,14 +964,16 @@ rolled-back on-disk state.
 transaction writes `orderposnext` and its `tx` record in one transaction;
 when the transaction pays the current default receiving key, the replacement
 `defaultkey` and its empty address-book `name` entry join the same transaction.
-Records keep their previous order, so replay sees the same sequence as the old
-individually committed writes.  The in-memory `mapWallet`, `nOrderPosNext`,
-`vchDefaultKey` and `mapAddressBook` are updated only after the commit
-succeeds, and a failed write or commit restores an existing entry instead of
-leaving a merged copy in memory.  The replacement key is selected before the
-transaction opens: `GetKeyFromPool()` may top up or trim the keypool, and those
-paths open their own writer, so a consumed pool key remains the only state that
-a later failure does not roll back.
+Wallet-owned coins spent by the incoming transaction are marked and their
+`tx` records rewritten in that transaction too, replacing the separate
+`WalletUpdateSpent()` write that used to follow the commit.  Records keep their
+previous order, so replay sees the same sequence as the old individually
+committed writes.  A failed write or commit restores an existing entry, the
+order position, the default key, the address book and every spent flag instead
+of leaving a merged copy in memory.  The replacement key is selected before
+the transaction opens: `GetKeyFromPool()` may top up or trim the keypool, and
+those paths open their own writer, so a consumed pool key remains the only
+state that a later failure does not roll back.
 
 `CWallet::CommitTransaction` uses the same staging helpers to commit the send
 path as one update.  The new transaction's `orderposnext` and `tx` records,
@@ -1057,7 +1069,7 @@ builds:
 | full unit suite | 158 cases |
 
 These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated. The current normal-build suite is 184 cases; the
+backend was validated. The current normal-build suite is 185 cases; the
 later database atomicity, keypool-staging and invariant tests were added
 after these sanitizer runs.
 

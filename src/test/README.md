@@ -361,13 +361,13 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 184 test cases...
+Running 185 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 184 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
-(33), `wallet_migration_tests` (19), `util_tests` (12) and the re-enabled
+The full suite is 185 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
+(33), `wallet_migration_tests` (20), `util_tests` (12) and the re-enabled
 legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
 wallet migration, encryption-state equality, cross-backend parity,
 write-boundary rollback, explicit rewrite-failure handling and hybrid-key
@@ -473,7 +473,7 @@ format, and database size. Methodology and measured results are in
 
 ## Wallet write atomicity tests
 
-`wallet_migration_tests` also contains eleven failure-injection tests that
+`wallet_migration_tests` also contains twelve failure-injection tests that
 pin the wallet write transaction boundaries. They rely on the test-only
 hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 `SetTestWalletCommitFailure(nSkip)`, `ClearTestWalletWriteFailures()` — which
@@ -528,6 +528,13 @@ index).
   the transaction, replacement key and label together. The key is selected
   before the transaction opens because the keypool path uses its own writer;
   a plain commit failure is covered by the non-rotation case above.
+- `wallet_atomic_add_to_wallet_spent_batch` covers a transaction that arrives
+  in the wallet and spends one of its coins. It fails the `orderposnext`
+  write, the new `tx` write, the spent-coin `tx` write and the commit. After
+  each failure the new transaction must be absent, the order position
+  unchanged, the input still unspent, and the record set identical before and
+  after a restart. The retried call must persist the transaction, order
+  position and spent flag together and keep them after another restart.
 - `wallet_atomic_commit_transaction_spent_batch` fails the `orderposnext`
   write, the new `tx` write, each spent-coin `tx` write and the commit of a
   `CommitTransaction()` call. The new entry, order position, already-spent
@@ -569,9 +576,10 @@ Generated keys are written through the refill's existing `CWalletDB`, so the
 batch shares one LMDB writer, and `CWallet::StageNewKey()` keeps each key out
 of the in-memory keystore until the batch commits.  `WriteKey` and
 `WriteCryptedKey` join an already open transaction rather than nesting one.
-`AddToWallet()` uses the same pattern: `orderposnext`, the transaction, and
-any replacement `defaultkey`/`name` pair share one commit, and the in-memory
-wallet is updated only afterwards.  `CommitTransaction()` extends that batch
+`AddToWallet()` uses the same pattern: `orderposnext`, the transaction, any
+replacement `defaultkey`/`name` pair and the records of wallet-owned inputs the
+transaction spends share one commit, and the in-memory wallet is updated only
+afterwards.  `CommitTransaction()` extends that batch
 to the spent-coin records: the new transaction, its order position, any
 replacement default key and label, and every input's spent flag commit
 together, with already-spent inputs rewritten as before.  The crash hook keeps

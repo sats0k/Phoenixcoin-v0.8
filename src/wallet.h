@@ -116,6 +116,17 @@ private:
         std::vector<uint256>& vSpentNotify);
     void RollbackSpentCoins(
         const std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo);
+    // Collects the wallet-owned, not-yet-spent outputs that tx spends.
+    // AddToWallet() stages their updates in the same transaction as the
+    // transaction record, so a crash cannot persist one without the other.
+    void CollectWalletSpentCoins(
+        const CTransaction& tx,
+        std::vector<std::pair<uint256, unsigned int> >& vSpentCoins);
+    bool StageWalletSpentCoins(
+        const std::vector<std::pair<uint256, unsigned int> >& vSpentCoins,
+        CWalletDB* pwalletdb,
+        std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo,
+        std::vector<uint256>& vSpentNotify);
 
     CWalletDB *pwalletdbEncryption;
 

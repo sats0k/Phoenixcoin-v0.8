@@ -614,6 +614,30 @@ CWallet::TxItems CWallet::OrderedTxItems(std::list<CAccountingEntry>& acentries,
     return txOrdered;
 }
 
+void CWallet::CollectWalletSpentCoins(
+    const CTransaction& tx,
+    std::vector<std::pair<uint256, unsigned int> >& vSpentCoins)
+{
+    for (const CTxIn& txin : tx.vin)
+    {
+        map<uint256, CWalletTx>::iterator mi = mapWallet.find(txin.prevout.hash);
+        if (mi == mapWallet.end())
+            continue;
+
+        CWalletTx& wtx = mi->second;
+        if (txin.prevout.n >= wtx.vout.size())
+        {
+            printf("WalletUpdateSpent() : bad wallet tx %s\n",
+              wtx.GetHash().ToString().c_str());
+            continue;
+        }
+
+        if (!wtx.IsSpent(txin.prevout.n) && IsMine(wtx.vout[txin.prevout.n]))
+            vSpentCoins.push_back(
+                std::make_pair(txin.prevout.hash, txin.prevout.n));
+    }
+}
+
 void CWallet::WalletUpdateSpent(const CTransaction &tx)
 {
     // Anytime a signature is successfully verified, it's proof the outpoint is spent.
@@ -621,25 +645,17 @@ void CWallet::WalletUpdateSpent(const CTransaction &tx)
     // restored from backup or the user making copies of wallet.dat.
     {
         LOCK(cs_wallet);
-        for (const CTxIn& txin : tx.vin)
+        std::vector<std::pair<uint256, unsigned int> > vSpentCoins;
+        CollectWalletSpentCoins(tx, vSpentCoins);
+        for (const auto& spent : vSpentCoins)
         {
-            map<uint256, CWalletTx>::iterator mi = mapWallet.find(txin.prevout.hash);
-            if(mi != mapWallet.end()) {
-                CWalletTx &wtx = (*mi).second;
-                if(txin.prevout.n >= wtx.vout.size()) {
-                    printf("WalletUpdateSpent() : bad wallet tx %s\n",
-                      wtx.GetHash().ToString().c_str());
-                } else {
-                    if(!wtx.IsSpent(txin.prevout.n) && IsMine(wtx.vout[txin.prevout.n])) {
-                        printf("WalletUpdateSpent() : found spent %s PXC %s\n",
-                          FormatMoney(wtx.GetCredit()).c_str(),
-                          wtx.GetHash().ToString().c_str());
-                        wtx.MarkSpent(txin.prevout.n);
-                        wtx.WriteToDisk();
-                        NotifyTransactionChanged(this, txin.prevout.hash, CT_UPDATED);
-                    }
-                }
-            }
+            CWalletTx& wtx = mapWallet[spent.first];
+            printf("WalletUpdateSpent() : found spent %s PXC %s\n",
+              FormatMoney(wtx.GetCredit()).c_str(),
+              wtx.GetHash().ToString().c_str());
+            wtx.MarkSpent(spent.second);
+            wtx.WriteToDisk();
+            NotifyTransactionChanged(this, spent.first, CT_UPDATED);
         }
     }
 }
@@ -894,6 +910,45 @@ void CWallet::RollbackSpentCoins(
     }
 }
 
+bool CWallet::StageWalletSpentCoins(
+    const std::vector<std::pair<uint256, unsigned int> >& vSpentCoins,
+    CWalletDB* pwalletdb,
+    std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo,
+    std::vector<uint256>& vSpentNotify)
+{
+    for (const auto& spent : vSpentCoins)
+    {
+        map<uint256, CWalletTx>::iterator mi = mapWallet.find(spent.first);
+        if (mi == mapWallet.end())
+            continue;
+
+        CWalletTx& wtx = mi->second;
+
+        // Snapshot each coin once, so a rollback restores even when several
+        // inputs spend outputs of the same transaction.
+        bool fSnapshotTaken = false;
+        for (const auto& undo : vSpentUndo)
+        {
+            if (undo.first == spent.first)
+            {
+                fSnapshotTaken = true;
+                break;
+            }
+        }
+        if (!fSnapshotTaken)
+            vSpentUndo.push_back(std::make_pair(spent.first, wtx.vfSpent));
+
+        printf("WalletUpdateSpent() : found spent %s PXC %s\n",
+          FormatMoney(wtx.GetCredit()).c_str(),
+          wtx.GetHash().ToString().c_str());
+        wtx.MarkSpent(spent.second);
+        if (!wtx.WriteToDisk(pwalletdb))
+            return false;
+        vSpentNotify.push_back(wtx.GetHash());
+    }
+    return true;
+}
+
 bool CWallet::AddToWallet(const CWalletTx& wtxIn)
 {
     uint256 hash = wtxIn.GetHash();
@@ -911,24 +966,39 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
         CWalletTx wtxPrev;
         PrepareAddToWallet(wtxIn, fInsertedNew, wtxPrev, fNeedsWrite);
 
-        if (fNeedsWrite || !vNewDefaultKeys.empty())
+        // WalletUpdateSpent() used to run after the transaction record had
+        // already committed, so a crash in between could leave a transaction
+        // persisted while the wallet still considered its inputs unspent.
+        // Collect the same coin updates now and stage them in the transaction
+        // below, even when the incoming record itself needs no rewrite.
+        std::vector<std::pair<uint256, unsigned int> > vSpentCoins;
+        CollectWalletSpentCoins(wtxIn, vSpentCoins);
+
+        std::vector<std::pair<uint256, std::vector<char> > > vSpentUndo;
+        std::vector<uint256> vSpentNotify;
+        if (fNeedsWrite || !vNewDefaultKeys.empty() || !vSpentCoins.empty())
         {
             CWalletDB walletdb(strWalletFile);
             CWalletTx& wtx = mapWallet[hash];
             if (!walletdb.TxnBegin())
             {
+                RollbackSpentCoins(vSpentUndo);
                 RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
             if (!WritePreparedAddToWallet(wtx, fInsertedNew, fNeedsWrite,
-                                          vNewDefaultKeys, &walletdb))
+                                          vNewDefaultKeys, &walletdb) ||
+                !StageWalletSpentCoins(vSpentCoins, &walletdb, vSpentUndo,
+                                       vSpentNotify))
             {
                 walletdb.TxnAbort();
+                RollbackSpentCoins(vSpentUndo);
                 RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
             if (!walletdb.TxnCommit())
             {
+                RollbackSpentCoins(vSpentUndo);
                 RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
@@ -936,8 +1006,10 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
 
         ApplyDefaultKeyReplacements(vNewDefaultKeys);
 
-        // since AddToWallet is called directly for self-originating transactions, check for consumption of own coins
-        WalletUpdateSpent(wtxIn);
+        // Notify only after every record is durable.  A failed batch has
+        // already returned, so no observer sees a partially applied update.
+        for (const uint256& spentHash : vSpentNotify)
+            NotifyTransactionChanged(this, spentHash, CT_UPDATED);
 
         // Notify UI of new or updated transaction
         NotifyTransactionChanged(this, hash, fInsertedNew ? CT_NEW : CT_UPDATED);
