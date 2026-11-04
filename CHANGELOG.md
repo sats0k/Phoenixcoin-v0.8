@@ -216,6 +216,14 @@ Changes since v0.8.3.
   replacement key is selected before the transaction opens because the
   keypool path uses its own writer, so only an already-consumed pool key
   survives a later failure.
+- `CommitTransaction()` now commits the new wallet transaction, its
+  `orderposnext` record, any replacement `defaultkey`/`name` pair and every
+  spent-coin `tx` record in one transaction. The keypool reservation stays a
+  separate write before the batch, and an already-spent input is still
+  rewritten without blocking the others. A failed write or commit restores
+  the in-memory transaction, order position and spent flags before the
+  existing broadcast attempt continues, so the wallet never exposes a
+  partially applied update.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI
@@ -301,10 +309,10 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 180 test cases. The database work added two new
+The Boost suite is at 182 test cases. The database work added two new
 suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
 LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (15 cases for wallet migration semantics,
+and `wallet_migration_tests` (17 cases for wallet migration semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
@@ -321,7 +329,12 @@ New coverage:
   staged `CStagedKey` path. Two `AddToWallet()` cases inject a failed
   `orderposnext`/`tx` write, a failed update commit and a failed
   default-key rotation, then require the retried write to persist the whole
-  update and survive a restart.
+  update and survive a restart. Two `CommitTransaction()` cases do the same
+  for the send path: a failed order-position, new-transaction, spent-coin or
+  commit write must roll the wallet back before and after a restart, the
+  successful batch must persist the transaction and both spent flags
+  together, and a payment that spends the default key must rotate the key
+  and label atomically with the transaction.
 - `util_ParseConfigStream`: covers the configuration file parser, i.e.
   the option/value pairs with the surrounding whitespace trimmed, the `#`
   and `;` comments, the quoted values and the values that contain an `=`,

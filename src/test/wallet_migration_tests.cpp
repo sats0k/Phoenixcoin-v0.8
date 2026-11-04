@@ -2715,6 +2715,31 @@ static CWalletTx MakeAddToWalletTestTx(CWallet &wallet,
     return CWalletTx(&wallet, tx);
 }
 
+/**
+ * Builds a transaction that spends the given outputs of one wallet
+ * transaction.  CommitTransaction() commits the wallet update before it tries
+ * to relay, so this is enough to exercise the batch even though the unit test
+ * chain cannot accept the broadcast.
+ */
+static CWalletTx MakeCommitTransactionTestTx(
+    CWallet &wallet, const uint256 &prevHash,
+    const std::vector<unsigned int> &prevOuts,
+    const std::vector<CScript> &payTo, unsigned int nLockTime)
+{
+    CTransaction tx;
+    tx.nVersion = 1;
+    tx.nLockTime = nLockTime;
+    tx.vin.resize(prevOuts.size());
+    for (size_t i = 0; i < prevOuts.size(); ++i) {
+        tx.vin[i].prevout = COutPoint(prevHash, prevOuts[i]);
+        tx.vin[i].scriptSig = CScript() << OP_1 << OP_2;
+    }
+    tx.vout.resize(payTo.size());
+    for (size_t i = 0; i < payTo.size(); ++i)
+        tx.vout[i] = CTxOut(COIN * (int64)(i + 1), payTo[i]);
+    return CWalletTx(&wallet, tx);
+}
+
 /** Drops keypool records so a rotation test can ignore key consumption. */
 static std::map<CDBKey, CDBValue>
 RecordsWithoutPool(const std::map<CDBKey, CDBValue> &records)
@@ -3028,6 +3053,349 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
     wallet.reset(LoadWalletOrFail());
     BOOST_CHECK(wallet->vchDefaultKey == rotatedDefaultKey);
     BOOST_CHECK(wallet->mapAddressBook.count(rotatedDefaultKey.GetID()) == 1);
+    CheckSnapshotsEqual(rotated,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "rotation: committed state after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == rotatedRecords,
+                        "rotation: committed state did not survive a restart ("
+                            << DescribeRecordDelta(rotatedRecords,
+                                                   CaptureRecords())
+                            << ")");
+}
+
+/**
+ * CommitTransaction() is the send path: the new wallet transaction, its order
+ * position and the spent flags of every input share one durable commit.  The
+ * unit test chain has no index entry for these wallet coins, so the broadcast
+ * always fails after the wallet batch; this test therefore checks persistence
+ * rather than the return value.  Output 0 starts spent and output 1 starts
+ * unspent, so the same batch must rewrite an already-spent input and mark a new
+ * one without breaking.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
+{
+    TempDirGuard guard("wallet_commit_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE_EQUAL(built.txids.size(), 2U);
+
+    const uint256 prevHash = built.txids[0];
+    CScript payScript;
+    payScript.SetDestination(built.pubKeys[1].GetID());
+
+    BOOST_REQUIRE(wallet->mapWallet.count(prevHash));
+    BOOST_REQUIRE_EQUAL(wallet->mapWallet[prevHash].vout.size(), 2U);
+    BOOST_REQUIRE_MESSAGE(wallet->mapWallet[prevHash].IsSpent(0),
+                          "fixture: output 0 should start spent");
+    BOOST_REQUIRE_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                          "fixture: output 1 should start unspent");
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+
+    const auto makeSpend =
+        [&](const std::vector<unsigned int> &prevOuts, unsigned int nLockTime) {
+            return MakeCommitTransactionTestTx(*wallet, prevHash, prevOuts,
+                                               {payScript}, nLockTime);
+        };
+
+    struct Injection
+    {
+        const char *type;
+        int skip;
+        bool commit;
+        const char *tag;
+    };
+    const Injection injections[] = {
+        {"orderposnext", 0, false, "orderposnext"},
+        {"tx", 0, false, "tx-new"},
+        {"tx", 1, false, "tx-spent-coin"},
+        {"", 0, true, "commit"},
+    };
+
+    unsigned int nLockTime = 9200000;
+    for (const Injection &injection : injections) {
+        CWalletTx wtx = makeSpend({0, 1}, nLockTime++);
+        const uint256 hash = wtx.GetHash();
+
+        if (injection.commit)
+            SetTestWalletCommitFailure();
+        else
+            SetTestWalletWriteFailure(injection.type, injection.skip);
+
+        {
+            CReserveKey reserveKey(wallet.get());
+            wallet->CommitTransaction(wtx, reserveKey);
+        }
+        ClearTestWalletWriteFailures();
+
+        const std::string tag = injection.tag;
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed batch left the tx in memory");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            tag << ": failed batch advanced nOrderPosNext");
+        BOOST_CHECK_MESSAGE(wallet->mapWallet[prevHash].IsSpent(0),
+                            tag << ": failed batch cleared spent output 0");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": failed batch left output 1 spent");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after failed batch");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed batch changed the database ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed batch appeared after restart");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            tag << ": failed batch advanced nOrderPosNext after restart");
+        BOOST_CHECK_MESSAGE(wallet->mapWallet[prevHash].IsSpent(0),
+                            tag << ": output 0 is not spent after restart");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": output 1 is spent after restart");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            tag + ": wallet after restart");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            tag << ": failed batch survived a restart ("
+                << DescribeRecordDelta(baselineRecords, CaptureRecords())
+                << ")");
+    }
+
+    // The one-shot injections are consumed.  The wallet batch now commits even
+    // though the test chain cannot relay it.
+    CWalletTx wtx = makeSpend({0, 1}, nLockTime++);
+    const uint256 hash = wtx.GetHash();
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_CHECK(!wallet->CommitTransaction(wtx, reserveKey));
+    }
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 1);
+    BOOST_CHECK_EQUAL(wallet->mapWallet[hash].nOrderPos, baseline.orderPosNext);
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(0));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
+
+    const WalletSnapshot committed = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> committedRecords = CaptureRecords();
+    BOOST_CHECK_EQUAL(CountRecordsOfType(committedRecords, "tx"),
+                      CountRecordsOfType(baselineRecords, "tx") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(committedRecords, "orderposnext"), 1U);
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(0));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
+    CheckSnapshotsEqual(committed,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "spent batch: committed state after restart");
+    BOOST_CHECK_MESSAGE(
+        CaptureRecords() == committedRecords,
+        "spent batch: committed state did not survive a restart ("
+            << DescribeRecordDelta(committedRecords, CaptureRecords()) << ")");
+
+    // Spending a coin the wallet already knows is spent must still succeed,
+    // keep the flag set and persist its new transaction.
+    CWalletTx respend = makeSpend({0}, nLockTime++);
+    const uint256 respendHash = respend.GetHash();
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_CHECK(!wallet->CommitTransaction(respend, reserveKey));
+    }
+    BOOST_REQUIRE(wallet->mapWallet.count(respendHash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(0));
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 2);
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(wallet->mapWallet.count(respendHash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(0));
+}
+
+/**
+ * CommitTransaction() also selects a replacement default key when the new
+ * transaction pays the current one.  The replacement key is picked before the
+ * batch (the keypool path opens its own writer), and its `defaultkey`/`name`
+ * records join the transaction, order position, spent flags and new `tx`
+ * record in one commit.  A failure while writing the replacement key, or while
+ * writing the spent-coin record after the key was staged, must roll all of it
+ * back together.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_default_key_rotation)
+{
+    TempDirGuard guard("wallet_commit_default_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    // Keep the pool from being replenished until the successful retry: each
+    // failed attempt consumes exactly one pre-existing key.
+    KeyPoolArgGuard keyPoolArg("2");
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE(wallet->vchDefaultKey.IsValid());
+    const CPubKey oldDefaultKey = wallet->vchDefaultKey;
+
+    const uint256 prevHash = built.txids[0];
+    BOOST_REQUIRE(wallet->mapWallet.count(prevHash));
+    BOOST_REQUIRE(!wallet->mapWallet[prevHash].IsSpent(1));
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+    BOOST_REQUIRE_GT(baseline.keyPool.size(), 2U);
+
+    CScript defaultScript;
+    defaultScript.SetDestination(oldDefaultKey.GetID());
+    CScript otherScript;
+    otherScript.SetDestination(built.pubKeys[1].GetID());
+
+    const auto makeRotation = [&]() {
+        return MakeCommitTransactionTestTx(
+            *wallet, prevHash, {1}, {defaultScript, otherScript}, 9300001);
+    };
+    const uint256 hash = makeRotation().GetHash();
+
+    const auto checkRolledBack = [&](const std::string &tag) {
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed rotation left the tx in memory");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            tag << ": failed rotation advanced nOrderPosNext");
+        BOOST_CHECK_MESSAGE(
+            wallet->vchDefaultKey == oldDefaultKey,
+            tag << ": failed rotation changed the default key");
+        BOOST_CHECK_MESSAGE(
+            wallet->mapAddressBook == baseline.addressBook,
+            tag << ": failed rotation changed the address book");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": failed rotation left output 1 spent");
+
+        const std::map<CDBKey, CDBValue> records = CaptureRecords();
+        BOOST_CHECK_MESSAGE(
+            RecordsWithoutPool(records) == RecordsWithoutPool(baselineRecords),
+            tag << ": failed rotation changed non-keypool records ("
+                << DescribeRecordDelta(RecordsWithoutPool(baselineRecords),
+                                       RecordsWithoutPool(records))
+                << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed rotation appeared after restart");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            tag << ": failed rotation advanced nOrderPosNext after restart");
+        BOOST_CHECK_MESSAGE(
+            wallet->vchDefaultKey == oldDefaultKey,
+            tag << ": failed rotation changed the default key after restart");
+        BOOST_CHECK_MESSAGE(
+            wallet->mapAddressBook == baseline.addressBook,
+            tag << ": failed rotation changed the address book after restart");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[prevHash].IsSpent(1),
+                            tag << ": output 1 is spent after restart");
+        BOOST_CHECK_MESSAGE(
+            RecordsWithoutPool(CaptureRecords()) ==
+                RecordsWithoutPool(baselineRecords),
+            tag << ": failed rotation changed non-keypool records after "
+                   "restart");
+    };
+
+    struct Injection
+    {
+        const char *type;
+        int skip;
+        const char *tag;
+    };
+    // The spent-coin failure runs after the replacement default key and its
+    // label were staged, so it also proves those records roll back.
+    const Injection injections[] = {
+        {"defaultkey", 0, "defaultkey-write"},
+        {"tx", 1, "spent-coin-write"},
+    };
+
+    for (const Injection &injection : injections) {
+        CWalletTx wtx = makeRotation();
+        BOOST_REQUIRE(wtx.GetHash() == hash);
+
+        SetTestWalletWriteFailure(injection.type, injection.skip);
+        {
+            CReserveKey reserveKey(wallet.get());
+            wallet->CommitTransaction(wtx, reserveKey);
+        }
+        ClearTestWalletWriteFailures();
+
+        checkRolledBack(injection.tag);
+    }
+
+    // The one-shot injections are consumed: the batch now commits even though
+    // the unit test chain rejects the broadcast.
+    CWalletTx wtx = makeRotation();
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_CHECK(!wallet->CommitTransaction(wtx, reserveKey));
+    }
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
+    BOOST_CHECK(wallet->vchDefaultKey.IsValid());
+    BOOST_CHECK(wallet->vchDefaultKey != oldDefaultKey);
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 1);
+    BOOST_CHECK_EQUAL(wallet->mapWallet[hash].nOrderPos, baseline.orderPosNext);
+
+    const CTxDestination newDefaultDest = wallet->vchDefaultKey.GetID();
+    const auto label = wallet->mapAddressBook.find(newDefaultDest);
+    BOOST_REQUIRE(label != wallet->mapAddressBook.end());
+    BOOST_CHECK(label->second.empty());
+
+    const WalletSnapshot rotated = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> rotatedRecords = CaptureRecords();
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "tx"),
+                      CountRecordsOfType(baselineRecords, "tx") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "name"),
+                      CountRecordsOfType(baselineRecords, "name") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "defaultkey"), 1U);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "orderposnext"), 1U);
+
+    const CPubKey rotatedDefaultKey = wallet->vchDefaultKey;
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->vchDefaultKey == rotatedDefaultKey);
+    BOOST_CHECK(wallet->mapAddressBook.count(rotatedDefaultKey.GetID()) == 1);
+    BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(1));
     CheckSnapshotsEqual(rotated,
                         CaptureWalletSnapshot(*wallet, built.scripts,
                                               built.watchScripts),

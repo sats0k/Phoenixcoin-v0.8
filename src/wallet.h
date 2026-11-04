@@ -93,6 +93,30 @@ private:
     bool StageNewKey(CWalletDB& db, CStagedKey& staged);
     void AddStagedKeyToMemory(const CStagedKey& staged);
 
+    // AddToWallet()/CommitTransaction() staging helpers.  The caller holds
+    // cs_wallet; the write helpers use a transaction owned by the caller so
+    // the transaction record, order position, default key and spent flags can
+    // share one durable commit.
+    void SelectDefaultKeyReplacements(const CWalletTx& wtxIn,
+                                      std::vector<CPubKey>& vNewDefaultKeys);
+    void PrepareAddToWallet(const CWalletTx& wtxIn, bool& fInsertedNew,
+                            CWalletTx& wtxPrev, bool& fNeedsWrite);
+    bool WritePreparedAddToWallet(CWalletTx& wtx, bool fInsertedNew,
+                                  bool fNeedsWrite,
+                                  const std::vector<CPubKey>& vNewDefaultKeys,
+                                  CWalletDB* pwalletdb);
+    void RollbackAddToWallet(const uint256& hash, bool fInsertedNew,
+                             const CWalletTx& wtxPrev,
+                             int64 nOrderPosNextPrev);
+    void ApplyDefaultKeyReplacements(
+        const std::vector<CPubKey>& vNewDefaultKeys);
+    bool StageSpentCoins(
+        const CTransaction& tx, CWalletDB* pwalletdb,
+        std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo,
+        std::vector<uint256>& vSpentNotify);
+    void RollbackSpentCoins(
+        const std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo);
+
     CWalletDB *pwalletdbEncryption;
 
     // the current wallet version: clients below this version are not able to load the wallet

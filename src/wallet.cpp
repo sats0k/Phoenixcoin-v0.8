@@ -609,193 +609,291 @@ void CWallet::MarkDirty()
     }
 }
 
+void CWallet::SelectDefaultKeyReplacements(
+    const CWalletTx& wtxIn, std::vector<CPubKey>& vNewDefaultKeys)
+{
+#ifndef QT_GUI
+    // If the default receiving address gets used, replace it with a new one.
+    // This must run before a caller opens its wallet transaction: the keypool
+    // path opens its own writer, and nesting it would fail.
+    CScript scriptDefaultKey;
+    scriptDefaultKey.SetDestination(vchDefaultKey.GetID());
+    for (const CTxOut& txout : wtxIn.vout)
+    {
+        if (txout.scriptPubKey == scriptDefaultKey)
+        {
+            CPubKey newDefaultKey;
+            if (GetKeyFromPool(newDefaultKey, false))
+                vNewDefaultKeys.push_back(newDefaultKey);
+        }
+    }
+#endif
+}
+
+void CWallet::PrepareAddToWallet(const CWalletTx& wtxIn, bool& fInsertedNew,
+                                 CWalletTx& wtxPrev, bool& fNeedsWrite)
+{
+    const uint256 hash = wtxIn.GetHash();
+
+    // Inserts only if not already there, returns tx inserted or tx found
+    pair<map<uint256, CWalletTx>::iterator, bool> ret =
+        mapWallet.insert(make_pair(hash, wtxIn));
+    CWalletTx& wtx = (*ret.first).second;
+    wtx.BindWallet(this);
+    fInsertedNew = ret.second;
+
+    // A failed commit must leave the in-memory wallet unchanged too.  The
+    // previous copy is only needed for an update; a new entry is removed.
+    if (!fInsertedNew)
+        wtxPrev = wtx;
+
+    if (fInsertedNew)
+    {
+        wtx.nTimeReceived = GetAdjustedTime();
+        // The order position is reserved now, but its record is written by
+        // WritePreparedAddToWallet() in the caller's transaction.
+        wtx.nOrderPos = nOrderPosNext++;
+
+        wtx.nTimeSmart = wtx.nTimeReceived;
+        if (wtxIn.hashBlock != 0)
+        {
+            if (mapBlockIndex.count(wtxIn.hashBlock))
+            {
+                unsigned int latestNow = wtx.nTimeReceived;
+                unsigned int latestEntry = 0;
+                {
+                    // Tolerate times up to the last timestamp in the wallet not more than 5 minutes into the future
+                    int64 latestTolerated = latestNow + 300;
+                    std::list<CAccountingEntry> acentries;
+                    TxItems txOrdered = OrderedTxItems(acentries);
+                    for (TxItems::reverse_iterator it = txOrdered.rbegin(); it != txOrdered.rend(); ++it)
+                    {
+                        CWalletTx *const pwtx = (*it).second.first;
+                        if (pwtx == &wtx)
+                            continue;
+                        CAccountingEntry *const pacentry = (*it).second.second;
+                        int64 nSmartTime;
+                        if (pwtx)
+                        {
+                            nSmartTime = pwtx->nTimeSmart;
+                            if (!nSmartTime)
+                                nSmartTime = pwtx->nTimeReceived;
+                        }
+                        else
+                            nSmartTime = pacentry->nTime;
+                        if (nSmartTime <= latestTolerated)
+                        {
+                            latestEntry = nSmartTime;
+                            if (nSmartTime > latestNow)
+                                latestNow = nSmartTime;
+                            break;
+                        }
+                    }
+                }
+
+                unsigned int& blocktime = mapBlockIndex[wtxIn.hashBlock]->nTime;
+                wtx.nTimeSmart = std::max(latestEntry, std::min(blocktime, latestNow));
+            }
+            else
+                printf("AddToWallet() : found %s in block %s not in index\n",
+                       wtxIn.GetHash().ToString().substr(0,10).c_str(),
+                       wtxIn.hashBlock.ToString().c_str());
+        }
+    }
+
+    bool fUpdated = false;
+    if (!fInsertedNew)
+    {
+        // Merge
+        if (wtxIn.hashBlock != 0 && wtxIn.hashBlock != wtx.hashBlock)
+        {
+            wtx.hashBlock = wtxIn.hashBlock;
+            fUpdated = true;
+        }
+        if (wtxIn.nIndex != -1 && (wtxIn.vMerkleBranch != wtx.vMerkleBranch || wtxIn.nIndex != wtx.nIndex))
+        {
+            wtx.vMerkleBranch = wtxIn.vMerkleBranch;
+            wtx.nIndex = wtxIn.nIndex;
+            fUpdated = true;
+        }
+        if (wtxIn.fFromMe && wtxIn.fFromMe != wtx.fFromMe)
+        {
+            wtx.fFromMe = wtxIn.fFromMe;
+            fUpdated = true;
+        }
+        fUpdated |= wtx.UpdateSpent(wtxIn.vfSpent);
+    }
+
+    //// debug print
+    printf("AddToWallet %s  %s%s\n", wtxIn.GetHash().ToString().substr(0,10).c_str(), (fInsertedNew ? "new" : ""), (fUpdated ? "update" : ""));
+
+    fNeedsWrite = fInsertedNew || fUpdated;
+}
+
+bool CWallet::WritePreparedAddToWallet(
+    CWalletTx& wtx, bool fInsertedNew, bool fNeedsWrite,
+    const std::vector<CPubKey>& vNewDefaultKeys, CWalletDB* pwalletdb)
+{
+    // Update orderposnext, the transaction, any replacement default key and
+    // its address-book entry in the caller's transaction.  The record order
+    // matches the previous individually committed writes.
+    if ((fInsertedNew && !pwalletdb->WriteOrderPosNext(nOrderPosNext)) ||
+        (fNeedsWrite && !wtx.WriteToDisk(pwalletdb)))
+        return false;
+
+    for (const CPubKey& newDefaultKey : vNewDefaultKeys)
+    {
+        if (!pwalletdb->WriteDefaultKey(newDefaultKey) ||
+            !pwalletdb->WriteName(CCoinAddress(newDefaultKey.GetID()).ToString(), ""))
+            return false;
+    }
+    return true;
+}
+
+void CWallet::RollbackAddToWallet(const uint256& hash, bool fInsertedNew,
+                                  const CWalletTx& wtxPrev,
+                                  int64 nOrderPosNextPrev)
+{
+    if (fInsertedNew)
+    {
+        mapWallet.erase(hash);
+        nOrderPosNext = nOrderPosNextPrev;
+    }
+    else
+    {
+        map<uint256, CWalletTx>::iterator mi = mapWallet.find(hash);
+        if (mi != mapWallet.end())
+            mi->second = wtxPrev;
+    }
+}
+
+void CWallet::ApplyDefaultKeyReplacements(
+    const std::vector<CPubKey>& vNewDefaultKeys)
+{
+    if (vNewDefaultKeys.empty())
+        return;
+
+    // Apply the rotation only after its records are durable.  Notifications
+    // therefore cannot describe a state that a failed commit rolled back.
+    vchDefaultKey = vNewDefaultKeys.back();
+    for (const CPubKey& newDefaultKey : vNewDefaultKeys)
+    {
+        const CTxDestination newDefaultDest = newDefaultKey.GetID();
+        std::map<CTxDestination, std::string>::iterator mi =
+            mapAddressBook.find(newDefaultDest);
+        mapAddressBook[newDefaultDest] = "";
+        NotifyAddressBookChanged(this, newDefaultDest, "",
+            ::IsMine(*this, newDefaultDest),
+            (mi == mapAddressBook.end()) ? CT_NEW : CT_UPDATED);
+    }
+}
+
+bool CWallet::StageSpentCoins(
+    const CTransaction& tx, CWalletDB* pwalletdb,
+    std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo,
+    std::vector<uint256>& vSpentNotify)
+{
+    for (const CTxIn& txin : tx.vin)
+    {
+        map<uint256, CWalletTx>::iterator mi =
+            mapWallet.find(txin.prevout.hash);
+        if (mi == mapWallet.end())
+        {
+            printf("CommitTransaction() : prev tx %s not in wallet\n",
+              txin.prevout.hash.ToString().c_str());
+            continue;
+        }
+        CWalletTx &coin = mi->second;
+        if (txin.prevout.n >= coin.vout.size())
+        {
+            printf("CommitTransaction() : prevout %s:%u out of range\n",
+              txin.prevout.hash.ToString().c_str(), txin.prevout.n);
+            continue;
+        }
+        coin.BindWallet(this);
+
+        // Snapshot each coin once, so a rollback restores even when several
+        // inputs spend outputs of the same transaction.
+        bool fSnapshotTaken = false;
+        for (const auto& undo : vSpentUndo)
+        {
+            if (undo.first == txin.prevout.hash)
+            {
+                fSnapshotTaken = true;
+                break;
+            }
+        }
+        if (!fSnapshotTaken)
+            vSpentUndo.push_back(
+                std::make_pair(txin.prevout.hash, coin.vfSpent));
+
+        // MarkSpent() is a no-op when the output is already spent; the record
+        // is still rewritten exactly as the previous per-coin loop did.
+        coin.MarkSpent(txin.prevout.n);
+        if (!coin.WriteToDisk(pwalletdb))
+            return false;
+        vSpentNotify.push_back(coin.GetHash());
+    }
+    return true;
+}
+
+void CWallet::RollbackSpentCoins(
+    const std::vector<std::pair<uint256, std::vector<char> > >& vSpentUndo)
+{
+    for (const auto& undo : vSpentUndo)
+    {
+        map<uint256, CWalletTx>::iterator mi = mapWallet.find(undo.first);
+        if (mi == mapWallet.end())
+            continue;
+        mi->second.vfSpent = undo.second;
+        mi->second.MarkDirty();
+    }
+}
+
 bool CWallet::AddToWallet(const CWalletTx& wtxIn)
 {
     uint256 hash = wtxIn.GetHash();
     {
         LOCK(cs_wallet);
-        // Inserts only if not already there, returns tx inserted or tx found
-        pair<map<uint256, CWalletTx>::iterator, bool> ret = mapWallet.insert(make_pair(hash, wtxIn));
-        CWalletTx& wtx = (*ret.first).second;
-        wtx.BindWallet(this);
-        bool fInsertedNew = ret.second;
 
-        // A failed commit must leave the in-memory wallet unchanged too.  The
-        // previous copy is only needed for an update; a new entry is removed.
-        CWalletTx wtxPrev;
-        if (!fInsertedNew)
-            wtxPrev = wtx;
-        const int64 nOrderPosNextPrev = nOrderPosNext;
-
-        if (fInsertedNew)
-        {
-            wtx.nTimeReceived = GetAdjustedTime();
-            // The order position is reserved now, but its record is written
-            // below in the same transaction as the transaction itself.
-            wtx.nOrderPos = nOrderPosNext++;
-
-            wtx.nTimeSmart = wtx.nTimeReceived;
-            if (wtxIn.hashBlock != 0)
-            {
-                if (mapBlockIndex.count(wtxIn.hashBlock))
-                {
-                    unsigned int latestNow = wtx.nTimeReceived;
-                    unsigned int latestEntry = 0;
-                    {
-                        // Tolerate times up to the last timestamp in the wallet not more than 5 minutes into the future
-                        int64 latestTolerated = latestNow + 300;
-                        std::list<CAccountingEntry> acentries;
-                        TxItems txOrdered = OrderedTxItems(acentries);
-                        for (TxItems::reverse_iterator it = txOrdered.rbegin(); it != txOrdered.rend(); ++it)
-                        {
-                            CWalletTx *const pwtx = (*it).second.first;
-                            if (pwtx == &wtx)
-                                continue;
-                            CAccountingEntry *const pacentry = (*it).second.second;
-                            int64 nSmartTime;
-                            if (pwtx)
-                            {
-                                nSmartTime = pwtx->nTimeSmart;
-                                if (!nSmartTime)
-                                    nSmartTime = pwtx->nTimeReceived;
-                            }
-                            else
-                                nSmartTime = pacentry->nTime;
-                            if (nSmartTime <= latestTolerated)
-                            {
-                                latestEntry = nSmartTime;
-                                if (nSmartTime > latestNow)
-                                    latestNow = nSmartTime;
-                                break;
-                            }
-                        }
-                    }
-
-                    unsigned int& blocktime = mapBlockIndex[wtxIn.hashBlock]->nTime;
-                    wtx.nTimeSmart = std::max(latestEntry, std::min(blocktime, latestNow));
-                }
-                else
-                    printf("AddToWallet() : found %s in block %s not in index\n",
-                           wtxIn.GetHash().ToString().substr(0,10).c_str(),
-                           wtxIn.hashBlock.ToString().c_str());
-            }
-        }
-
-        bool fUpdated = false;
-        if (!fInsertedNew)
-        {
-            // Merge
-            if (wtxIn.hashBlock != 0 && wtxIn.hashBlock != wtx.hashBlock)
-            {
-                wtx.hashBlock = wtxIn.hashBlock;
-                fUpdated = true;
-            }
-            if (wtxIn.nIndex != -1 && (wtxIn.vMerkleBranch != wtx.vMerkleBranch || wtxIn.nIndex != wtx.nIndex))
-            {
-                wtx.vMerkleBranch = wtxIn.vMerkleBranch;
-                wtx.nIndex = wtxIn.nIndex;
-                fUpdated = true;
-            }
-            if (wtxIn.fFromMe && wtxIn.fFromMe != wtx.fFromMe)
-            {
-                wtx.fFromMe = wtxIn.fFromMe;
-                fUpdated = true;
-            }
-            fUpdated |= wtx.UpdateSpent(wtxIn.vfSpent);
-        }
-
-        //// debug print
-        printf("AddToWallet %s  %s%s\n", wtxIn.GetHash().ToString().substr(0,10).c_str(), (fInsertedNew ? "new" : ""), (fUpdated ? "update" : ""));
-
-        // Select any replacement default key before opening the wallet
-        // transaction.  GetKeyFromPool() may top up or trim the keypool, and
-        // those paths open their own writer; doing the selection first keeps
-        // the transaction below from nesting a second writer.
+        // Select replacement default keys before opening the transaction:
+        // GetKeyFromPool() may open its own keypool writer.
         std::vector<CPubKey> vNewDefaultKeys;
-#ifndef QT_GUI
-        // If default receiving address gets used, replace it with a new one
-        CScript scriptDefaultKey;
-        scriptDefaultKey.SetDestination(vchDefaultKey.GetID());
-        for (const CTxOut& txout : wtx.vout)
-        {
-            if (txout.scriptPubKey == scriptDefaultKey)
-            {
-                CPubKey newDefaultKey;
-                if (GetKeyFromPool(newDefaultKey, false))
-                    vNewDefaultKeys.push_back(newDefaultKey);
-            }
-        }
-#endif
+        SelectDefaultKeyReplacements(wtxIn, vNewDefaultKeys);
 
-        // Update orderposnext, the transaction, any replacement default key
-        // and its address-book entry in one durable commit.  The record order
-        // matches the previous individually committed writes.
-        const bool fWriteTx = fInsertedNew || fUpdated;
-        if (fWriteTx || !vNewDefaultKeys.empty())
+        const int64 nOrderPosNextPrev = nOrderPosNext;
+        bool fInsertedNew = false;
+        bool fNeedsWrite = false;
+        CWalletTx wtxPrev;
+        PrepareAddToWallet(wtxIn, fInsertedNew, wtxPrev, fNeedsWrite);
+
+        if (fNeedsWrite || !vNewDefaultKeys.empty())
         {
             CWalletDB walletdb(strWalletFile);
-            const auto rollback = [&]() {
-                if (fInsertedNew)
-                {
-                    mapWallet.erase(hash);
-                    nOrderPosNext = nOrderPosNextPrev;
-                }
-                else
-                {
-                    wtx = wtxPrev;
-                }
-            };
-
+            CWalletTx& wtx = mapWallet[hash];
             if (!walletdb.TxnBegin())
             {
-                rollback();
+                RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
-
-            if ((fInsertedNew && !walletdb.WriteOrderPosNext(nOrderPosNext)) ||
-                (fWriteTx && !wtx.WriteToDisk(&walletdb)))
+            if (!WritePreparedAddToWallet(wtx, fInsertedNew, fNeedsWrite,
+                                          vNewDefaultKeys, &walletdb))
             {
                 walletdb.TxnAbort();
-                rollback();
+                RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
-
-            for (const CPubKey& newDefaultKey : vNewDefaultKeys)
-            {
-                if (!walletdb.WriteDefaultKey(newDefaultKey) ||
-                    !walletdb.WriteName(CCoinAddress(newDefaultKey.GetID()).ToString(), ""))
-                {
-                    walletdb.TxnAbort();
-                    rollback();
-                    return false;
-                }
-            }
-
             if (!walletdb.TxnCommit())
             {
-                rollback();
+                RollbackAddToWallet(hash, fInsertedNew, wtxPrev, nOrderPosNextPrev);
                 return false;
             }
         }
 
-        // Apply the rotation only after its records are durable.  Notifications
-        // therefore cannot describe a state that a failed commit rolled back.
-        if (!vNewDefaultKeys.empty())
-        {
-            vchDefaultKey = vNewDefaultKeys.back();
-            for (const CPubKey& newDefaultKey : vNewDefaultKeys)
-            {
-                const CTxDestination newDefaultDest = newDefaultKey.GetID();
-                std::map<CTxDestination, std::string>::iterator mi =
-                    mapAddressBook.find(newDefaultDest);
-                mapAddressBook[newDefaultDest] = "";
-                NotifyAddressBookChanged(this, newDefaultDest, "",
-                    ::IsMine(*this, newDefaultDest),
-                    (mi == mapAddressBook.end()) ? CT_NEW : CT_UPDATED);
-            }
-        }
+        ApplyDefaultKeyReplacements(vNewDefaultKeys);
+
         // since AddToWallet is called directly for self-originating transactions, check for consumption of own coins
-        WalletUpdateSpent(wtx);
+        WalletUpdateSpent(wtxIn);
 
         // Notify UI of new or updated transaction
         NotifyTransactionChanged(this, hash, fInsertedNew ? CT_NEW : CT_UPDATED);
@@ -1803,45 +1901,73 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey)
         LOCK2(cs_main, cs_wallet);
         printf("CommitTransaction:\n%s", wtxNew.ToString().c_str());
         {
-            // This is only to keep the database open to defeat the auto-flush for the
-            // duration of this scope.  This is the only place where this optimization
-            // maybe makes sense; please don't do it anywhere else.
-            CWalletDB* pwalletdb = fFileBacked ? new CWalletDB(strWalletFile,"r") : nullptr;
-
-            // Take key pair from key pool so it won't be used again
+            // Take key pair from key pool so it won't be used again.  This is
+            // still its own keypool write: the key is consumed before the
+            // batch, exactly as it was before batching.
             reservekey.KeepKey();
 
-            // Add tx to wallet, because if it has change it's also ours,
-            // otherwise just for transaction history.
-            AddToWallet(wtxNew);
+            // Select replacement default keys before opening the batch.
+            // GetKeyFromPool() may top up or trim the keypool, and those paths
+            // open their own writer.
+            std::vector<CPubKey> vNewDefaultKeys;
+            SelectDefaultKeyReplacements(wtxNew, vNewDefaultKeys);
 
-            // Mark old coins as spent
-            set<CWalletTx*> setCoins;
-            for (const CTxIn& txin : wtxNew.vin)
+            const uint256 hash = wtxNew.GetHash();
+            const int64 nOrderPosNextPrev = nOrderPosNext;
+            bool fInsertedNew = false;
+            bool fNeedsWrite = false;
+            CWalletTx wtxPrev;
+            PrepareAddToWallet(wtxNew, fInsertedNew, wtxPrev, fNeedsWrite);
+
+            // The new transaction, its order position, any replacement default
+            // key and every spent flag share one durable commit.  The handle
+            // also stays open to defeat the auto-flush for the duration of
+            // this scope, like the previous read handle did.
+            std::vector<std::pair<uint256, std::vector<char> > > vSpentUndo;
+            std::vector<uint256> vSpentNotify;
+            bool fCommitted = false;
             {
-                map<uint256, CWalletTx>::iterator mi =
-                    mapWallet.find(txin.prevout.hash);
-                if (mi == mapWallet.end())
+                CWalletDB walletdb(strWalletFile);
+                if (walletdb.TxnBegin())
                 {
-                    printf("CommitTransaction() : prev tx %s not in wallet\n",
-                      txin.prevout.hash.ToString().c_str());
-                    continue;
+                    if (WritePreparedAddToWallet(mapWallet[hash], fInsertedNew,
+                                                 fNeedsWrite, vNewDefaultKeys,
+                                                 &walletdb) &&
+                        StageSpentCoins(wtxNew, &walletdb, vSpentUndo,
+                                        vSpentNotify))
+                    {
+                        fCommitted = walletdb.TxnCommit();
+                    }
+                    else
+                    {
+                        walletdb.TxnAbort();
+                    }
                 }
-                CWalletTx &coin = mi->second;
-                if (txin.prevout.n >= coin.vout.size())
-                {
-                    printf("CommitTransaction() : prevout %s:%u out of range\n",
-                      txin.prevout.hash.ToString().c_str(), txin.prevout.n);
-                    continue;
-                }
-                coin.BindWallet(this);
-                coin.MarkSpent(txin.prevout.n);
-                coin.WriteToDisk();
-                NotifyTransactionChanged(this, coin.GetHash(), CT_UPDATED);
             }
 
-            if (fFileBacked)
-                delete pwalletdb;
+            if (fCommitted)
+            {
+                ApplyDefaultKeyReplacements(vNewDefaultKeys);
+
+                // Mark old coins as spent.  Notifications happen only after
+                // the whole batch is durable.
+                for (const uint256& spentHash : vSpentNotify)
+                    NotifyTransactionChanged(this, spentHash, CT_UPDATED);
+
+                NotifyTransactionChanged(this, hash,
+                                         fInsertedNew ? CT_NEW : CT_UPDATED);
+            }
+            else
+            {
+                // A failed wallet batch must not leave a transaction in memory
+                // or spent outputs marked.  The old code ignored per-record
+                // failures and still broadcast; keep broadcasting, but never
+                // expose half of the wallet update.
+                RollbackAddToWallet(hash, fInsertedNew, wtxPrev,
+                                    nOrderPosNextPrev);
+                RollbackSpentCoins(vSpentUndo);
+                printf("CommitTransaction() : wallet batch was rolled back\n");
+            }
         }
 
         // Track how many getdata requests our transaction gets
