@@ -361,13 +361,13 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 182 test cases...
+Running 183 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 182 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
-(33), `wallet_migration_tests` (17), `util_tests` (12) and the re-enabled
+The full suite is 183 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
+(33), `wallet_migration_tests` (18), `util_tests` (12) and the re-enabled
 legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
 wallet migration, encryption-state equality, cross-backend parity,
 write-boundary rollback, explicit rewrite-failure handling and hybrid-key
@@ -473,7 +473,7 @@ format, and database size. Methodology and measured results are in
 
 ## Wallet write atomicity tests
 
-`wallet_migration_tests` also contains nine failure-injection tests that
+`wallet_migration_tests` also contains ten failure-injection tests that
 pin the wallet write transaction boundaries. They rely on the test-only
 hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 `SetTestWalletCommitFailure(nSkip)`, `ClearTestWalletWriteFailures()` — which
@@ -519,7 +519,8 @@ index).
   and after a restart, and the retried insert must persist the order
   position and transaction together. A failed update that merges block data
   must restore the previous in-memory entry instead of leaving it ahead of
-  the rolled-back database.
+  the rolled-back database; both the update's `tx` write and its commit are
+  failed separately.
 - `wallet_atomic_add_to_wallet_default_key_rotation` pays the current
   default key and fails the replacement `defaultkey` and `name` writes. The
   old default key, address book, order position and transaction must remain
@@ -528,13 +529,21 @@ index).
   before the transaction opens because the keypool path uses its own writer;
   a plain commit failure is covered by the non-rotation case above.
 - `wallet_atomic_commit_transaction_spent_batch` fails the `orderposnext`
-  write, the new `tx` write, the spent-coin `tx` write and the commit of a
+  write, the new `tx` write, each spent-coin `tx` write and the commit of a
   `CommitTransaction()` call. The new entry, order position, already-spent
   input and freshly spent input must all return to the pre-call state before
   and after a restart. The retried send must persist the transaction, order
   position and both spent flags in one batch, and spending an already-spent
   coin must still succeed. The unit test chain rejects the broadcast after the
   wallet batch, so this test checks persistence rather than the return value.
+- `wallet_atomic_commit_single_input_change_retry` covers the single-input
+  and change shape. It fails the spent-coin record after the new `tx` record
+  was already staged, then fails a final commit on a second input, and
+  retries the identical `CWalletTx` after each failure. The failed attempts
+  must leave no new `tx` record, order position or spent flag behind before
+  and after a restart; each retry must add exactly one transaction with its
+  change marker and spent input, and the restarted wallet must still contain
+  each entry only once.
 - `wallet_atomic_commit_transaction_default_key_rotation` pays the current
   default key from the send path and fails the replacement `defaultkey` write,
   then the spent-coin write after the key and label were staged. The old

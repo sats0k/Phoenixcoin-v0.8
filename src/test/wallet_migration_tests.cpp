@@ -2856,7 +2856,8 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
                       CountRecordsOfType(baselineRecords, "tx") + 1);
     BOOST_CHECK_EQUAL(CountRecordsOfType(insertedRecords, "orderposnext"), 1U);
 
-    // An update merges block data into the existing record.  A failed commit
+    // An update merges block data into the existing record.  The update path
+    // rewrites the `tx` record only; a failure at that write or at the commit
     // must restore the previous entry rather than leaving the merged copy in
     // memory while the database still has the old one.
     CWalletTx update(wallet->mapWallet[hash]);
@@ -2867,39 +2868,52 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
         *wallet, built.scripts, built.watchScripts);
     const std::map<CDBKey, CDBValue> beforeUpdateRecords = CaptureRecords();
 
-    SetTestWalletCommitFailure();
-    const bool fUpdateSucceeded = wallet->AddToWallet(update);
-    ClearTestWalletWriteFailures();
-    BOOST_CHECK_MESSAGE(!fUpdateSucceeded,
-                        "update: injected commit failure did not fail "
-                        "AddToWallet()");
-    BOOST_CHECK_MESSAGE(
-        wallet->mapWallet[hash].hashBlock != update.hashBlock,
-        "update: failed commit left the merged block hash in memory");
-    CheckSnapshotsEqual(beforeUpdate,
-                        CaptureWalletSnapshot(*wallet, built.scripts,
-                                              built.watchScripts),
-                        "update: wallet after failed commit");
-    BOOST_CHECK_MESSAGE(
-        CaptureRecords() == beforeUpdateRecords,
-        "update: failed commit changed the database ("
-            << DescribeRecordDelta(beforeUpdateRecords, CaptureRecords())
-            << ")");
+    const auto checkUpdateRolledBack =
+        [&](const std::string &tag) {
+            BOOST_CHECK_MESSAGE(
+                wallet->mapWallet[hash].hashBlock != update.hashBlock,
+                tag << ": failed update left the merged block hash in memory");
+            CheckSnapshotsEqual(beforeUpdate,
+                                CaptureWalletSnapshot(*wallet, built.scripts,
+                                                      built.watchScripts),
+                                tag + ": wallet after failed update");
+            BOOST_CHECK_MESSAGE(
+                CaptureRecords() == beforeUpdateRecords,
+                tag << ": failed update changed the database ("
+                    << DescribeRecordDelta(beforeUpdateRecords,
+                                           CaptureRecords())
+                    << ")");
 
-    wallet.reset();
-    RestartLMDBWallet(guard.dir);
-    wallet.reset(LoadWalletOrFail());
-    BOOST_CHECK(wallet->mapWallet.count(hash));
-    BOOST_CHECK(wallet->mapWallet[hash].hashBlock != update.hashBlock);
-    CheckSnapshotsEqual(beforeUpdate,
-                        CaptureWalletSnapshot(*wallet, built.scripts,
-                                              built.watchScripts),
-                        "update: wallet after restart");
-    BOOST_CHECK_MESSAGE(
-        CaptureRecords() == beforeUpdateRecords,
-        "update: failed commit survived a restart ("
-            << DescribeRecordDelta(beforeUpdateRecords, CaptureRecords())
-            << ")");
+            wallet.reset();
+            RestartLMDBWallet(guard.dir);
+            wallet.reset(LoadWalletOrFail());
+            BOOST_CHECK(wallet->mapWallet.count(hash));
+            BOOST_CHECK(wallet->mapWallet[hash].hashBlock != update.hashBlock);
+            CheckSnapshotsEqual(beforeUpdate,
+                                CaptureWalletSnapshot(*wallet, built.scripts,
+                                                      built.watchScripts),
+                                tag + ": wallet after restart");
+            BOOST_CHECK_MESSAGE(
+                CaptureRecords() == beforeUpdateRecords,
+                tag << ": failed update survived a restart ("
+                    << DescribeRecordDelta(beforeUpdateRecords,
+                                           CaptureRecords())
+                    << ")");
+        };
+
+    SetTestWalletWriteFailure("tx");
+    BOOST_CHECK_MESSAGE(!wallet->AddToWallet(update),
+                        "update-tx-write: injected write failure did not fail "
+                        "AddToWallet()");
+    ClearTestWalletWriteFailures();
+    checkUpdateRolledBack("update-tx-write");
+
+    SetTestWalletCommitFailure();
+    BOOST_CHECK_MESSAGE(!wallet->AddToWallet(update),
+                        "update-commit: injected commit failure did not fail "
+                        "AddToWallet()");
+    ClearTestWalletWriteFailures();
+    checkUpdateRolledBack("update-commit");
 
     BOOST_REQUIRE(wallet->AddToWallet(update));
     BOOST_CHECK(wallet->mapWallet[hash].hashBlock == update.hashBlock);
@@ -3120,7 +3134,8 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
     const Injection injections[] = {
         {"orderposnext", 0, false, "orderposnext"},
         {"tx", 0, false, "tx-new"},
-        {"tx", 1, false, "tx-spent-coin"},
+        {"tx", 1, false, "tx-first-spent-coin"},
+        {"tx", 2, false, "tx-second-spent-coin"},
         {"", 0, true, "commit"},
     };
 
@@ -3236,6 +3251,215 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
     wallet.reset(LoadWalletOrFail());
     BOOST_REQUIRE(wallet->mapWallet.count(respendHash));
     BOOST_CHECK(wallet->mapWallet[prevHash].IsSpent(0));
+}
+
+/**
+ * CommitTransaction() must keep one logical send atomic in the single-input
+ * and change shape too.  A write failure after the new `tx` record was staged
+ * but before its spent-coin record, and a final commit failure, must both
+ * leave no transaction record and no spent flag behind.  Retrying the very
+ * same wallet transaction must then produce exactly one history entry.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_commit_single_input_change_retry)
+{
+    TempDirGuard guard("wallet_commit_single_retry");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE_EQUAL(built.txids.size(), 2U);
+
+    // Fixture transaction 0 has output 1 unspent; transaction 1 has output 0
+    // unspent.  Each scenario therefore starts from a single unspent coin.
+    const uint256 coinAHash = built.txids[0];
+    const uint256 coinBHash = built.txids[1];
+    BOOST_REQUIRE(!wallet->mapWallet[coinAHash].IsSpent(1));
+    BOOST_REQUIRE(!wallet->mapWallet[coinBHash].IsSpent(0));
+
+    CScript payScript;
+    payScript.SetDestination(built.pubKeys[2].GetID());
+    CScript changeScript;
+    changeScript.SetDestination(built.pubKeys[1].GetID());
+
+    const auto makeSend =
+        [&](const uint256 &prevHash, unsigned int prevOut,
+            unsigned int nLockTime) {
+            CWalletTx wtx = MakeCommitTransactionTestTx(
+                *wallet, prevHash, {prevOut}, {payScript, changeScript},
+                nLockTime);
+            wtx.vfChange.assign(wtx.vout.size(), 0);
+            wtx.vfChange[1] = 1;
+            return wtx;
+        };
+
+    struct SendBaseline
+    {
+        WalletSnapshot snapshot;
+        std::map<CDBKey, CDBValue> records;
+        size_t txRecords;
+    };
+
+    const auto captureBaseline = [&]() {
+        SendBaseline before;
+        before.snapshot = CaptureWalletSnapshot(
+            *wallet, built.scripts, built.watchScripts);
+        before.records = CaptureRecords();
+        before.txRecords = CountRecordsOfType(before.records, "tx");
+        return before;
+    };
+
+    const WalletSnapshot initialSnapshot = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const size_t initialTxRecords =
+        CountRecordsOfType(CaptureRecords(), "tx");
+
+    const auto checkRolledBack =
+        [&](const SendBaseline &before, const CWalletTx &wtx,
+            const uint256 &spentHash, unsigned int spentOut,
+            const std::string &tag) {
+            const uint256 hash = wtx.GetHash();
+
+            BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                                tag << ": failed send left the tx in memory");
+            BOOST_CHECK_MESSAGE(
+                wallet->nOrderPosNext == before.snapshot.orderPosNext,
+                tag << ": failed send advanced nOrderPosNext");
+            BOOST_CHECK_MESSAGE(
+                !wallet->mapWallet[spentHash].IsSpent(spentOut),
+                tag << ": failed send marked the input spent");
+            // The invariant: no `tx` record may survive while its spent-coin
+            // or required metadata update was rolled back.
+            BOOST_CHECK_MESSAGE(
+                CountRecordsOfType(CaptureRecords(), "tx") == before.txRecords,
+                tag << ": a tx record survived while the rest of the send was "
+                       "rolled back");
+            CheckSnapshotsEqual(
+                before.snapshot,
+                CaptureWalletSnapshot(*wallet, built.scripts,
+                                      built.watchScripts),
+                tag + ": wallet after failed send");
+            BOOST_CHECK_MESSAGE(
+                CaptureRecords() == before.records,
+                tag << ": failed send changed the database ("
+                    << DescribeRecordDelta(before.records, CaptureRecords())
+                    << ")");
+
+            wallet.reset();
+            RestartLMDBWallet(guard.dir);
+            wallet.reset(LoadWalletOrFail());
+            BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                                tag << ": failed send appeared after restart");
+            BOOST_CHECK_MESSAGE(
+                !wallet->mapWallet[spentHash].IsSpent(spentOut),
+                tag << ": input is spent after restart");
+            BOOST_CHECK_MESSAGE(
+                CountRecordsOfType(CaptureRecords(), "tx") == before.txRecords,
+                tag << ": a tx record survived a restart");
+            CheckSnapshotsEqual(
+                before.snapshot,
+                CaptureWalletSnapshot(*wallet, built.scripts,
+                                      built.watchScripts),
+                tag + ": wallet after restart");
+            BOOST_CHECK_MESSAGE(
+                CaptureRecords() == before.records,
+                tag << ": failed send survived a restart ("
+                    << DescribeRecordDelta(before.records, CaptureRecords())
+                    << ")");
+        };
+
+    const auto retryAndCheck =
+        [&](const SendBaseline &before, CWalletTx &wtx,
+            const uint256 &spentHash, unsigned int spentOut,
+            const std::string &tag) {
+            const uint256 hash = wtx.GetHash();
+            {
+                CReserveKey reserveKey(wallet.get());
+                BOOST_CHECK_MESSAGE(
+                    !wallet->CommitTransaction(wtx, reserveKey),
+                    tag << ": unit test chain unexpectedly relayed the "
+                           "transaction");
+            }
+            BOOST_REQUIRE(wallet->mapWallet.count(hash));
+            BOOST_CHECK(wallet->mapWallet[spentHash].IsSpent(spentOut));
+            BOOST_CHECK_EQUAL(wallet->nOrderPosNext,
+                              before.snapshot.orderPosNext + 1);
+            BOOST_CHECK_EQUAL(wallet->mapWallet[hash].nOrderPos,
+                              before.snapshot.orderPosNext);
+            BOOST_CHECK(wallet->mapWallet[hash].IsChange(1));
+            BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "tx"),
+                              before.txRecords + 1);
+        };
+
+    // Scenario 1: the new `tx` record write succeeded inside the batch, then
+    // the spent-coin record failed.  The whole batch, including the new tx
+    // record and orderposnext, must be rolled back before the retry.
+    CWalletTx writeFailSend = makeSend(coinAHash, 1, 9400001);
+    const uint256 writeFailHash = writeFailSend.GetHash();
+    {
+        const SendBaseline before = captureBaseline();
+        SetTestWalletWriteFailure("tx", 1);
+        {
+            CReserveKey reserveKey(wallet.get());
+            wallet->CommitTransaction(writeFailSend, reserveKey);
+        }
+        ClearTestWalletWriteFailures();
+        checkRolledBack(before, writeFailSend, coinAHash, 1,
+                        "spent-coin-write");
+        retryAndCheck(before, writeFailSend, coinAHash, 1,
+                      "spent-coin-write-retry");
+    }
+
+    // Scenario 2: final commit failure for a different single-input send,
+    // then the identical retry.
+    CWalletTx commitFailSend = makeSend(coinBHash, 0, 9400002);
+    const uint256 commitFailHash = commitFailSend.GetHash();
+    {
+        const SendBaseline before = captureBaseline();
+        SetTestWalletCommitFailure();
+        {
+            CReserveKey reserveKey(wallet.get());
+            wallet->CommitTransaction(commitFailSend, reserveKey);
+        }
+        ClearTestWalletWriteFailures();
+        checkRolledBack(before, commitFailSend, coinBHash, 0, "commit");
+        retryAndCheck(before, commitFailSend, coinBHash, 0, "commit-retry");
+    }
+
+    // Both retries must show up exactly once, with the spent flags and change
+    // markers intact, after a restart.
+    const WalletSnapshot committed = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> committedRecords = CaptureRecords();
+    BOOST_CHECK_EQUAL(committed.txs.size(), initialSnapshot.txs.size() + 2);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(committedRecords, "tx"),
+                      initialTxRecords + 2);
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext,
+                      initialSnapshot.orderPosNext + 2);
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(wallet->mapWallet.count(writeFailHash));
+    BOOST_REQUIRE(wallet->mapWallet.count(commitFailHash));
+    BOOST_CHECK(wallet->mapWallet[coinAHash].IsSpent(1));
+    BOOST_CHECK(wallet->mapWallet[coinBHash].IsSpent(0));
+    BOOST_CHECK(wallet->mapWallet[writeFailHash].IsChange(1));
+    BOOST_CHECK(wallet->mapWallet[commitFailHash].IsChange(1));
+    CheckSnapshotsEqual(committed,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "retry: committed state after restart");
+    BOOST_CHECK_MESSAGE(
+        CaptureRecords() == committedRecords,
+        "retry: committed state did not survive a restart ("
+            << DescribeRecordDelta(committedRecords, CaptureRecords()) << ")");
 }
 
 /**

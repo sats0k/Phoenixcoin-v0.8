@@ -321,10 +321,10 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 182 test cases. The database work added two new
+The Boost suite is at 183 test cases. The database work added two new
 suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
 LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (17 cases for wallet migration semantics,
+and `wallet_migration_tests` (18 cases for wallet migration semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
@@ -339,14 +339,15 @@ New coverage:
   write path, `checkhybridkeys`, write-boundary rollback, explicit LMDB
   rewrite failure injection, and ECDSA keypool refill rollback through the
   staged `CStagedKey` path. Two `AddToWallet()` cases inject a failed
-  `orderposnext`/`tx` write, a failed update commit and a failed
-  default-key rotation, then require the retried write to persist the whole
-  update and survive a restart. Two `CommitTransaction()` cases do the same
-  for the send path: a failed order-position, new-transaction, spent-coin or
-  commit write must roll the wallet back before and after a restart, the
-  successful batch must persist the transaction and both spent flags
-  together, and a payment that spends the default key must rotate the key
-  and label atomically with the transaction.
+  `orderposnext`/`tx` write, a failed update `tx` write or commit and a
+  failed default-key rotation, then require the retried write to persist the
+  whole update and survive a restart. Three `CommitTransaction()` cases do
+  the same for the send path: a failed order-position, new-transaction, first
+  or second spent-coin write or commit must roll the wallet back before and
+  after a restart, the successful batch must persist the transaction and both
+  spent flags together, a single-input send with change must retry the same
+  transaction without duplicating its history, and a payment that spends the
+  default key must rotate the key and label atomically with the transaction.
 - `util_ParseConfigStream`: covers the configuration file parser, i.e.
   the option/value pairs with the surrounding whitespace trimmed, the `#`
   and `;` comments, the quoted values and the values that contain an `=`,

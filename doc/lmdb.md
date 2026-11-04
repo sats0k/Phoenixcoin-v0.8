@@ -546,7 +546,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   restart, a re-import skips known blocks and creates no second batch, and a
   corrupted middle block rolls the uncommitted batch back to genesis before a
   later clean import reaches the correct tip.
-- The full unit suite passed 182 test cases with no errors in the normal build.
+- The full unit suite passed 183 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -622,7 +622,7 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
-Wallet write atomicity is covered by nine failure-injection tests in
+Wallet write atomicity is covered by ten failure-injection tests in
 `wallet_migration_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
@@ -658,9 +658,10 @@ itself.  It fails the `orderposnext` write, the `tx` write and the commit of a
 new `AddToWallet()` call, requiring the in-memory wallet and the record set to
 match the pre-call state before and after a restart, then lets the identical
 insert commit and verifies that the order position and transaction are
-persisted together.  It also fails an update that merges block data, which must
-restore the previous in-memory entry rather than leave it ahead of the rolled
-back database.  `wallet_atomic_add_to_wallet_default_key_rotation` pays the
+persisted together.  It also fails an update that merges block data, at both
+the update's `tx` write and its commit; either failure must restore the
+previous in-memory entry rather than leave it ahead of the rolled-back
+database.  `wallet_atomic_add_to_wallet_default_key_rotation` pays the
 current default key and fails the replacement `defaultkey` and `name` writes;
 the old default key, address book, order position and transaction must all
 remain unchanged apart from the already-consumed keypool entry, and the retried
@@ -669,16 +670,27 @@ rotation test injects record failures rather than a commit failure because the
 key selection's own keypool transactions consume the one-shot commit hook.)
 
 `wallet_atomic_commit_transaction_spent_batch` covers the send path.  It fails
-the `orderposnext` write, the new `tx` write, the spent-coin `tx` write and the
-commit of one `CommitTransaction()` call.  In every case the new entry must
-disappear again, `nOrderPosNext` must return to its old value, both an
-already-spent and an unspent input must keep their previous flags, and the
-record set must match the pre-call state before and after a restart.  The
-retried call must persist the new transaction, its order position and both
-spent flags in one batch; spending the already-spent coin again must still
-succeed.  The unit test chain has no index entry for these coins, so the
-broadcast is rejected after the wallet batch and the test checks persistence,
-not the return value.
+the `orderposnext` write, the new `tx` write, each spent-coin `tx` write in a
+two-input transaction and the commit of one `CommitTransaction()` call.  In
+every case the new entry must disappear again, `nOrderPosNext` must return to
+its old value, both an already-spent and an unspent input must keep their
+previous flags, and the record set must match the pre-call state before and
+after a restart.  The retried call must persist the new transaction, its order
+position and both spent flags in one batch; spending the already-spent coin
+again must still succeed.  The unit test chain has no index entry for these
+coins, so the broadcast is rejected after the wallet batch and the test checks
+persistence, not the return value.
+
+`wallet_atomic_commit_single_input_change_retry` covers the single-input and
+change shape.  It first lets the new `tx` record be staged and then fails the
+spent-coin record, and separately fails a final commit for a second input.
+After each failure no new `tx` record, order position or spent flag may
+remain, in memory or after a restart.  The test then retries the identical
+`CWalletTx` and requires exactly one new transaction record, the source
+output's spent flag, and the persisted change marker, before and after a
+final restart.  Together with the two-record batch this pins the invariant
+that a logical wallet operation never persists its transaction record while
+its spent-coin or required metadata updates are missing.
 
 `wallet_atomic_commit_transaction_default_key_rotation` pays the default key
 from the send path.  It fails the replacement `defaultkey` write, then the
@@ -1030,7 +1042,7 @@ builds:
 | full unit suite | 158 cases |
 
 These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated. The current normal-build suite is 182 cases; the
+backend was validated. The current normal-build suite is 183 cases; the
 later database atomicity, keypool-staging and invariant tests were added
 after these sanitizer runs.
 
