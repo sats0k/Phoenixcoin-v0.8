@@ -6,6 +6,7 @@
 #include <limits>
 #include <random>
 #include <algorithm>
+#include <atomic>
 
 #include "base58.h"
 #include "crypter.h"
@@ -16,6 +17,49 @@
 #include "hs/wallethybrid.h"
 
 using namespace std;
+
+//////////////////////////////////////////////////////////////////////////////
+//
+// Test-only observation of the send broadcast path
+//
+//////////////////////////////////////////////////////////////////////////////
+
+namespace {
+
+// CMerkleTx::AcceptToMemoryPool() and CWalletTx::RelayWalletTransaction()
+// without arguments are called only by CommitTransaction(), so these counters
+// show whether a send attempt reached the network.  Nothing in production
+// reads them; the wallet tests reset and inspect them around a send.
+std::atomic<int> g_testWalletMempoolAcceptAttempts{0};
+std::atomic<int> g_testWalletRelayAttempts{0};
+
+} // namespace
+
+void ResetTestWalletBroadcastAttempts()
+{
+    g_testWalletMempoolAcceptAttempts.store(0);
+    g_testWalletRelayAttempts.store(0);
+}
+
+int TestWalletMempoolAcceptAttempts()
+{
+    return g_testWalletMempoolAcceptAttempts.load();
+}
+
+int TestWalletRelayAttempts()
+{
+    return g_testWalletRelayAttempts.load();
+}
+
+void TestWalletNoteMempoolAcceptAttempt()
+{
+    ++g_testWalletMempoolAcceptAttempts;
+}
+
+void TestWalletNoteRelayAttempt()
+{
+    ++g_testWalletRelayAttempts;
+}
 
 //////////////////////////////////////////////////////////////////////////////
 //
@@ -1359,6 +1403,7 @@ void CWalletTx::RelayWalletTransaction(CTxDB& txdb)
 
 void CWalletTx::RelayWalletTransaction()
 {
+   TestWalletNoteRelayAttempt();
    CTxDB txdb("r");
    RelayWalletTransaction(txdb);
 }
@@ -1901,11 +1946,6 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey)
         LOCK2(cs_main, cs_wallet);
         printf("CommitTransaction:\n%s", wtxNew.ToString().c_str());
         {
-            // Take key pair from key pool so it won't be used again.  This is
-            // still its own keypool write: the key is consumed before the
-            // batch, exactly as it was before batching.
-            reservekey.KeepKey();
-
             // Select replacement default keys before opening the batch.
             // GetKeyFromPool() may top up or trim the keypool, and those paths
             // open their own writer.
@@ -1945,29 +1985,34 @@ bool CWallet::CommitTransaction(CWalletTx& wtxNew, CReserveKey& reservekey)
                 }
             }
 
-            if (fCommitted)
-            {
-                ApplyDefaultKeyReplacements(vNewDefaultKeys);
-
-                // Mark old coins as spent.  Notifications happen only after
-                // the whole batch is durable.
-                for (const uint256& spentHash : vSpentNotify)
-                    NotifyTransactionChanged(this, spentHash, CT_UPDATED);
-
-                NotifyTransactionChanged(this, hash,
-                                         fInsertedNew ? CT_NEW : CT_UPDATED);
-            }
-            else
+            if (!fCommitted)
             {
                 // A failed wallet batch must not leave a transaction in memory
-                // or spent outputs marked.  The old code ignored per-record
-                // failures and still broadcast; keep broadcasting, but never
-                // expose half of the wallet update.
+                // or spent outputs marked, and it must not broadcast: the
+                // network would see a payment the wallet has no durable record
+                // of.  Restore the wallet and stop before mempool acceptance.
                 RollbackAddToWallet(hash, fInsertedNew, wtxPrev,
                                     nOrderPosNextPrev);
                 RollbackSpentCoins(vSpentUndo);
                 printf("CommitTransaction() : wallet batch was rolled back\n");
+                return false;
             }
+
+            // The send is durable, so consume the reserved change key now.
+            // Keeping it only after the batch means a failed send returns the
+            // key to the pool instead of stranding it for a transaction that
+            // was never recorded.
+            reservekey.KeepKey();
+
+            ApplyDefaultKeyReplacements(vNewDefaultKeys);
+
+            // Mark old coins as spent.  Notifications happen only after
+            // the whole batch is durable.
+            for (const uint256& spentHash : vSpentNotify)
+                NotifyTransactionChanged(this, spentHash, CT_UPDATED);
+
+            NotifyTransactionChanged(this, hash,
+                                     fInsertedNew ? CT_NEW : CT_UPDATED);
         }
 
         // Track how many getdata requests our transaction gets

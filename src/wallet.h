@@ -1123,4 +1123,17 @@ private:
     std::set<COutPoint> setSelected;
 };
 
+/**
+ * Test-only observation of the send broadcast path.  The no-argument
+ * CMerkleTx::AcceptToMemoryPool() and CWalletTx::RelayWalletTransaction() are
+ * reached only from CWallet::CommitTransaction().  A test can reset the
+ * counters, drive a send, and check that a failed wallet batch never attempted
+ * mempool acceptance or relay.  The hooks are inert in production code.
+ */
+void ResetTestWalletBroadcastAttempts();
+int TestWalletMempoolAcceptAttempts();
+int TestWalletRelayAttempts();
+void TestWalletNoteMempoolAcceptAttempt();
+void TestWalletNoteRelayAttempt();
+
 #endif /* WALLET_H */

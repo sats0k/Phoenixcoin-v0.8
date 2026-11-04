@@ -218,12 +218,13 @@ Changes since v0.8.3.
   survives a later failure.
 - `CommitTransaction()` now commits the new wallet transaction, its
   `orderposnext` record, any replacement `defaultkey`/`name` pair and every
-  spent-coin `tx` record in one transaction. The keypool reservation stays a
-  separate write before the batch, and an already-spent input is still
-  rewritten without blocking the others. A failed write or commit restores
-  the in-memory transaction, order position and spent flags before the
-  existing broadcast attempt continues, so the wallet never exposes a
-  partially applied update.
+  spent-coin `tx` record in one transaction. An already-spent input is still
+  rewritten without blocking the others. A failed write or commit restores the
+  in-memory transaction, order position and spent flags, returns `false`, and
+  stops before mempool acceptance or relay, so a payment cannot reach the
+  network with no durable wallet record or with its inputs still marked
+  unspent. The reserved change key is kept only after the batch commits, so a
+  failed send returns it to the pool instead of consuming it.
 - Bulk block import through `-loadblock` / `bootstrap.dat` now groups
   consecutive best-chain blocks below the checkpoint estimate into one
   chain-index transaction. A batch is limited to 1000 blocks or 64 MiB, starts
@@ -321,10 +322,10 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 183 test cases. The database work added two new
+The Boost suite is at 184 test cases. The database work added two new
 suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
 LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (18 cases for wallet migration semantics,
+and `wallet_migration_tests` (19 cases for wallet migration semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
@@ -341,13 +342,15 @@ New coverage:
   staged `CStagedKey` path. Two `AddToWallet()` cases inject a failed
   `orderposnext`/`tx` write, a failed update `tx` write or commit and a
   failed default-key rotation, then require the retried write to persist the
-  whole update and survive a restart. Three `CommitTransaction()` cases do
+  whole update and survive a restart. Four `CommitTransaction()` cases do
   the same for the send path: a failed order-position, new-transaction, first
   or second spent-coin write or commit must roll the wallet back before and
   after a restart, the successful batch must persist the transaction and both
   spent flags together, a single-input send with change must retry the same
-  transaction without duplicating its history, and a payment that spends the
-  default key must rotate the key and label atomically with the transaction.
+  transaction without duplicating its history, a payment that spends the
+  default key must rotate the key and label atomically with the transaction,
+  and a failed write or commit must not reach mempool acceptance or relay or
+  consume the reserved change key.
 - `util_ParseConfigStream`: covers the configuration file parser, i.e.
   the option/value pairs with the surrounding whitespace trimmed, the `#`
   and `;` comments, the quoted values and the values that contain an `=`,

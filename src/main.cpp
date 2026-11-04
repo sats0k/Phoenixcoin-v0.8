@@ -809,6 +809,7 @@ bool CMerkleTx::AcceptToMemoryPool(CTxDB& txdb, bool fCheckInputs)
 
 bool CMerkleTx::AcceptToMemoryPool()
 {
+    TestWalletNoteMempoolAcceptAttempt();
     CTxDB txdb("r");
     return AcceptToMemoryPool(txdb);
 }

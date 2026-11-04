@@ -3631,4 +3631,212 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_default_key_rotation)
                             << ")");
 }
 
+/**
+ * A failed wallet batch must not broadcast.  The previous code rolled the
+ * in-memory wallet and database back and then fell through to mempool
+ * acceptance, so a valid payment could reach the network with no durable
+ * wallet record and with its inputs still unspent in the wallet.  This test
+ * drives both a spent-coin write failure and a final commit failure, checks
+ * that neither broadcast path was reached, that no transaction or spent flag
+ * persisted (before and after a restart), and that a reserved change key is
+ * only consumed by a successful batch.
+ */
+BOOST_AUTO_TEST_CASE(wallet_commit_failure_does_not_broadcast)
+{
+    TempDirGuard guard("wallet_commit_no_broadcast");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    // BuildRichWallet() leaves four pool entries.  A target of three stops
+    // ReserveKeyFromKeyPool() from topping up before the first reservation.
+    KeyPoolArgGuard keyPoolArg("3");
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE_EQUAL(built.txids.size(), 2U);
+
+    const uint256 coinA = built.txids[0];
+    const uint256 coinB = built.txids[1];
+    BOOST_REQUIRE(!wallet->mapWallet[coinA].IsSpent(1));
+    BOOST_REQUIRE(!wallet->mapWallet[coinB].IsSpent(0));
+
+    CScript payScript;
+    payScript.SetDestination(built.pubKeys[1].GetID());
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+    const size_t baselineTxRecords =
+        CountRecordsOfType(baselineRecords, "tx");
+
+    const auto makeSend = [&](const uint256 &prevHash, unsigned int prevOut,
+                              unsigned int nLockTime) {
+        return MakeCommitTransactionTestTx(*wallet, prevHash, {prevOut},
+                                           {payScript}, nLockTime);
+    };
+
+    const auto checkNoBroadcast = [&](const CWalletTx &wtx,
+                                      const std::string &tag) {
+        const uint256 hash = wtx.GetHash();
+        BOOST_CHECK_MESSAGE(TestWalletMempoolAcceptAttempts() == 0,
+                            tag << ": failed batch reached the mempool");
+        BOOST_CHECK_MESSAGE(TestWalletRelayAttempts() == 0,
+                            tag << ": failed batch relayed the transaction");
+        BOOST_CHECK_MESSAGE(
+            !wallet->mapRequestCount.count(hash),
+            tag << ": failed batch started tracking the broadcast");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            tag << ": failed batch left the tx in memory");
+    };
+
+    // 1. A write failure after the new `tx` record was staged.  The reserved
+    // change key must survive the rollback.
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_REQUIRE(reserveKey.GetReservedKey().IsValid());
+        const size_t poolSizeWhileReserved = wallet->setKeyPool.size();
+        const std::map<CDBKey, CDBValue> recordsWhileReserved =
+            CaptureRecords();
+
+        CWalletTx wtx = makeSend(coinA, 1, 9700001);
+        ResetTestWalletBroadcastAttempts();
+        SetTestWalletWriteFailure("tx", 1);
+        const bool fSucceeded = wallet->CommitTransaction(wtx, reserveKey);
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            "spent-coin write: CommitTransaction() succeeded "
+                            "after a wallet write failure");
+        checkNoBroadcast(wtx, "spent-coin write");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[coinA].IsSpent(1),
+                            "spent-coin write: input stayed marked spent");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == recordsWhileReserved,
+            "spent-coin write: failed batch changed the database ("
+                << DescribeRecordDelta(recordsWhileReserved,
+                                       CaptureRecords()) << ")");
+
+        // CReserveKey's destructor does this on the caller's error path.
+        reserveKey.ReturnKey();
+        BOOST_CHECK_EQUAL(wallet->setKeyPool.size(),
+                          poolSizeWhileReserved + 1);
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == recordsWhileReserved,
+            "spent-coin write: the reserved key was consumed on disk");
+    }
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK_MESSAGE(CountRecordsOfType(CaptureRecords(), "tx") ==
+                            baselineTxRecords,
+                        "spent-coin write: a tx record survived a restart");
+    BOOST_CHECK_MESSAGE(!wallet->mapWallet[coinA].IsSpent(1),
+                        "spent-coin write: input is spent after restart");
+    CheckSnapshotsEqual(baseline,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "spent-coin write: wallet after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == baselineRecords,
+                        "spent-coin write: failed batch survived a restart ("
+                            << DescribeRecordDelta(baselineRecords,
+                                                   CaptureRecords()) << ")");
+
+    // 2. A final commit failure.  The same guarantees apply.
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_REQUIRE(reserveKey.GetReservedKey().IsValid());
+        const size_t poolSizeWhileReserved = wallet->setKeyPool.size();
+        const std::map<CDBKey, CDBValue> recordsWhileReserved =
+            CaptureRecords();
+
+        CWalletTx wtx = makeSend(coinB, 0, 9700002);
+        ResetTestWalletBroadcastAttempts();
+        SetTestWalletCommitFailure();
+        const bool fSucceeded = wallet->CommitTransaction(wtx, reserveKey);
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            "commit failure: CommitTransaction() succeeded "
+                            "after a wallet commit failure");
+        checkNoBroadcast(wtx, "commit failure");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet[coinB].IsSpent(0),
+                            "commit failure: input stayed marked spent");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == recordsWhileReserved,
+            "commit failure: failed batch changed the database ("
+                << DescribeRecordDelta(recordsWhileReserved,
+                                       CaptureRecords()) << ")");
+
+        reserveKey.ReturnKey();
+        BOOST_CHECK_EQUAL(wallet->setKeyPool.size(),
+                          poolSizeWhileReserved + 1);
+        BOOST_CHECK_MESSAGE(CaptureRecords() == recordsWhileReserved,
+                            "commit failure: the reserved key was consumed");
+    }
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK_MESSAGE(CountRecordsOfType(CaptureRecords(), "tx") ==
+                            baselineTxRecords,
+                        "commit failure: a tx record survived a restart");
+    BOOST_CHECK_MESSAGE(!wallet->mapWallet[coinB].IsSpent(0),
+                        "commit failure: input is spent after restart");
+    CheckSnapshotsEqual(baseline,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "commit failure: wallet after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == baselineRecords,
+                        "commit failure: failed batch survived a restart ("
+                            << DescribeRecordDelta(baselineRecords,
+                                                   CaptureRecords()) << ")");
+
+    // 3. A successful batch still reaches mempool acceptance and consumes the
+    // reserved change key.  The unit test chain rejects the transaction, so
+    // relay is not reached; this shows the observation is not simply inert.
+    CWalletTx committed = makeSend(coinB, 0, 9700003);
+    const uint256 committedHash = committed.GetHash();
+    {
+        CReserveKey reserveKey(wallet.get());
+        BOOST_REQUIRE(reserveKey.GetReservedKey().IsValid());
+        const std::map<CDBKey, CDBValue> recordsWhileReserved =
+            CaptureRecords();
+
+        ResetTestWalletBroadcastAttempts();
+        BOOST_CHECK(!wallet->CommitTransaction(committed, reserveKey));
+        BOOST_CHECK_EQUAL(TestWalletMempoolAcceptAttempts(), 1);
+        BOOST_CHECK_EQUAL(TestWalletRelayAttempts(), 0);
+        BOOST_CHECK(wallet->mapRequestCount.count(committedHash));
+        BOOST_REQUIRE(wallet->mapWallet.count(committedHash));
+        BOOST_CHECK(wallet->mapWallet[coinB].IsSpent(0));
+        BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "pool"),
+                          CountRecordsOfType(recordsWhileReserved, "pool") - 1);
+        BOOST_CHECK_EQUAL(CountRecordsOfType(CaptureRecords(), "tx"),
+                          baselineTxRecords + 1);
+    }
+
+    const WalletSnapshot finalState = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> finalRecords = CaptureRecords();
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_REQUIRE(wallet->mapWallet.count(committedHash));
+    BOOST_CHECK(wallet->mapWallet[coinB].IsSpent(0));
+    CheckSnapshotsEqual(finalState,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "successful send: state after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == finalRecords,
+                        "successful send: state did not survive a restart ("
+                            << DescribeRecordDelta(finalRecords,
+                                                   CaptureRecords()) << ")");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

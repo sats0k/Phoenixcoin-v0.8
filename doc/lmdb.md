@@ -546,7 +546,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   restart, a re-import skips known blocks and creates no second batch, and a
   corrupted middle block rolls the uncommitted batch back to genesis before a
   later clean import reaches the correct tip.
-- The full unit suite passed 183 test cases with no errors in the normal build.
+- The full unit suite passed 184 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -622,7 +622,7 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
-Wallet write atomicity is covered by ten failure-injection tests in
+Wallet write atomicity is covered by eleven failure-injection tests in
 `wallet_migration_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
@@ -691,6 +691,20 @@ output's spent flag, and the persisted change marker, before and after a
 final restart.  Together with the two-record batch this pins the invariant
 that a logical wallet operation never persists its transaction record while
 its spent-coin or required metadata updates are missing.
+
+`wallet_commit_failure_does_not_broadcast` covers the send path's network
+boundary.  It drives a spent-coin write failure after the new `tx` record was
+staged and a final commit failure, both with a reserved change key held.  The
+test-only broadcast counter hooks around the no-argument
+`CMerkleTx::AcceptToMemoryPool()` and `CWalletTx::RelayWalletTransaction()`
+must stay at zero, `mapRequestCount` must not gain the transaction, and the
+wallet must neither persist a transaction nor mark the input spent before or
+after a restart.  The reserved key's pool record must also survive, so a
+failed send returns the key to the pool.  A final uninjected send shows that
+the observation is live: mempool acceptance is attempted and the key is
+consumed by the successful batch.  This pins the rule that a failed wallet
+batch returns `false` before mempool acceptance and relay, so the network can
+never receive a payment the wallet could not record.
 
 `wallet_atomic_commit_transaction_default_key_rotation` pays the default key
 from the send path.  It fails the replacement `defaultkey` write, then the
@@ -952,12 +966,13 @@ a later failure does not roll back.
 `CWallet::CommitTransaction` uses the same staging helpers to commit the send
 path as one update.  The new transaction's `orderposnext` and `tx` records,
 any replacement `defaultkey` and `name` pair, and every spent-coin `tx` record
-share one transaction.  The keypool reservation is still committed before the
-batch, and outputs that were already spent are rewritten exactly as before.
-The in-memory transaction, order position, default key and spent flags change
-only after the commit succeeds; a failed write or commit restores them before
-the existing broadcast attempt, so the wallet never exposes a partially
-applied update.
+share one transaction.  Outputs that were already spent are rewritten exactly
+as before.  The in-memory transaction, order position, default key and spent
+flags change only after the commit succeeds.  A failed write or commit
+restores them, returns `false` and stops before mempool acceptance or relay,
+so the network never receives a payment the wallet could not record.  The
+reserved change key is kept only after the batch commits, so a failed send
+returns it to the keypool instead of consuming it.
 
 `CWalletTx::WriteToDisk()` still supports its standalone form.  Callers that
 do not batch -- `WalletUpdateSpent`, `ReacceptWalletTransactions` and
@@ -1042,7 +1057,7 @@ builds:
 | full unit suite | 158 cases |
 
 These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated. The current normal-build suite is 183 cases; the
+backend was validated. The current normal-build suite is 184 cases; the
 later database atomicity, keypool-staging and invariant tests were added
 after these sanitizer runs.
 

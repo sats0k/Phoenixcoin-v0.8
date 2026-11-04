@@ -361,13 +361,13 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 183 test cases...
+Running 184 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 183 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
-(33), `wallet_migration_tests` (18), `util_tests` (12) and the re-enabled
+The full suite is 184 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
+(33), `wallet_migration_tests` (19), `util_tests` (12) and the re-enabled
 legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
 wallet migration, encryption-state equality, cross-backend parity,
 write-boundary rollback, explicit rewrite-failure handling and hybrid-key
@@ -473,7 +473,7 @@ format, and database size. Methodology and measured results are in
 
 ## Wallet write atomicity tests
 
-`wallet_migration_tests` also contains ten failure-injection tests that
+`wallet_migration_tests` also contains eleven failure-injection tests that
 pin the wallet write transaction boundaries. They rely on the test-only
 hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 `SetTestWalletCommitFailure(nSkip)`, `ClearTestWalletWriteFailures()` — which
@@ -544,6 +544,15 @@ index).
   and after a restart; each retry must add exactly one transaction with its
   change marker and spent input, and the restarted wallet must still contain
   each entry only once.
+- `wallet_commit_failure_does_not_broadcast` covers the send path's network
+  boundary. A spent-coin write failure and a final commit failure, both with a
+  reserved change key held, must return `false` without reaching mempool
+  acceptance or relay. The test-only broadcast counters around the no-argument
+  `CMerkleTx::AcceptToMemoryPool()` and `CWalletTx::RelayWalletTransaction()`
+  stay at zero, `mapRequestCount` gains no entry, and no transaction or spent
+  flag appears before or after a restart. The reserved key's pool record must
+  survive the failure, and a final uninjected send must attempt mempool
+  acceptance and consume the key, proving the observation is live.
 - `wallet_atomic_commit_transaction_default_key_rotation` pays the current
   default key from the send path and fails the replacement `defaultkey` write,
   then the spent-coin write after the key and label were staged. The old
