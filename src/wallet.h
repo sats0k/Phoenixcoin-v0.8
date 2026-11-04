@@ -874,7 +874,7 @@ public:
         return true;
     }
 
-    bool WriteToDisk();
+    bool WriteToDisk(CWalletDB* pwalletdb = nullptr);
 
     int64 GetTxTime() const;
     int GetRequestCount() const;

@@ -361,13 +361,13 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 178 test cases...
+Running 180 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 178 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
-(33), `wallet_migration_tests` (13), `util_tests` (12) and the re-enabled
+The full suite is 180 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
+(33), `wallet_migration_tests` (15), `util_tests` (12) and the re-enabled
 legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
 wallet migration, encryption-state equality, cross-backend parity,
 write-boundary rollback, explicit rewrite-failure handling and hybrid-key
@@ -473,7 +473,7 @@ format, and database size. Methodology and measured results are in
 
 ## Wallet write atomicity tests
 
-`wallet_migration_tests` also contains five failure-injection tests that
+`wallet_migration_tests` also contains seven failure-injection tests that
 pin the wallet write transaction boundaries. They rely on the test-only
 hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 `SetTestWalletCommitFailure(nSkip)`, `ClearTestWalletWriteFailures()` — which
@@ -513,6 +513,20 @@ index).
   `TopUpKeyPool()`, where a failed write or commit must leave the entire
   wallet, database and keypool byte-for-byte unchanged before and after a
   restart. The retry must add exactly the missing keys.
+- `wallet_atomic_add_to_wallet_new_and_update` fails the `orderposnext`
+  write, the `tx` write and the commit of a new `AddToWallet()` call. The
+  in-memory wallet and the record set must match the pre-call state before
+  and after a restart, and the retried insert must persist the order
+  position and transaction together. A failed update that merges block data
+  must restore the previous in-memory entry instead of leaving it ahead of
+  the rolled-back database.
+- `wallet_atomic_add_to_wallet_default_key_rotation` pays the current
+  default key and fails the replacement `defaultkey` and `name` writes. The
+  old default key, address book, order position and transaction must remain
+  unchanged apart from the consumed keypool entry, and the retry must commit
+  the transaction, replacement key and label together. The key is selected
+  before the transaction opens because the keypool path uses its own writer;
+  a plain commit failure is covered by the non-rotation case above.
 
 Standalone key writes are themselves atomic: `WriteKey` commits `keymeta` and
 `key` in one transaction, while `WriteCryptedKey` commits `keymeta`, `ckey`
@@ -523,10 +537,12 @@ Generated keys are written through the refill's existing `CWalletDB`, so the
 batch shares one LMDB writer, and `CWallet::StageNewKey()` keeps each key out
 of the in-memory keystore until the batch commits.  `WriteKey` and
 `WriteCryptedKey` join an already open transaction rather than nesting one.
-The crash hook keeps the same record-class coverage:
-`wallet-write-before-commit:<type>` fires as each record is staged, while
-`wallet-write-after-commit:<type>` is deferred until the entire transaction is
-durable.
+`AddToWallet()` uses the same pattern: `orderposnext`, the transaction, and
+any replacement `defaultkey`/`name` pair share one commit, and the in-memory
+wallet is updated only afterwards.  The crash hook keeps the same record-class
+coverage: `wallet-write-before-commit:<type>` fires as each record is staged,
+while `wallet-write-after-commit:<type>` is deferred until the entire
+transaction is durable.
 
 `CWallet::EnsureHybridKeyPool` was reworked to make the second test possible:
 it stages and encrypts the entire batch, writes the ECDSA and hybrid records

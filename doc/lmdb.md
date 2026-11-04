@@ -500,7 +500,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   suites.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- The full unit suite passed 178 test cases with no errors in the normal build.
+- The full unit suite passed 180 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -576,7 +576,7 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 `wallet/data.mdb` for the pre-encryption ECDSA and ML-DSA private bytes and
 fails if any plaintext secret leaked into the LMDB environment.
 
-Wallet write atomicity is covered by five failure-injection tests in
+Wallet write atomicity is covered by seven failure-injection tests in
 `wallet_migration_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
@@ -606,6 +606,21 @@ state after a restart.  `wallet_atomic_ecdsa_top_up_key_pool_rollback` does the
 same for `TopUpKeyPool()`, where the entire wallet and database must remain
 unchanged.  Both tests then run the same refill without injection and verify
 the persisted pool entries, keys and metadata after another restart.
+
+`wallet_atomic_add_to_wallet_new_and_update` covers the transaction write path
+itself.  It fails the `orderposnext` write, the `tx` write and the commit of a
+new `AddToWallet()` call, requiring the in-memory wallet and the record set to
+match the pre-call state before and after a restart, then lets the identical
+insert commit and verifies that the order position and transaction are
+persisted together.  It also fails an update that merges block data, which must
+restore the previous in-memory entry rather than leave it ahead of the rolled
+back database.  `wallet_atomic_add_to_wallet_default_key_rotation` pays the
+current default key and fails the replacement `defaultkey` and `name` writes;
+the old default key, address book, order position and transaction must all
+remain unchanged apart from the already-consumed keypool entry, and the retried
+call must commit the transaction, replacement key and label together.  (The
+rotation test injects record failures rather than a commit failure because the
+key selection's own keypool transactions consume the one-shot commit hook.)
 
 The keypool top-up path itself was made atomic for these tests:
 `CWallet::EnsureHybridKeyPool` now generates and encrypts the whole batch
@@ -801,9 +816,12 @@ included in shutdown.
 asterisk measure the closest persisted operations it does have:
 `AddCScript`, `AddWatchOnly` and `SetAddressBookName`.
 
-The key insertion and keypool refill rows were measured before the write
-batching described below, when each record and each pool key committed
-separately; the current code issues fewer commits for the same work.
+The transaction insertion, key insertion and keypool refill rows were measured
+before the write batching described below, when `AddToWallet`, each key record
+and each pool key committed separately; the current code issues fewer commits
+for the same work.  A reduced insertion run (1,000 transactions against a
+4,000-transaction seed) after `AddToWallet()` batching measured 19,457 tx/s on
+the same host.
 
 The large insertion gap is not a generic Berkeley DB versus LMDB claim.  Every
 wallet write constructs a short-lived `CWalletDB`, and `CDB::Close()` runs
@@ -837,6 +855,19 @@ They are also staged outside the in-memory keystore and inserted only after the
 batch commits.  A failed `keymeta`/`key` write or a failed commit therefore
 leaves no orphaned key or metadata behind in the running wallet, matching the
 rolled-back on-disk state.
+
+`CWallet::AddToWallet` commits a complete wallet update at once.  A new
+transaction writes `orderposnext` and its `tx` record in one transaction;
+when the transaction pays the current default receiving key, the replacement
+`defaultkey` and its empty address-book `name` entry join the same transaction.
+Records keep their previous order, so replay sees the same sequence as the old
+individually committed writes.  The in-memory `mapWallet`, `nOrderPosNext`,
+`vchDefaultKey` and `mapAddressBook` are updated only after the commit
+succeeds, and a failed write or commit restores an existing entry instead of
+leaving a merged copy in memory.  The replacement key is selected before the
+transaction opens: `GetKeyFromPool()` may top up or trim the keypool, and those
+paths open their own writer, so a consumed pool key remains the only state that
+a later failure does not roll back.
 
 Batching removes redundant commits; it does not relax durability.  With the
 default `-lmdbnosync=0` every remaining commit still fsyncs, and the crash
@@ -915,7 +946,7 @@ builds:
 | full unit suite | 158 cases |
 
 These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated. The current normal-build suite is 178 cases; the
+backend was validated. The current normal-build suite is 180 cases; the
 later database atomicity, keypool-staging and invariant tests were added
 after these sanitizer runs.
 
@@ -957,7 +988,7 @@ The crash points cover the whole wallet lifecycle:
   type is the record family (`tx`, `name`, `key`, `pool`, `hyb`, ...), so a
   case can target one write without counting unrelated records;
 - explicit transactions: `wallet-txn-{before,after}-commit` (hybrid import,
-  keypool top-up, encryption rewrite);
+  keypool top-up, `AddToWallet` and encryption rewrite);
 - migration: `wallet-migrate-record` (copying one exact record),
   `wallet-migrate-{before,after}-commit`;
 - the backend marker: `wallet-marker-{before,after}-rename`;
@@ -981,7 +1012,11 @@ touched.  The cases fall into three groups:
   keypool refills, hybrid imports and `encryptwallet` are killed on either
   side of their commit.  Before the commit the operation must be absent
   after restart and remain repeatable; after it the operation and its
-  effects must be complete and intact.
+  effects must be complete and intact.  Because `AddToWallet` writes
+  `orderposnext`, the transaction and any replacement default-key/label
+  records in one transaction, a kill on either side of its commit cannot
+  leave the order position ahead of the transaction or a rotated default key
+  without its label.
 - **C. Marker creation.**  The three marker/rewrite boundaries above must
   take a deterministic startup path: a leftover `wallet.backend.tmp` is
   removed, a committed environment is adopted, and an interrupted

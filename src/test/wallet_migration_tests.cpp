@@ -2694,4 +2694,349 @@ BOOST_AUTO_TEST_CASE(wallet_encryption_rewrite_failure_is_not_success)
                       "encrypted after a failed rewrite");
 }
 
+/**
+ * Builds a simple transaction paying the supplied scripts.  A null previous
+ * output keeps it independent of the wallet's existing transactions, so
+ * AddToWallet() is the only write under test.
+ */
+static CWalletTx MakeAddToWalletTestTx(CWallet &wallet,
+                                       const std::vector<CScript> &payTo,
+                                       unsigned int nLockTime)
+{
+    CTransaction tx;
+    tx.nVersion = 1;
+    tx.nLockTime = nLockTime;
+    tx.vin.resize(1);
+    tx.vin[0].prevout.SetNull();
+    tx.vin[0].scriptSig = CScript() << OP_1 << OP_2;
+    tx.vout.resize(payTo.size());
+    for (size_t i = 0; i < payTo.size(); ++i)
+        tx.vout[i] = CTxOut(COIN * (int64)(i + 1), payTo[i]);
+    return CWalletTx(&wallet, tx);
+}
+
+/** Drops keypool records so a rotation test can ignore key consumption. */
+static std::map<CDBKey, CDBValue>
+RecordsWithoutPool(const std::map<CDBKey, CDBValue> &records)
+{
+    std::map<CDBKey, CDBValue> result;
+    for (const auto &record : records)
+        if (RecordType(record.first) != "pool")
+            result.insert(record);
+    return result;
+}
+
+/**
+ * A new transaction writes orderposnext and its tx record in one durable
+ * commit.  A failure at either record or at the commit must leave both the
+ * in-memory wallet and the database exactly as they were, before and after a
+ * restart.  An update must roll back the merged block data the same way, and
+ * the retried write must persist normally.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
+{
+    TempDirGuard guard("wallet_add_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+
+    CScript payScript;
+    payScript.SetDestination(built.pubKeys[1].GetID());
+    CWalletTx wtx = MakeAddToWalletTestTx(*wallet, {payScript}, 9100001);
+    const uint256 hash = wtx.GetHash();
+
+    struct Injection
+    {
+        const char *type;
+        bool commit;
+        const char *tag;
+    };
+    const Injection injections[] = {
+        {"orderposnext", false, "orderposnext"},
+        {"tx", false, "tx"},
+        {"", true, "commit"},
+    };
+
+    for (const Injection &injection : injections) {
+        if (injection.commit)
+            SetTestWalletCommitFailure();
+        else
+            SetTestWalletWriteFailure(injection.type);
+
+        const bool fSucceeded = wallet->AddToWallet(wtx);
+        ClearTestWalletWriteFailures();
+
+        BOOST_CHECK_MESSAGE(!fSucceeded,
+                            injection.tag
+                                << ": injected failure did not fail AddToWallet()");
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            injection.tag
+                                << ": failed AddToWallet() left the tx in memory");
+        BOOST_CHECK_MESSAGE(
+            wallet->nOrderPosNext == baseline.orderPosNext,
+            injection.tag << ": failed AddToWallet() advanced nOrderPosNext");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            std::string(injection.tag) +
+                                ": wallet after failed insert");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            injection.tag << ": failed insert changed the database ("
+                          << DescribeRecordDelta(baselineRecords,
+                                                 CaptureRecords())
+                          << ")");
+
+        wallet.reset();
+        RestartLMDBWallet(guard.dir);
+        wallet.reset(LoadWalletOrFail());
+        BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                            injection.tag
+                                << ": failed insert appeared after restart");
+        CheckSnapshotsEqual(baseline,
+                            CaptureWalletSnapshot(*wallet, built.scripts,
+                                                  built.watchScripts),
+                            std::string(injection.tag) + ": wallet after restart");
+        BOOST_CHECK_MESSAGE(
+            CaptureRecords() == baselineRecords,
+            injection.tag << ": failed insert survived a restart ("
+                          << DescribeRecordDelta(baselineRecords,
+                                                 CaptureRecords())
+                          << ")");
+    }
+
+    // The one-shot injections are consumed: the same write must now commit
+    // orderposnext and the transaction together.
+    BOOST_REQUIRE(wallet->AddToWallet(wtx));
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 1);
+    BOOST_CHECK_EQUAL(wallet->mapWallet[hash].nOrderPos,
+                      baseline.orderPosNext);
+    const WalletSnapshot inserted = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> insertedRecords = CaptureRecords();
+    BOOST_CHECK_EQUAL(CountRecordsOfType(insertedRecords, "tx"),
+                      CountRecordsOfType(baselineRecords, "tx") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(insertedRecords, "orderposnext"), 1U);
+
+    // An update merges block data into the existing record.  A failed commit
+    // must restore the previous entry rather than leaving the merged copy in
+    // memory while the database still has the old one.
+    CWalletTx update(wallet->mapWallet[hash]);
+    update.hashBlock = HashFromHex(
+        "0000000000000000000000000000000000000000000000000000000000000b1b");
+    update.nIndex = 2;
+    const WalletSnapshot beforeUpdate = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> beforeUpdateRecords = CaptureRecords();
+
+    SetTestWalletCommitFailure();
+    const bool fUpdateSucceeded = wallet->AddToWallet(update);
+    ClearTestWalletWriteFailures();
+    BOOST_CHECK_MESSAGE(!fUpdateSucceeded,
+                        "update: injected commit failure did not fail "
+                        "AddToWallet()");
+    BOOST_CHECK_MESSAGE(
+        wallet->mapWallet[hash].hashBlock != update.hashBlock,
+        "update: failed commit left the merged block hash in memory");
+    CheckSnapshotsEqual(beforeUpdate,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "update: wallet after failed commit");
+    BOOST_CHECK_MESSAGE(
+        CaptureRecords() == beforeUpdateRecords,
+        "update: failed commit changed the database ("
+            << DescribeRecordDelta(beforeUpdateRecords, CaptureRecords())
+            << ")");
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->mapWallet[hash].hashBlock != update.hashBlock);
+    CheckSnapshotsEqual(beforeUpdate,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "update: wallet after restart");
+    BOOST_CHECK_MESSAGE(
+        CaptureRecords() == beforeUpdateRecords,
+        "update: failed commit survived a restart ("
+            << DescribeRecordDelta(beforeUpdateRecords, CaptureRecords())
+            << ")");
+
+    BOOST_REQUIRE(wallet->AddToWallet(update));
+    BOOST_CHECK(wallet->mapWallet[hash].hashBlock == update.hashBlock);
+    const WalletSnapshot updated = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> updatedRecords = CaptureRecords();
+    BOOST_CHECK(updatedRecords != insertedRecords);
+
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    CheckSnapshotsEqual(updated,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "update: committed update after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == updatedRecords,
+                        "update: committed update did not survive a restart ("
+                            << DescribeRecordDelta(updatedRecords,
+                                                   CaptureRecords())
+                            << ")");
+}
+
+/**
+ * When a transaction pays the default key, AddToWallet() selects a replacement
+ * key first (the keypool path opens its own writer), then writes the
+ * transaction, the new default key and the empty address-book label in one
+ * commit.  A failure while writing or committing must leave the old default
+ * key, the address book and orderposnext unchanged; only the already-consumed
+ * keypool entry is allowed to stay gone.  The retry must commit all four
+ * records and survive a restart.
+ */
+BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
+{
+    TempDirGuard guard("wallet_add_default_atomic");
+    CloseLMDBWalletDB();
+
+    BuiltWallet built;
+    {
+        CWallet wallet("wallet.dat");
+        built = BuildRichWallet(wallet);
+    }
+    MigrateMockWallet(guard.dir);
+
+    // Keep the pool from being replenished during the test: every rotation
+    // consumes exactly one pre-existing key.
+    KeyPoolArgGuard keyPoolArg("2");
+    std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
+    BOOST_REQUIRE(!wallet->IsCrypted());
+    BOOST_REQUIRE(wallet->vchDefaultKey.IsValid());
+    const CPubKey oldDefaultKey = wallet->vchDefaultKey;
+
+    const WalletSnapshot baseline = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> baselineRecords = CaptureRecords();
+    BOOST_REQUIRE_GT(baseline.keyPool.size(), 2U);
+
+    CScript defaultScript;
+    defaultScript.SetDestination(oldDefaultKey.GetID());
+    CScript otherScript;
+    otherScript.SetDestination(built.pubKeys[1].GetID());
+    CWalletTx wtx = MakeAddToWalletTestTx(
+        *wallet, {defaultScript, otherScript}, 9100101);
+    const uint256 hash = wtx.GetHash();
+
+    const auto checkRotationRolledBack =
+        [&](const std::string &tag) {
+            BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                                tag << ": failed rotation left the tx in memory");
+            BOOST_CHECK_MESSAGE(
+                wallet->nOrderPosNext == baseline.orderPosNext,
+                tag << ": failed rotation advanced nOrderPosNext");
+            BOOST_CHECK_MESSAGE(
+                wallet->vchDefaultKey == oldDefaultKey,
+                tag << ": failed rotation changed the default key");
+            BOOST_CHECK_MESSAGE(
+                wallet->mapAddressBook == baseline.addressBook,
+                tag << ": failed rotation changed the address book");
+
+            const std::map<CDBKey, CDBValue> records = CaptureRecords();
+            BOOST_CHECK_MESSAGE(
+                RecordsWithoutPool(records) ==
+                    RecordsWithoutPool(baselineRecords),
+                tag << ": failed rotation changed non-keypool records ("
+                    << DescribeRecordDelta(
+                           RecordsWithoutPool(baselineRecords),
+                           RecordsWithoutPool(records))
+                    << ")");
+
+            wallet.reset();
+            RestartLMDBWallet(guard.dir);
+            wallet.reset(LoadWalletOrFail());
+            BOOST_CHECK_MESSAGE(!wallet->mapWallet.count(hash),
+                                tag << ": failed rotation appeared after restart");
+            BOOST_CHECK_MESSAGE(
+                wallet->nOrderPosNext == baseline.orderPosNext,
+                tag << ": failed rotation advanced nOrderPosNext after restart");
+            BOOST_CHECK_MESSAGE(
+                wallet->vchDefaultKey == oldDefaultKey,
+                tag << ": failed rotation changed the default key after restart");
+            BOOST_CHECK_MESSAGE(
+                wallet->mapAddressBook == baseline.addressBook,
+                tag << ": failed rotation changed the address book after restart");
+            BOOST_CHECK_MESSAGE(
+                RecordsWithoutPool(CaptureRecords()) ==
+                    RecordsWithoutPool(baselineRecords),
+                tag << ": failed rotation changed non-keypool records after "
+                       "restart");
+        };
+
+    // The replacement default key is selected (and its keypool entry consumed)
+    // before AddToWallet() opens its transaction.  Fail the defaultkey and name
+    // records inside that transaction: orderposnext, the tx and any earlier
+    // defaultkey write must all roll back together.  (A plain commit failure is
+    // covered by the non-rotation test above; here the keypool's own top-up and
+    // keep transactions would consume a one-shot commit injection first.)
+    SetTestWalletWriteFailure("defaultkey");
+    BOOST_CHECK(!wallet->AddToWallet(wtx));
+    ClearTestWalletWriteFailures();
+    checkRotationRolledBack("defaultkey-write");
+
+    SetTestWalletWriteFailure("name");
+    BOOST_CHECK(!wallet->AddToWallet(wtx));
+    ClearTestWalletWriteFailures();
+    checkRotationRolledBack("name-write");
+
+    // The one-shot injections are consumed: all four records now commit.
+    BOOST_REQUIRE(wallet->AddToWallet(wtx));
+    BOOST_REQUIRE(wallet->mapWallet.count(hash));
+    BOOST_CHECK(wallet->vchDefaultKey.IsValid());
+    BOOST_CHECK(wallet->vchDefaultKey != oldDefaultKey);
+    BOOST_CHECK_EQUAL(wallet->nOrderPosNext, baseline.orderPosNext + 1);
+
+    const CTxDestination newDefaultDest = wallet->vchDefaultKey.GetID();
+    const auto label = wallet->mapAddressBook.find(newDefaultDest);
+    BOOST_REQUIRE(label != wallet->mapAddressBook.end());
+    BOOST_CHECK(label->second.empty());
+
+    const WalletSnapshot rotated = CaptureWalletSnapshot(
+        *wallet, built.scripts, built.watchScripts);
+    const std::map<CDBKey, CDBValue> rotatedRecords = CaptureRecords();
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "tx"),
+                      CountRecordsOfType(baselineRecords, "tx") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "name"),
+                      CountRecordsOfType(baselineRecords, "name") + 1);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "defaultkey"), 1U);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(rotatedRecords, "orderposnext"), 1U);
+
+    const CPubKey rotatedDefaultKey = wallet->vchDefaultKey;
+    wallet.reset();
+    RestartLMDBWallet(guard.dir);
+    wallet.reset(LoadWalletOrFail());
+    BOOST_CHECK(wallet->vchDefaultKey == rotatedDefaultKey);
+    BOOST_CHECK(wallet->mapAddressBook.count(rotatedDefaultKey.GetID()) == 1);
+    CheckSnapshotsEqual(rotated,
+                        CaptureWalletSnapshot(*wallet, built.scripts,
+                                              built.watchScripts),
+                        "rotation: committed state after restart");
+    BOOST_CHECK_MESSAGE(CaptureRecords() == rotatedRecords,
+                        "rotation: committed state did not survive a restart ("
+                            << DescribeRecordDelta(rotatedRecords,
+                                                   CaptureRecords())
+                            << ")");
+}
+
 BOOST_AUTO_TEST_SUITE_END()

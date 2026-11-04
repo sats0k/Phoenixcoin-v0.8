@@ -619,10 +619,20 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
         CWalletTx& wtx = (*ret.first).second;
         wtx.BindWallet(this);
         bool fInsertedNew = ret.second;
+
+        // A failed commit must leave the in-memory wallet unchanged too.  The
+        // previous copy is only needed for an update; a new entry is removed.
+        CWalletTx wtxPrev;
+        if (!fInsertedNew)
+            wtxPrev = wtx;
+        const int64 nOrderPosNextPrev = nOrderPosNext;
+
         if (fInsertedNew)
         {
             wtx.nTimeReceived = GetAdjustedTime();
-            wtx.nOrderPos = IncOrderPosNext();
+            // The order position is reserved now, but its record is written
+            // below in the same transaction as the transaction itself.
+            wtx.nOrderPos = nOrderPosNext++;
 
             wtx.nTimeSmart = wtx.nTimeReceived;
             if (wtxIn.hashBlock != 0)
@@ -697,10 +707,11 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
         //// debug print
         printf("AddToWallet %s  %s%s\n", wtxIn.GetHash().ToString().substr(0,10).c_str(), (fInsertedNew ? "new" : ""), (fUpdated ? "update" : ""));
 
-        // Write to disk
-        if (fInsertedNew || fUpdated)
-            if (!wtx.WriteToDisk())
-                return false;
+        // Select any replacement default key before opening the wallet
+        // transaction.  GetKeyFromPool() may top up or trim the keypool, and
+        // those paths open their own writer; doing the selection first keeps
+        // the transaction below from nesting a second writer.
+        std::vector<CPubKey> vNewDefaultKeys;
 #ifndef QT_GUI
         // If default receiving address gets used, replace it with a new one
         CScript scriptDefaultKey;
@@ -711,13 +722,78 @@ bool CWallet::AddToWallet(const CWalletTx& wtxIn)
             {
                 CPubKey newDefaultKey;
                 if (GetKeyFromPool(newDefaultKey, false))
-                {
-                    SetDefaultKey(newDefaultKey);
-                    SetAddressBookName(vchDefaultKey.GetID(), "");
-                }
+                    vNewDefaultKeys.push_back(newDefaultKey);
             }
         }
 #endif
+
+        // Update orderposnext, the transaction, any replacement default key
+        // and its address-book entry in one durable commit.  The record order
+        // matches the previous individually committed writes.
+        const bool fWriteTx = fInsertedNew || fUpdated;
+        if (fWriteTx || !vNewDefaultKeys.empty())
+        {
+            CWalletDB walletdb(strWalletFile);
+            const auto rollback = [&]() {
+                if (fInsertedNew)
+                {
+                    mapWallet.erase(hash);
+                    nOrderPosNext = nOrderPosNextPrev;
+                }
+                else
+                {
+                    wtx = wtxPrev;
+                }
+            };
+
+            if (!walletdb.TxnBegin())
+            {
+                rollback();
+                return false;
+            }
+
+            if ((fInsertedNew && !walletdb.WriteOrderPosNext(nOrderPosNext)) ||
+                (fWriteTx && !wtx.WriteToDisk(&walletdb)))
+            {
+                walletdb.TxnAbort();
+                rollback();
+                return false;
+            }
+
+            for (const CPubKey& newDefaultKey : vNewDefaultKeys)
+            {
+                if (!walletdb.WriteDefaultKey(newDefaultKey) ||
+                    !walletdb.WriteName(CCoinAddress(newDefaultKey.GetID()).ToString(), ""))
+                {
+                    walletdb.TxnAbort();
+                    rollback();
+                    return false;
+                }
+            }
+
+            if (!walletdb.TxnCommit())
+            {
+                rollback();
+                return false;
+            }
+        }
+
+        // Apply the rotation only after its records are durable.  Notifications
+        // therefore cannot describe a state that a failed commit rolled back.
+        if (!vNewDefaultKeys.empty())
+        {
+            vchDefaultKey = vNewDefaultKeys.back();
+            for (const CPubKey& newDefaultKey : vNewDefaultKeys)
+            {
+                const CTxDestination newDefaultDest = newDefaultKey.GetID();
+                std::map<CTxDestination, std::string>::iterator mi =
+                    mapAddressBook.find(newDefaultDest);
+                mapAddressBook[newDefaultDest] = "";
+                NotifyAddressBookChanged(this, newDefaultDest, "",
+                    ::IsMine(*this, newDefaultDest),
+                    (mi == mapAddressBook.end()) ? CT_NEW : CT_UPDATED);
+            }
+        }
         // since AddToWallet is called directly for self-originating transactions, check for consumption of own coins
         WalletUpdateSpent(wtx);
 
@@ -1006,8 +1082,10 @@ void CWalletTx::AddSupportingTransactions(CTxDB& txdb)
     reverse(vtxPrev.begin(), vtxPrev.end());
 }
 
-bool CWalletTx::WriteToDisk()
+bool CWalletTx::WriteToDisk(CWalletDB* pwalletdb)
 {
+    if (pwalletdb)
+        return pwalletdb->WriteTx(GetHash(), *this);
     return CWalletDB(pwallet->strWalletFile).WriteTx(GetHash(), *this);
 }
 

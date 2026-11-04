@@ -206,6 +206,16 @@ Changes since v0.8.3.
   its per-record coverage through the staged
   `wallet-write-before-commit:<type>` hook and the post-commit
   `wallet-write-after-commit:<type>` hook.
+- `AddToWallet()` now commits the whole wallet update at once. A new
+  transaction writes `orderposnext` and its `tx` record in one transaction,
+  and a replacement `defaultkey` plus its empty address-book `name` entry
+  join that transaction when the payment spends the current default key.
+  In-memory `mapWallet`, `nOrderPosNext`, `vchDefaultKey` and
+  `mapAddressBook` change only after the commit succeeds, and a failed write
+  or commit rolls an updated transaction back to its previous value. The
+  replacement key is selected before the transaction opens because the
+  keypool path uses its own writer, so only an already-consumed pool key
+  survives a later failure.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI
@@ -291,10 +301,10 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 178 test cases. The database work added two new
+The Boost suite is at 180 test cases. The database work added two new
 suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
 LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (13 cases for wallet migration semantics,
+and `wallet_migration_tests` (15 cases for wallet migration semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
@@ -308,7 +318,10 @@ New coverage:
   encryption-state equality, cross-backend parity, the staged hybrid-key
   write path, `checkhybridkeys`, write-boundary rollback, explicit LMDB
   rewrite failure injection, and ECDSA keypool refill rollback through the
-  staged `CStagedKey` path.
+  staged `CStagedKey` path. Two `AddToWallet()` cases inject a failed
+  `orderposnext`/`tx` write, a failed update commit and a failed
+  default-key rotation, then require the retried write to persist the whole
+  update and survive a restart.
 - `util_ParseConfigStream`: covers the configuration file parser, i.e.
   the option/value pairs with the surrounding whitespace trimmed, the `#`
   and `;` comments, the quoted values and the values that contain an `=`,
