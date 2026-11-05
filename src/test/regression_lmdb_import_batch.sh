@@ -15,7 +15,10 @@
 #      on the first duplicate;
 #   3. a rejected block in the middle of a batch rolls the whole uncommitted
 #      batch back without sending any notifications, so the node restarts at
-#      genesis and a later clean import reaches the correct tip.
+#      genesis and a later clean import reaches the correct tip;
+#   4. a failed final batch commit has the same in-memory rollback, leaves
+#      nothing on disk after a restart and allows a later clean import to
+#      succeed.
 #
 # Real blocks 1-4 are used because block 1 is a hardened checkpoint and their
 # raw bytes need no mining or network access.  See
@@ -273,6 +276,53 @@ check_height_and_tip 4 "${BLOCK_HASH[4]}" "recovery import"
 check_block_records 4 "recovery import"
 
 stop_node || { echo "FAILED: recovery daemon did not shut down"; exit 1; }
+
+echo "== step 5: a failed final batch commit rolls the whole batch back =="
+# Start from a fresh datadir so only genesis exists, then force the batch's
+# own LMDB commit to fail.  The transaction must abort and the in-memory
+# entries built by the batch must disappear.
+rm -rf "$DATADIR"
+DATADIR="$(mktemp -d "/tmp/lmdb-import-batch.XXXXXX")"
+
+PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT=1 start_node \
+    -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+    echo "FAILED: could not start the commit-failure daemon"; exit 1;
+}
+check "the failed commit stopped the import" \
+    "$(grep -q 'final batch commit failed' "$DATADIR/debug.log"; echo $?)"
+check "the failed commit did not report a committed batch" \
+    "$(! grep -q 'CChainImportBatch: committed' "$DATADIR/debug.log"; echo $?)"
+check_height_and_tip 0 "$GENESIS_HASH" "after failed commit"
+check "block 1 is absent from the failed-commit index" \
+    "$([ -z "$(rpc getblockhash 1 2>/dev/null)" ]; echo $?)"
+check "block 2 is absent from the failed-commit index" \
+    "$([ -z "$(rpc getblockhash 2 2>/dev/null)" ]; echo $?)"
+
+stop_node || { echo "FAILED: commit-failure daemon did not shut down"; exit 1; }
+
+echo "== step 6: the failed batch left nothing behind after a restart =="
+: > "$DATADIR/debug.log"
+start_node -dbbackend=lmdb -walletbackend=bdb || {
+    echo "FAILED: could not restart after the failed commit"; exit 1;
+}
+check_height_and_tip 0 "$GENESIS_HASH" "after failed-commit restart"
+check "block 1 is absent after the failed-commit restart" \
+    "$([ -z "$(rpc getblockhash 1 2>/dev/null)" ]; echo $?)"
+check "block 2 is absent after the failed-commit restart" \
+    "$([ -z "$(rpc getblockhash 2 2>/dev/null)" ]; echo $?)"
+
+stop_node || { echo "FAILED: restart daemon did not shut down"; exit 1; }
+
+echo "== step 7: a clean import succeeds after a failed commit =="
+start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+    echo "FAILED: could not start the post-failure import daemon"; exit 1;
+}
+check "the post-failure import committed one four-block batch" \
+    "$(grep -q 'CChainImportBatch: committed 4 blocks' "$DATADIR/debug.log"; echo $?)"
+check_height_and_tip 4 "${BLOCK_HASH[4]}" "post-failure import"
+check_block_records 4 "post-failure import"
+
+stop_node || { echo "FAILED: post-failure daemon did not shut down"; exit 1; }
 
 echo
 echo "lmdb import batch regression: $PASS passed, $FAIL failed"

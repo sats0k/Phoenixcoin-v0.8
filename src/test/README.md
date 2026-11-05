@@ -483,6 +483,12 @@ record or the refill commit. The hooks are one-shot, inert until armed, and
 apply only to the LMDB wallet database (never Berkeley DB or the chain
 index).
 
+A separate one-shot hook, `SetTestChainCommitFailure()` in `db.h`, fails the
+next non-wallet LMDB transaction commit and aborts it. The import-batch
+regression arms it through `PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT` to exercise
+`CChainImportBatch::Commit()`'s rollback path; it is inert until armed and
+never affects Berkeley DB or wallet transactions.
+
 - `wallet_atomic_write_boundaries` fails every existing wallet record write
   inside one explicit transaction (`WriteKey`'s `keymeta` and `key`,
   `WriteCryptedKey`'s `keymeta` and `ckey`, `WriteTx`, `WriteName`,
@@ -741,6 +747,11 @@ any failure:
   With `PHOENIX_TEST_NOTIFY_BATCH=1`, the commit also logs the coinbase
   notification order, which must be the pre-batch tip followed by each
   intermediate block's coinbase; a rolled-back batch must log none.
+  `PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT=1` arms the one-shot chain commit
+  failure hook (`SetTestChainCommitFailure()` in `db.h`) immediately before
+  the batch's final commit. The test then requires the in-memory tip and
+  block index to return to genesis, the failed batch's entries to be absent
+  after a restart, and a later clean import to reach the full four-block tip.
 - `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
   copied, keys and labels survive, the migration runs once, an explicit BDB

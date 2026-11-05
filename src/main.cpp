@@ -2184,6 +2184,8 @@ public:
         // Clear the flag first so the destructor never aborts a transaction
         // that the commit failure path already closed.
         fActive = false;
+        if (std::getenv("PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT") != nullptr)
+            SetTestChainCommitFailure();
         bool fSuccess = txdb.TxnCommit();
         txdb.Close();
 

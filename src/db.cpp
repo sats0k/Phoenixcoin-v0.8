@@ -1932,6 +1932,7 @@ struct TestWalletFailureState
 
 TestWalletFailureState g_testWalletFailure;
 std::atomic<bool> g_fTestWalletFailureArmed(false);
+std::atomic<bool> g_fTestChainCommitFailureArmed(false);
 
 } // namespace
 
@@ -2004,6 +2005,21 @@ bool ConsumeTestWalletCommitFailure()
     g_testWalletFailure.fCommitArmed = false;
     g_fTestWalletFailureArmed.store(false);
     return true;
+}
+
+void SetTestChainCommitFailure()
+{
+    g_fTestChainCommitFailureArmed.store(true);
+}
+
+void ClearTestChainCommitFailure()
+{
+    g_fTestChainCommitFailureArmed.store(false);
+}
+
+bool ConsumeTestChainCommitFailure()
+{
+    return g_fTestChainCommitFailureArmed.exchange(false);
 }
 
 void SetTestWalletRewriteFailure(const std::string& strPoint, int nSkip)

@@ -388,6 +388,16 @@ bool TestWalletWriteFailureMatches(const std::string& strType);
 bool ConsumeTestWalletCommitFailure();
 
 /**
+ * Test-only failure injection for chain-index transaction commits.  Arms the
+ * next non-wallet LMDB transaction commit to fail and abort, so the import
+ * batch can exercise its rollback path.  The hook is one-shot and inert until
+ * armed.
+ */
+void SetTestChainCommitFailure();
+void ClearTestChainCommitFailure();
+bool ConsumeTestChainCommitFailure();
+
+/**
  * Test-only failure injection for RewriteWalletLMDB().  The named point fails
  * once (after nSkip successful hits), and no other rewrite is affected.  The
  * points are "wallet-rewrite-rename-old", "wallet-rewrite-install",
@@ -725,6 +735,13 @@ public:
             if (fUseKVWallet)
                 TestWalletCrashPoint("wallet-txn-before-commit");
             if (fUseKVWallet && ConsumeTestWalletCommitFailure())
+            {
+                kvTxn->Abort();
+                kvTxn.reset();
+                kvTxnRecordTypes.clear();
+                return false;
+            }
+            if (!fUseKVWallet && ConsumeTestChainCommitFailure())
             {
                 kvTxn->Abort();
                 kvTxn.reset();

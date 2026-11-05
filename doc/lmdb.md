@@ -547,13 +547,14 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   suites.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- `regression_lmdb_import_batch.sh` passed 41/41 checks in the normal build:
+- `regression_lmdb_import_batch.sh` passed 62/62 checks in the normal build:
   a four-block `-loadblock` import commits as one batch and survives a
   restart while announcing the pre-batch tip and each intermediate coinbase,
-  a re-import skips known blocks and creates no second batch, and a
-  corrupted middle block rolls the uncommitted batch back to genesis without
-  announcing any transaction before a later clean import reaches the correct
-  tip.
+  a re-import skips known blocks and creates no second batch, a corrupted
+  middle block rolls the uncommitted batch back to genesis without announcing
+  any transaction, and an injected final commit failure restores the tip and
+  block index in memory, leaves no batch entries after a restart and still
+  allows a later clean import to reach the correct tip.
 - The full unit suite passed 185 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive

@@ -241,7 +241,9 @@ Changes since v0.8.3.
   after the transaction commits, the importer announces the coinbase of the
   block that preceded the batch and then each intermediate block's coinbase,
   and stores the final block's coinbase for the next announcement. An aborted
-  or failed batch announces nothing.
+  or failed batch announces nothing. The import regression injects both a
+  rejected middle block and a failed final commit to prove the in-memory
+  rollback and the clean retry.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI
