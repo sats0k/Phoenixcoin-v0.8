@@ -672,6 +672,9 @@ void CWallet::MarkDirty()
 void CWallet::SelectDefaultKeyReplacements(
     const CWalletTx& wtxIn, std::vector<CPubKey>& vNewDefaultKeys)
 {
+    // GUI builds leave the default key untouched here.
+    (void)wtxIn;
+    (void)vNewDefaultKeys;
 #ifndef QT_GUI
     // If the default receiving address gets used, replace it with a new one.
     // This must run before a caller opens its wallet transaction: the keypool
