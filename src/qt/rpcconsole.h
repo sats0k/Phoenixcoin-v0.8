@@ -79,6 +79,7 @@ private:
 
     static QString FormatBytes(quint64 nBytes);
     void setTrafficGraphRange(int nMinutes);
+    void updateDatabaseVersion();
 
     void startExecutor();
 };

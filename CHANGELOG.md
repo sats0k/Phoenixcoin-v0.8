@@ -167,6 +167,10 @@ Changes since v0.8.3.
   and startup prints `Chain index backend: LMDB`. Berkeley DB remains
   available for compatibility and recovery with `-dbbackend=bdb`; there is
   no implicit fallback between the two backends.
+- The RPC console Information tab now reports the database library actually
+  selected instead of always showing the compiled Berkeley DB release. With
+  the default LMDB chain index and wallet it shows the LMDB version; a mixed
+  chain/wallet configuration shows both libraries.
 - Chain backend markers are now authoritative in both directions. A
   `blkindex.backend` marker that says `bdb` refuses `-dbbackend=lmdb` even
   when a stale `blkindex/` directory exists, matching the wallet behaviour;

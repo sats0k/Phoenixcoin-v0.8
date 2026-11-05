@@ -13,12 +13,14 @@
 #include <openssl/crypto.h>  /* for SSLEAY_VERSION */
 #include <boost/version.hpp>  /* for BOOST_VERSION */
 #include <db_cxx.h>  /* for DbEnv::version() */
+#include <lmdb.h>  /* for MDB_VERSION_STRING */
 
 #ifndef Q_MOC_RUN
 #include "rpcmain.h"
 #endif
 
 #include "clientmodel.h"
+#include "db.h"
 #include "guiutil.h"
 #include "rpcconsole.h"
 #include "ui_rpcconsole.h"
@@ -236,8 +238,8 @@ RPCConsole::RPCConsole(QWidget *parent) :
     /* Display OpenSSL version and release date */
     ui->versionOpenSSL->setText(SSLeay_version(SSLEAY_VERSION));
 
-    /* Display BerkeleyDB version and release date */
-    ui->versionBDB->setText(DbEnv::version(0, 0, 0));
+    /* Display the database libraries actually in use and their release dates */
+    updateDatabaseVersion();
 
     /* Display Boost version */
     char chVersionBoost[64];
@@ -560,6 +562,23 @@ QString RPCConsole::FormatBytes(quint64 nBytes) {
       return(QString(tr("%1 Mb")).arg(nBytes >> 20));
 
     return(QString(tr("%1 Gb")).arg(nBytes >> 30));
+}
+
+void RPCConsole::updateDatabaseVersion()
+{
+    const bool fLMDBChain = GetConfiguredDBBackend() == DB_BACKEND_LMDB;
+    const bool fLMDBWallet = GetConfiguredWalletBackend() == DB_BACKEND_LMDB;
+
+    QString strVersion;
+    if (fLMDBChain || fLMDBWallet)
+        strVersion = QString::fromUtf8(MDB_VERSION_STRING);
+    if (!fLMDBChain || !fLMDBWallet)
+    {
+        if (!strVersion.isEmpty())
+            strVersion += QString::fromUtf8(" / ");
+        strVersion += QString::fromUtf8(DbEnv::version(0, 0, 0));
+    }
+    ui->versionDB->setText(strVersion);
 }
 
 void RPCConsole::setTrafficGraphRange(int nMinutes) {
