@@ -497,6 +497,12 @@ entry added since the batch began is removed from `mapBlockIndex` and deleted,
 the saved globals and `pnext` link are restored, and the import stops.
 `LoadExternalBlockFile()` counts only blocks whose transaction committed.
 
+Wallet notifications keep the per-block order. After the batch transaction
+commits, the importer calls `UpdatedTransaction()` for the coinbase of the
+block that preceded the batch and then for each intermediate block's coinbase;
+the final block's coinbase is stored for the next best-block announcement.
+Nothing is announced from an aborted or failed batch.
+
 Blocks are appended to `blkNNNN.dat` before their index transaction, so an
 aborted batch leaves unreferenced raw block bytes behind, exactly like a failed
 single-block write.  A restart ignores them because only the chain index is
@@ -541,11 +547,13 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   suites.
 - `regression_lmdb_chain_migration.sh` passed 64/64 checks with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
-- `regression_lmdb_import_batch.sh` passed 39/39 checks in the normal build:
+- `regression_lmdb_import_batch.sh` passed 41/41 checks in the normal build:
   a four-block `-loadblock` import commits as one batch and survives a
-  restart, a re-import skips known blocks and creates no second batch, and a
-  corrupted middle block rolls the uncommitted batch back to genesis before a
-  later clean import reaches the correct tip.
+  restart while announcing the pre-batch tip and each intermediate coinbase,
+  a re-import skips known blocks and creates no second batch, and a
+  corrupted middle block rolls the uncommitted batch back to genesis without
+  announcing any transaction before a later clean import reaches the correct
+  tip.
 - The full unit suite passed 185 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive

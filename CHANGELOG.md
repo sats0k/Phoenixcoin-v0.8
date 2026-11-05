@@ -237,7 +237,11 @@ Changes since v0.8.3.
   tip, height, work and `pnext` link, and stops the import. Known blocks are
   skipped when a file is imported again, and a rejected block no longer makes
   the scanner retry the same file position forever. The batch commit still
-  fsyncs with `-lmdbnosync=0`.
+  fsyncs with `-lmdbnosync=0`. Wallet notifications keep the per-block order:
+  after the transaction commits, the importer announces the coinbase of the
+  block that preceded the batch and then each intermediate block's coinbase,
+  and stores the final block's coinbase for the next announcement. An aborted
+  or failed batch announces nothing.
 - Version bumped to 0.8.4.
 - `boost::filesystem` is replaced by `std::filesystem` across util, db,
   init, main, the RPC modules, the wallet, the hybrid module, the Qt GUI

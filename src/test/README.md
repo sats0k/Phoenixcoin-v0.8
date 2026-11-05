@@ -738,6 +738,9 @@ any failure:
   blocks 1-2 absent from the index, and allow a later clean import to reach
   the correct four-block tip. The debug log records the committed and
   rolled-back batch sizes, so the test proves the batching path actually ran.
+  With `PHOENIX_TEST_NOTIFY_BATCH=1`, the commit also logs the coinbase
+  notification order, which must be the pre-batch tip followed by each
+  intermediate block's coinbase; a rolled-back batch must log none.
 - `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
   handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
   copied, keys and labels survive, the migration runs once, an explicit BDB

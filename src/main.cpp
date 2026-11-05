@@ -2073,6 +2073,15 @@ const size_t MAX_IMPORT_BATCH_BYTES = 64 * 1024 * 1024;
 // Last coinbase transaction announced to the UI as part of the best block.
 uint256 hashPrevBestCoinBase;
 
+// Test-only: an import batch emits one line per coinbase notification so the
+// regression suite can verify that intermediate blocks are not skipped.
+bool ShouldLogBatchNotifications()
+{
+    static const bool fLog =
+        (std::getenv("PHOENIX_TEST_NOTIFY_BATCH") != nullptr);
+    return fLog;
+}
+
 } // namespace
 
 
@@ -2091,7 +2100,7 @@ class CChainImportBatch
 {
 public:
     CChainImportBatch()
-        : fActive(false), nBlocks(0), nBytes(0), hashLastCoinbase(0),
+        : fActive(false), nBlocks(0), nBytes(0),
           savedBestChain(0), savedBest(nullptr), savedGenesis(nullptr),
           savedBestHeight(-1), savedBestWork(0), savedTimeBestReceived(0),
           savedTransactionsUpdated(0), savedFBBHLast(nullptr),
@@ -2145,7 +2154,6 @@ public:
         vEntries.clear();
         nBlocks = 0;
         nBytes = 0;
-        hashLastCoinbase = 0;
         fActive = true;
         return true;
     }
@@ -2161,9 +2169,8 @@ public:
     void Record(const uint256& hash, CBlockIndex* pindex,
                 const uint256& hashCoinbase)
     {
-        vEntries.push_back(Entry(hash, pindex));
+        vEntries.push_back(Entry(hash, pindex, hashCoinbase));
         ++nBlocks;
-        hashLastCoinbase = hashCoinbase;
     }
 
     void AddBytes(size_t nBlockBytes) { nBytes += nBlockBytes; }
@@ -2190,15 +2197,26 @@ public:
         {
             printf("CChainImportBatch: committed %" PRIszu " blocks\n",
               vEntries.size());
-            UpdatedTransaction(hashPrevBestCoinBase);
-            hashPrevBestCoinBase = hashLastCoinbase;
+
+            // Notify in the same order as the per-block path: once for the
+            // coinbase of the tip that preceded the batch, then for each
+            // intermediate block's coinbase.  The final block only becomes
+            // the stored tip below; its coinbase is announced when the next
+            // best block arrives.
+            for (const Entry& entry : vEntries)
+            {
+                UpdatedTransaction(hashPrevBestCoinBase);
+                if (ShouldLogBatchNotifications())
+                    printf("CChainImportBatch: notify coinbase %s\n",
+                      hashPrevBestCoinBase.ToString().c_str());
+                hashPrevBestCoinBase = entry.hashCoinbase;
+            }
             uiInterface.NotifyBlocksChanged();
         }
 
         vEntries.clear();
         nBlocks = 0;
         nBytes = 0;
-        hashLastCoinbase = 0;
         return true;
     }
 
@@ -2218,10 +2236,12 @@ public:
 private:
     struct Entry
     {
-        Entry(const uint256& hashIn, CBlockIndex* pindexIn)
-            : hash(hashIn), pindex(pindexIn) {}
+        Entry(const uint256& hashIn, CBlockIndex* pindexIn,
+              const uint256& hashCoinbaseIn)
+            : hash(hashIn), pindex(pindexIn), hashCoinbase(hashCoinbaseIn) {}
         uint256 hash;
         CBlockIndex* pindex;
+        uint256 hashCoinbase;
     };
 
     void RollbackMemory()
@@ -2253,7 +2273,6 @@ private:
         vEntries.clear();
         nBlocks = 0;
         nBytes = 0;
-        hashLastCoinbase = 0;
     }
 
     CTxDB txdb;
@@ -2261,7 +2280,6 @@ private:
     size_t nBlocks;
     size_t nBytes;
     std::vector<Entry> vEntries;
-    uint256 hashLastCoinbase;
 
     uint256 savedBestChain;
     CBlockIndex* savedBest;

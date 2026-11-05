@@ -5,15 +5,17 @@
 #
 # The importer groups consecutive best-chain blocks below the checkpoint
 # estimate into one LMDB transaction.  This test drives real mainnet blocks
-# through that path and checks three things:
+# through that path and checks four things:
 #
 #   1. a clean bootstrap.dat imports all blocks in one batch and the tip,
-#      block index and transaction index survive a restart;
+#      block index and transaction index survive a restart, with wallet
+#      notifications covering the pre-batch tip and every intermediate
+#      coinbase;
 #   2. importing the same file again skips known blocks instead of stopping
 #      on the first duplicate;
 #   3. a rejected block in the middle of a batch rolls the whole uncommitted
-#      batch back, so the node restarts at genesis and a later clean import
-#      reaches the correct tip.
+#      batch back without sending any notifications, so the node restarts at
+#      genesis and a later clean import reaches the correct tip.
 #
 # Real blocks 1-4 are used because block 1 is a hardened checkpoint and their
 # raw bytes need no mining or network access.  See
@@ -51,6 +53,7 @@ case "$PORT" in
 esac
 
 GENESIS_HASH="be2f30f9e8db8f430056869c43503a992d232b28508e83eda101161a18cf7c73"
+GENESIS_COINBASE="ff2aa75842fae1bfb100b656c57229ce37b03643434da2043ddab7a11cfe69a6"
 
 BLOCK_HASH[1]="006e800301bbd850d7ba67ad9295c3a940f5fc8f5581e3484967bd33c4c8b965"
 BLOCK_HASH[2]="bde2e3c86d87e869a4d795697462d6ddaccaea039e32aff1038bf2dc48be4e17"
@@ -193,12 +196,22 @@ make_block_file "$CLEAN_BLOCKS" \
 }
 
 echo "== step 1: import four blocks in one batch =="
-start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+PHOENIX_TEST_NOTIFY_BATCH=1 start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not start the importing daemon"; exit 1;
 }
 
 check "the clean import committed one four-block batch" \
     "$(grep -q 'CChainImportBatch: committed 4 blocks' "$DATADIR/debug.log"; echo $?)"
+# The batched commit must notify wallets about the pre-batch tip and every
+# intermediate coinbase, exactly as the per-block path did.  The final block's
+# coinbase is stored and announced only when the next best block arrives.
+grep -o 'CChainImportBatch: notify coinbase [0-9a-f]*' "$DATADIR/debug.log" \
+    | awk '{print $4}' > "$WORKDIR/notify.txt"
+printf '%s\n%s\n%s\n%s\n' "$GENESIS_COINBASE" \
+    "${BLOCK_TXID[1]}" "${BLOCK_TXID[2]}" "${BLOCK_TXID[3]}" \
+    > "$WORKDIR/notify.expected"
+check "the batch notified the previous tip and each intermediate coinbase" \
+    "$(cmp -s "$WORKDIR/notify.txt" "$WORKDIR/notify.expected"; echo $?)"
 check_height_and_tip 4 "${BLOCK_HASH[4]}" "clean import"
 check_block_records 4 "clean import"
 
@@ -233,13 +246,15 @@ make_block_file "$BAD_BLOCKS" \
     exit 1
 }
 
-start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$BAD_BLOCKS" || {
+PHOENIX_TEST_NOTIFY_BATCH=1 start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$BAD_BLOCKS" || {
     echo "FAILED: could not start the rollback daemon"; exit 1;
 }
 check "the rejected block stopped the import" \
     "$(grep -q 'rejected, stopping' "$DATADIR/debug.log"; echo $?)"
 check "the uncommitted two-block batch was rolled back" \
     "$(grep -q 'CChainImportBatch: rolled back 2 blocks' "$DATADIR/debug.log"; echo $?)"
+check "the rolled-back batch sent no transaction notifications" \
+    "$(! grep -q 'CChainImportBatch: notify coinbase' "$DATADIR/debug.log"; echo $?)"
 check_height_and_tip 0 "$GENESIS_HASH" "after rollback"
 check "block 1 is absent from the rolled-back index" \
     "$([ -z "$(rpc getblockhash 1 2>/dev/null)" ]; echo $?)"
