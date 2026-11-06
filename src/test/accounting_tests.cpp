@@ -1,9 +1,49 @@
 #include <boost/test/unit_test.hpp>
 
+#include <filesystem>
+#include <stdexcept>
+#include <string>
 
+#include "db.h"
 #include "init.h"
+#include "util.h"
 #include "wallet.h"
 #include "walletdb.h"
+
+namespace {
+
+/**
+ * A throw-away LMDB wallet for suites that need their own accounting state.
+ * The global fixture's wallet is closed while this environment is active and
+ * reopened afterwards.
+ */
+struct TempWalletEnv
+{
+    std::filesystem::path dir;
+
+    TempWalletEnv()
+    {
+        dir = std::filesystem::temp_directory_path() /
+              ("phoenixcoin_accounting_" + std::to_string(GetTimeMillis()));
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+        std::filesystem::create_directories(dir, ec);
+        if (ec)
+            throw std::runtime_error("could not create accounting data dir");
+        if (!InitLMDBWalletDBForTest(dir))
+            throw std::runtime_error("could not open the accounting wallet");
+    }
+
+    ~TempWalletEnv()
+    {
+        CloseLMDBWalletDB();
+        InitLMDBWalletDBForTest(GetDataDir());
+        std::error_code ec;
+        std::filesystem::remove_all(dir, ec);
+    }
+};
+
+} // namespace
 
 BOOST_AUTO_TEST_SUITE(accounting_tests)
 
@@ -24,11 +64,12 @@ GetResults(CWallet& wallet, CWalletDB& walletdb,
 
 BOOST_AUTO_TEST_CASE(acc_orderupgrade)
 {
-    // Use a private wallet file.  This test writes empty transactions, which
+    // Use a private LMDB wallet.  This test writes empty transactions, which
     // are deliberately rejected when a wallet is loaded, and accounting
-    // entries.  Leaving them in the shared mock wallet.dat would make later
-    // suites fail to load the wallet.
-    CWallet wallet("accounting.dat");
+    // entries.  Leaving them in the shared fixture wallet would make later
+    // suites fail to load it.
+    TempWalletEnv env;
+    CWallet wallet("wallet.dat");
     CWalletDB walletdb(wallet.strWalletFile);
     std::vector<CWalletTx*> vpwtx;
     CWalletTx wtx;
@@ -124,10 +165,9 @@ BOOST_AUTO_TEST_CASE(acc_orderupgrade)
     BOOST_CHECK(results[5].nTime == 1333333334);
     BOOST_CHECK(6 == vpwtx[1]->nOrderPos);
 
-    // The mocked Berkeley environment backs every logical database with the
-    // same in-memory store.  Remove the empty transactions this test wrote:
-    // they have no inputs or outputs, so a later suite that loads the wallet
-    // would fail with DB_NONCRITICAL_ERROR.
+    // Remove the empty transactions this test wrote: they have no inputs or
+    // outputs, so loading this wallet again would fail with
+    // DB_NONCRITICAL_ERROR.
     for (const std::pair<const uint256, CWalletTx>& item : wallet.mapWallet)
         walletdb.EraseTx(item.first);
 }

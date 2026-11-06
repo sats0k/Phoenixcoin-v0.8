@@ -56,11 +56,17 @@ struct TempDirGuard
 {
     std::filesystem::path dir;
 
-    explicit TempDirGuard(const std::string &tag) : dir(MakeTempDir(tag)) {}
+    explicit TempDirGuard(const std::string &tag) : dir(MakeTempDir(tag))
+    {
+        BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
+    }
 
     ~TempDirGuard()
     {
         CloseLMDBWalletDB();
+        // Restore the fixture wallet so the next test sees the same global
+        // environment it was started with.
+        InitLMDBWalletDBForTest(GetDataDir());
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
@@ -80,22 +86,13 @@ public:
 };
 
 /**
- * Creates the on-disk wallet.dat placeholder that startup uses to decide that
- * a BDB wallet exists, then migrates the records held by the mocked Berkeley
- * DB environment into a temporary LMDB wallet.
- *
- * The mock environment keeps wallet.dat in memory, so the placeholder is only
- * a startup signal; the records themselves come from WalletDBTestAccess.
+ * Reopens the LMDB wallet in dir, simulating a daemon restart.  The records
+ * written through the wallet handles above are already in that environment;
+ * there is no Berkeley DB source file any more.
  */
 static void MigrateMockWallet(const std::filesystem::path &dir)
 {
     CloseLMDBWalletDB();
-    {
-        std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
-        BOOST_REQUIRE(wallet.good());
-        wallet << "berkeley db wallet";
-    }
-
     BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
     BOOST_CHECK(IsLMDBWalletEnabled());
 }
@@ -1103,7 +1100,6 @@ struct KeyPoolArgGuard
 BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
 {
     TempDirGuard guard("wallet_semantics");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1170,9 +1166,6 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
 
     MigrateMockWallet(guard.dir);
 
-    // The Berkeley DB source survives untouched.
-    BOOST_CHECK(std::filesystem::exists(guard.dir / "wallet.dat"));
-
     std::unique_ptr<CWallet> migratedWallet(LoadWalletOrFail());
     CheckHybridKeyInvariants(*migratedWallet, "migrated wallet");
     const WalletSnapshot migrated = CaptureWalletSnapshot(
@@ -1231,7 +1224,6 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
 BOOST_AUTO_TEST_CASE(wallet_migration_preserves_keypool_lifecycle)
 {
     TempDirGuard guard("wallet_keypool");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1351,7 +1343,6 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_keypool_lifecycle)
 BOOST_AUTO_TEST_CASE(wallet_migration_hybrid_import_roundtrip)
 {
     TempDirGuard guard("wallet_hybrid_import");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1488,7 +1479,6 @@ static void RunHybridImportRollback(const std::string &tag,
                                     bool fFailCommit)
 {
     TempDirGuard guard("hybrid_atomic_" + tag);
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1595,7 +1585,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_import_rollback)
 BOOST_AUTO_TEST_CASE(wallet_atomic_write_boundaries)
 {
     TempDirGuard guard("wallet_write_boundaries");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1824,7 +1813,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_write_boundaries)
 BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_keypool_rollback)
 {
     TempDirGuard guard("wallet_hybrid_pool_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -1915,7 +1903,6 @@ static void CheckEcdsaKeyPoolEntriesOwned(CWallet &wallet,
 BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_new_key_pool_rollback)
 {
     TempDirGuard guard("wallet_ecdsa_newpool_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2035,7 +2022,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_new_key_pool_rollback)
 BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_top_up_key_pool_rollback)
 {
     TempDirGuard guard("wallet_ecdsa_topup_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2140,7 +2126,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_top_up_key_pool_rollback)
 BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
 {
     TempDirGuard guard("wallet_encryption");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2321,7 +2306,6 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
 BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_plaintext)
 {
     TempDirGuard guard("wallet_hybrid_invariants");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2411,7 +2395,6 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_plaintext)
 BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_bad_records)
 {
     TempDirGuard guard("wallet_hybrid_bad_records");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2476,7 +2459,6 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_bad_records)
 BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_encrypted)
 {
     TempDirGuard guard("wallet_hybrid_encrypted");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2590,7 +2572,6 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_encrypted)
 BOOST_AUTO_TEST_CASE(wallet_encryption_rewrite_failure_is_not_success)
 {
     TempDirGuard guard("wallet_encryption_rewrite_failure");
-    CloseLMDBWalletDB();
 
     struct RewriteHooksGuard
     {
@@ -2761,7 +2742,6 @@ RecordsWithoutPool(const std::map<CDBKey, CDBValue> &records)
 BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
 {
     TempDirGuard guard("wallet_add_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -2948,7 +2928,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
 BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
 {
     TempDirGuard guard("wallet_add_default_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -3091,7 +3070,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
 BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_spent_batch)
 {
     TempDirGuard guard("wallet_add_spent_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -3230,7 +3208,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_spent_batch)
 BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
 {
     TempDirGuard guard("wallet_commit_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -3403,7 +3380,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
 BOOST_AUTO_TEST_CASE(wallet_atomic_commit_single_input_change_retry)
 {
     TempDirGuard guard("wallet_commit_single_retry");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -3614,7 +3590,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_single_input_change_retry)
 BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_default_key_rotation)
 {
     TempDirGuard guard("wallet_commit_default_atomic");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {
@@ -3784,7 +3759,6 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_default_key_rotation)
 BOOST_AUTO_TEST_CASE(wallet_commit_failure_does_not_broadcast)
 {
     TempDirGuard guard("wallet_commit_no_broadcast");
-    CloseLMDBWalletDB();
 
     BuiltWallet built;
     {

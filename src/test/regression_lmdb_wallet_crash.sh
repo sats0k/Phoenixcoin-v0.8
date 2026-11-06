@@ -2,21 +2,10 @@
 #
 # Regression test: the LMDB wallet survives SIGKILL at every durable boundary.
 #
-# This mirrors the three chain-state crash validations for the wallet:
-#
-#   A. Kill during the wallet.dat -> LMDB migration.
-#        Partial LMDB state must be discarded, the migration repeated, and the
-#        recovered wallet must be identical to a clean migration.
-#
-#   B. Kill during normal wallet operation.
-#        send, receive, label, keypool refill, hybrid import and encrypt must
-#        leave the wallet either exactly as it was before the operation or in
-#        the fully committed state after it, never in between.
-#
-#   C. Kill around wallet.backend marker creation.
-#        Killing after the LMDB commit but before the marker, after the marker
-#        temp file is written, and after the marker rename must all take a
-#        deterministic startup path.
+# Kill during normal wallet operation: send, receive, label, keypool refill,
+# hybrid import and encrypt must leave the wallet either exactly as it was
+# before the operation or in the fully committed state after it, never in
+# between.  The interrupted OP_CAST (wallet.rewrite) is also covered.
 #
 # The heavy lifting is done by a test-only crash hook (db.cpp:
 # TestWalletCrashPoint).  PHOENIX_TEST_CRASH_FILE names a control file whose
@@ -26,10 +15,9 @@
 # include the record type ("wallet-write-after-commit:tx") so a case can pick
 # the exact record class without counting unrelated writes.
 #
-# The script builds one Berkeley DB wallet on a real mainnet chain fragment
-# (blocks 1-6, as in regression_lmdb_wallet_e2e.sh), migrates it once to get a
-# reference LMDB wallet, and then gives every case its own copy of either the
-# BDB or the reference LMDB datadir.  No case touches the user's real datadir.
+# The script builds one LMDB wallet on a real mainnet chain fragment
+# (blocks 1-6, as in regression_lmdb_wallet_e2e.sh), then gives every case its
+# own copy of the reference datadir.  No case touches the user's real datadir.
 #
 # Usage: src/test/regression_lmdb_wallet_crash.sh [path-to-phoenixcoind]
 #
@@ -40,7 +28,7 @@ set -u
 
 BIN="${1:-$(cd "$(dirname "$0")/../.." && pwd)/src/phoenixcoind}"
 WORK="$(mktemp -d "/tmp/lmdb-wallet-crash.XXXXXX")"
-BASE_BDB="$WORK/bdb-base"
+BASE_WALLET="$WORK/base-wallet"
 REF_LMDB="$WORK/lmdb-reference"
 CRASH_FILE="$WORK/crash.control"
 NODE_PID=""
@@ -256,24 +244,14 @@ unlock() {
     rpc_dir "$1" walletpassphrase "$WALLET_PASSPHRASE" 600 >/dev/null 2>&1
 }
 
-lmdb_count() {
-    local dir="$1"
-    command -v mdb_dump >/dev/null 2>&1 || return 1
-    mdb_dump -p -s main "$dir/wallet" 2>/dev/null |
-        awk '/^HEADER=END$/{inside=1; next}
-             /^DATA=END$/{inside=0}
-             inside { n++; if (n % 2 == 1) keys++ }
-             END { print keys + 0 }'
-}
-
-# The fixed mainnet blocks 1-4 come from the chain-migration regression; blocks
-# 5 and 6 were mined once with the same consensus rules and pay the WIFs below.
-CHAIN_TEST="$(cd "$(dirname "$0")" && pwd)/regression_lmdb_chain_migration.sh"
-if ! grep -q '^BLOCK_HEX\[' "$CHAIN_TEST" 2>/dev/null; then
-    echo "ERROR: cannot find the fixed blocks in $CHAIN_TEST" >&2
+# The fixed mainnet blocks 1-4 come from the shared fragment; blocks 5 and 6
+# were mined once with the same consensus rules and pay the WIFs below.
+FRAGMENT="$(cd "$(dirname "$0")" && pwd)/regression_mainnet_fragment.sh"
+if [ ! -f "$FRAGMENT" ]; then
+    echo "ERROR: cannot find the mainnet fragment at $FRAGMENT" >&2
     exit 1
 fi
-eval "$(grep '^BLOCK_HEX\[' "$CHAIN_TEST")"
+. "$FRAGMENT"
 
 BLOCK_HEX[5]="0200000091277ad30271f59836916dcc3edefcc59f9c30aacfeec3acdd6310b1a566072850cb9d591fbc58a76ab1c25d2fefaf3984da56f37302c554a31e0cf9848f86338af0e66af0ff0f1e3a0000000101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0b5502d804062f503253482fffffffff0100f2052a01000000232103bebdbbeeb9c1220d29d8bddc765c9935dd9b764cac9d83d64435a9a4074002c2ac00000000"
 BLOCK_HEX[6]="0200000086d11e9d9484c72b534f27ba04fd1f6a6ed9f39f6d13869698df51dc80599aa710ee449d4c94aee22fea887407ac1c69862c52612199f4a3355c667cc2fc678df7f1e66af0ff0f1e540000000101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff0b5602730c062f503253482fffffffff0100f2052a01000000232102d9833e4c4dec81e502308d05938d1d821a627983660f5b20d976b04562a8b780ac00000000"
@@ -288,64 +266,63 @@ WALLET_PASSPHRASE="crash test passphrase"
 BASE_BALANCE="89.99000000"
 SEND_BALANCE="88.98000000"
 
-echo "== setup: build a Berkeley DB wallet =="
-mkdir -p "$BASE_BDB"
-if ! start_ready "$BASE_BDB" -walletbackend=bdb; then
-    echo "FAILED: could not start the BDB daemon"
+echo "== setup: build the reference LMDB wallet =="
+mkdir -p "$BASE_WALLET"
+if ! start_ready "$BASE_WALLET"; then
+    echo "FAILED: could not start the daemon"
     exit 1
 fi
 
 for h in 1 2 3 4 5 6; do
-    rpc_dir "$BASE_BDB" submitblock "${BLOCK_HEX[$h]}" >/dev/null 2>&1
+    rpc_dir "$BASE_WALLET" submitblock "${BLOCK_HEX[$h]}" >/dev/null 2>&1
 done
 check_eq "chain fragment connected to height 6" "6" \
-    "$(rpc_dir "$BASE_BDB" getblockcount 2>/dev/null)"
+    "$(rpc_dir "$BASE_WALLET" getblockcount 2>/dev/null)"
 
-rpc_dir "$BASE_BDB" importprivkey "$COINBASE5_WIF" "coinbase-5" true \
+rpc_dir "$BASE_WALLET" importprivkey "$COINBASE5_WIF" "coinbase-5" true \
     >/dev/null 2>&1
-rpc_dir "$BASE_BDB" importprivkey "$COINBASE6_WIF" "coinbase-6" true \
+rpc_dir "$BASE_WALLET" importprivkey "$COINBASE6_WIF" "coinbase-6" true \
     >/dev/null 2>&1
 check_eq "coinbase balance is 100 PXC" "100.00000000" \
-    "$(rpc_dir "$BASE_BDB" getbalance 2>/dev/null)"
+    "$(rpc_dir "$BASE_WALLET" getbalance 2>/dev/null)"
 
-TX_PRE=$(rpc_dir "$BASE_BDB" sendtoaddress "$EXTERNAL_ADDR" 10 \
-    "crash test pre-migration send" "crash" 2>/dev/null)
-check "created the pre-migration send" "$([ -n "$TX_PRE" ]; echo $?)"
+TX_PRE=$(rpc_dir "$BASE_WALLET" sendtoaddress "$EXTERNAL_ADDR" 10 \
+    "crash test seed send" "crash" 2>/dev/null)
+check "created the seed send" "$([ -n "$TX_PRE" ]; echo $?)"
 
-ALICE_ADDR=$(rpc_dir "$BASE_BDB" getnewaddress alice 2>/dev/null)
-ALICE_WIF=$(rpc_dir "$BASE_BDB" dumpprivkey "$ALICE_ADDR" 2>/dev/null)
-BOB_ADDR=$(rpc_dir "$BASE_BDB" getnewaddress bob 2>/dev/null)
+ALICE_ADDR=$(rpc_dir "$BASE_WALLET" getnewaddress alice 2>/dev/null)
+ALICE_WIF=$(rpc_dir "$BASE_WALLET" dumpprivkey "$ALICE_ADDR" 2>/dev/null)
+BOB_ADDR=$(rpc_dir "$BASE_WALLET" getnewaddress bob 2>/dev/null)
 # Two addresses in "orig": the first is not the account's current key, so
 # setaccount on it cannot trigger an unrelated key generation.
-TARGET_ADDR=$(rpc_dir "$BASE_BDB" getnewaddress orig 2>/dev/null)
-rpc_dir "$BASE_BDB" getnewaddress orig >/dev/null 2>&1
+TARGET_ADDR=$(rpc_dir "$BASE_WALLET" getnewaddress orig 2>/dev/null)
+rpc_dir "$BASE_WALLET" getnewaddress orig >/dev/null 2>&1
 # Record the account's current key so setaccount on TARGET_ADDR (which is not
 # that key) cannot generate an unrelated key and name record first.
-rpc_dir "$BASE_BDB" getaccountaddress orig >/dev/null 2>&1
-TARGET_WIF=$(rpc_dir "$BASE_BDB" dumpprivkey "$TARGET_ADDR" 2>/dev/null)
+rpc_dir "$BASE_WALLET" getaccountaddress orig >/dev/null 2>&1
+TARGET_WIF=$(rpc_dir "$BASE_WALLET" dumpprivkey "$TARGET_ADDR" 2>/dev/null)
 check_eq "the label target starts in account orig" "orig" \
-    "$(rpc_dir "$BASE_BDB" getaccount "$TARGET_ADDR" 2>/dev/null)"
+    "$(rpc_dir "$BASE_WALLET" getaccount "$TARGET_ADDR" 2>/dev/null)"
 
-rpc_dir "$BASE_BDB" keypoolrefill 50 >/dev/null 2>&1
+rpc_dir "$BASE_WALLET" keypoolrefill 50 >/dev/null 2>&1
 
-HYB_BASE_ADDR=$(rpc_dir "$BASE_BDB" gethybridaddress "hybrid-base" 2>/dev/null)
-HYB_BASE_JSON=$(rpc_dir "$BASE_BDB" dumphybridkey "$HYB_BASE_ADDR" 2>/dev/null)
+HYB_BASE_ADDR=$(rpc_dir "$BASE_WALLET" gethybridaddress "hybrid-base" 2>/dev/null)
+HYB_BASE_JSON=$(rpc_dir "$BASE_WALLET" dumphybridkey "$HYB_BASE_ADDR" 2>/dev/null)
 HYB_BASE_WIF=$(printf '%s' "$HYB_BASE_JSON" | json_field secp_wif)
 HYB_BASE_DER=$(printf '%s' "$HYB_BASE_JSON" | json_field mldsa_priv_der_b64)
 check "created the base hybrid key" \
     "$([ -n "$HYB_BASE_ADDR" ] && [ -n "$HYB_BASE_WIF" ] && [ -n "$HYB_BASE_DER" ]; echo $?)"
-check_eq "base balance after the pre-migration send" "$BASE_BALANCE" \
-    "$(rpc_dir "$BASE_BDB" getbalance 2>/dev/null)"
+check_eq "base balance after the seed send" "$BASE_BALANCE" \
+    "$(rpc_dir "$BASE_WALLET" getbalance 2>/dev/null)"
 
-stop_node "$BASE_BDB"
-BDB_SUM=$(sha256sum "$BASE_BDB/wallet.dat" | cut -d' ' -f1)
+stop_node "$BASE_WALLET"
 
 # Generate hybrid material and an independent private key in a brand new
 # wallet, so the reference wallet does not already contain what the import
 # cases add.  Copying the base datadir would reuse its keypool keys.
 MATERIAL_SRC="$WORK/material-src"
 mkdir -p "$MATERIAL_SRC"
-if ! start_ready "$MATERIAL_SRC" -walletbackend=bdb; then
+if ! start_ready "$MATERIAL_SRC"; then
     echo "FAILED: could not start the material daemon"
     exit 1
 fi
@@ -363,18 +340,10 @@ check "the material is not already in the reference wallet" \
 stop_node "$MATERIAL_SRC"
 rm -rf "$MATERIAL_SRC"
 
-echo "== setup: produce the reference LMDB wallet =="
-copy_dir "$BASE_BDB" "$REF_LMDB"
-if ! start_ready "$REF_LMDB" -walletbackend=lmdb; then
-    echo "FAILED: reference migration did not start"
-    exit 1
-fi
-check_eq "reference migration wrote the marker" "lmdb" \
+echo "== setup: snapshot the reference LMDB wallet =="
+copy_dir "$BASE_WALLET" "$REF_LMDB"
+check_eq "reference wallet marker is lmdb" "lmdb" \
     "$(cat "$REF_LMDB/wallet.backend" 2>/dev/null)"
-check "reference migration completed" \
-    "$(grep -q 'Wallet migration complete' "$REF_LMDB/debug.log"; echo $?)"
-stop_node "$REF_LMDB"
-REF_COUNT="$(lmdb_count "$REF_LMDB")"
 
 # ---------------------------------------------------------------------------
 # Shared verification.  Every recovered wallet must expose the same state the
@@ -395,9 +364,9 @@ verify_common() {
         "$(rpc_dir "$dir" getaddressesbyaccount alice 2>/dev/null)"
     check_contains "$label: bob label survived" "$BOB_ADDR" \
         "$(rpc_dir "$dir" getaddressesbyaccount bob 2>/dev/null)"
-    check_contains "$label: pre-migration send survived" "$TX_PRE" \
+    check_contains "$label: seed send survived" "$TX_PRE" \
         "$(rpc_dir "$dir" listtransactions '*' 50 2>/dev/null)"
-    check_contains "$label: pre-migration amount survived" \
+    check_contains "$label: seed amount survived" \
         '"amount" : -10.00000000' \
         "$(rpc_dir "$dir" gettransaction "$TX_PRE" 2>/dev/null)"
     check_eq "$label: hybrid key unchanged" "$HYB_BASE_WIF" \
@@ -409,84 +378,7 @@ verify_common() {
 }
 
 # ---------------------------------------------------------------------------
-# A + C: crash during migration and around marker creation.
-# ---------------------------------------------------------------------------
-migration_case() {
-    local label="$1" point="$2" skip="$3" marker_before="$4" \
-          complete_before="$5" second_migration="$6"
-    local case_dir="$WORK/case-$label"
-    case_selected "$label" || return 0
-
-    echo "== case $label: kill at $point (skip $skip) =="
-    copy_dir "$BASE_BDB" "$case_dir"
-
-    arm "$point" "$skip"
-    start_bg "$case_dir" -walletbackend=lmdb
-    wait_exit "$NODE_PID"
-    local rc=$?
-    NODE_PID=""
-    disarm
-    check_eq "$label: migration process was SIGKILLed" "137" "$rc"
-
-    if [ "$marker_before" = "yes" ]; then
-        check_eq "$label: marker already names lmdb" "lmdb" \
-            "$(cat "$case_dir/wallet.backend" 2>/dev/null)"
-    else
-        check "$label: marker is absent after the crash" \
-            "$([ ! -e "$case_dir/wallet.backend" ]; echo $?)"
-    fi
-    if [ "$complete_before" = "yes" ]; then
-        check "$label: migration had committed before the crash" \
-            "$(grep -q 'Wallet migration complete' "$case_dir/debug.log"; echo $?)"
-    else
-        check "$label: migration had not committed before the crash" \
-            "$(! grep -q 'Wallet migration complete' "$case_dir/debug.log"; echo $?)"
-    fi
-    if [ "$point" = "wallet-marker-before-rename" ]; then
-        check "$label: the marker temp file was left behind" \
-            "$([ -e "$case_dir/wallet.backend.tmp" ]; echo $?)"
-    fi
-
-    if ! start_ready "$case_dir" -walletbackend=lmdb; then
-        check "$label: restart after the crash" "1"
-        return
-    fi
-
-    if [ "$second_migration" = "yes" ]; then
-        check_eq "$label: migration was repeated after the crash" "2" \
-            "$(grep -c 'Migrating wallet from wallet.dat to LMDB' \
-                "$case_dir/debug.log" 2>/dev/null)"
-    else
-        check_eq "$label: the committed wallet was adopted without a second migration" "1" \
-            "$(grep -c 'Migrating wallet from wallet.dat to LMDB' \
-                "$case_dir/debug.log" 2>/dev/null)"
-    fi
-    check_eq "$label: exactly one migration completed" "1" \
-        "$(grep -c 'Wallet migration complete' "$case_dir/debug.log" 2>/dev/null)"
-    check_eq "$label: marker now names lmdb" "lmdb" \
-        "$(cat "$case_dir/wallet.backend" 2>/dev/null)"
-    check "$label: marker temp file is gone" \
-        "$([ ! -e "$case_dir/wallet.backend.tmp" ]; echo $?)"
-    check "$label: wallet.dat was not modified" \
-        "$([ "$(sha256sum "$case_dir/wallet.dat" | cut -d' ' -f1)" = "$BDB_SUM" ]; echo $?)"
-
-    verify_common "$case_dir" "$label" "$BASE_BALANCE"
-
-    stop_node "$case_dir"
-    if [ -n "$REF_COUNT" ]; then
-        check_eq "$label: record count matches a clean migration" "$REF_COUNT" \
-            "$(lmdb_count "$case_dir")"
-    fi
-}
-
-migration_case migrate-record  wallet-migrate-record       5 no  no  yes
-migration_case migrate-before  wallet-migrate-before-commit 0 no  no  yes
-migration_case commit-no-marker wallet-migrate-after-commit 0 no  yes no
-migration_case marker-tmp      wallet-marker-before-rename  0 no  yes no
-migration_case marker-written  wallet-marker-after-rename   0 yes yes no
-
-# ---------------------------------------------------------------------------
-# B: normal wallet operation.
+# Normal wallet operation.
 # ---------------------------------------------------------------------------
 prepare_lmdb_case() {
     local dir="$1"
@@ -525,12 +417,12 @@ label_case() {
 
     echo "== case label-$when: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "label-$when: daemon start" "1"; return
     fi
     crash_during_rpc "label-$when" "$dir" "$point" 0 \
         setaccount "$TARGET_ADDR" "crash-label"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "label-$when: restart after the crash" "1"; return
     fi
     check_eq "label-$when: account is $expected" "$expected" \
@@ -556,12 +448,12 @@ send_case() {
 
     echo "== case send-$when: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "send-$when: daemon start" "1"; return
     fi
     crash_during_rpc "send-$when" "$dir" "$point" 0 \
         sendtoaddress "$EXTERNAL_ADDR" 1 "crash send $when" "crash"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "send-$when: restart after the crash" "1"; return
     fi
 
@@ -603,12 +495,12 @@ receive_case() {
 
     echo "== case receive-$when: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "receive-$when: daemon start" "1"; return
     fi
     crash_during_rpc "receive-$when" "$dir" "$point" 0 \
         importprivkey "$NEW_WIF" "" false
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "receive-$when: restart after the crash" "1"; return
     fi
 
@@ -641,13 +533,13 @@ keypool_case() {
 
     echo "== case keypool-$when: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb -keypool=200; then
+    if ! start_ready "$dir" -keypool=200; then
         check "keypool-$when: daemon start" "1"; return
     fi
     # No argument: TopUpKeyPool only appends, so every pool record it writes
     # has already had its key committed.  NewKeyPool would erase first.
     crash_during_rpc "keypool-$when" "$dir" "$point" 5 keypoolrefill
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "keypool-$when: restart after the crash" "1"; return
     fi
 
@@ -677,14 +569,14 @@ hybrid_case() {
 
     echo "== case hybrid-import-$when: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "hybrid-$when: daemon start" "1"; return
     fi
     # The optional rescan argument is a real bool, but this RPC does not
     # convert string parameters; leave it out and accept the default rescan.
     crash_during_rpc "hybrid-$when" "$dir" "$point" 0 \
         importhybridkey "$HYB_IMPORT_WIF" "$HYB_IMPORT_DER" "crash-hybrid"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "hybrid-$when: restart after the crash" "1"; return
     fi
 
@@ -750,7 +642,7 @@ rewrite_case() {
 
     echo "== case rewrite-$name: kill at $point =="
     prepare_lmdb_case "$dir"
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "rewrite-$name: daemon start" "1"; return
     fi
     crash_during_rpc "rewrite-$name" "$dir" "$point" 0 \
@@ -783,7 +675,7 @@ rewrite_case() {
         ;;
     esac
 
-    if ! start_ready "$dir" -walletbackend=lmdb; then
+    if ! start_ready "$dir"; then
         check "rewrite-$name: restart after the crash" "1"; return
     fi
     if [ "$name" = "after-old-rename" ]; then

@@ -196,7 +196,7 @@ assert w["opened_cleanly"] is True, w
 }
 
 echo "== step 1: create an LMDB wallet with a known address =="
-start_node -walletbackend=lmdb || {
+start_node || {
     echo "FAILED: could not start the LMDB daemon"; exit 1;
 }
 
@@ -335,7 +335,7 @@ mv "$DATADIR/wallet" "$DATADIR/wallet.good"
 cp -a "$DATADIR/wallet.good" "$DATADIR/wallet"
 truncate -s 4096 "$DATADIR/wallet/data.mdb"
 REFUSE_LOG="$DATADIR/incomplete-start.log"
-timeout 30 "$BIN" -datadir="$DATADIR" -walletbackend=lmdb \
+timeout 30 "$BIN" -datadir="$DATADIR" \
     >"$REFUSE_LOG" 2>&1
 check "startup with a truncated wallet fails" \
     "$([ $? -ne 0 ]; echo $?)"
@@ -346,7 +346,7 @@ check "failed startup did not rewrite the marker" \
 
 rm -rf "$DATADIR/wallet"
 mv "$DATADIR/wallet.good" "$DATADIR/wallet"
-start_node -walletbackend=lmdb || {
+start_node || {
     echo "FAILED: the restored live wallet did not start"; exit 1;
 }
 key_roundtrip "$ADDR" "$WIF" "live wallet after failed start recovery"
@@ -356,7 +356,7 @@ stop_node || { echo "FAILED: daemon did not stop"; exit 1; }
 echo "== step 7: restore the point-in-time backup =="
 mv "$DATADIR/wallet" "$DATADIR/wallet.live"
 cp -a "$BACKUP" "$DATADIR/wallet"
-start_node -walletbackend=lmdb || {
+start_node || {
     echo "FAILED: restored wallet did not start"; exit 1;
 }
 
@@ -377,7 +377,7 @@ check "restored wallet accepts a new address" \
     "$([ -n "$NEW_ADDR" ] && [ -n "$NEW_WIF" ]; echo $?)"
 stop_node || { echo "FAILED: restored daemon did not stop"; exit 1; }
 
-start_node -walletbackend=lmdb || {
+start_node || {
     echo "FAILED: restored daemon did not restart"; exit 1;
 }
 key_roundtrip "$NEW_ADDR" "$NEW_WIF" "new address after restore restart"

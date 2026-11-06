@@ -4,7 +4,8 @@
 #
 # Exercises the real operator workflow:
 #
-#   BDB daemon creates wallet.dat and blkindex.dat
+#   LMDB daemon creates a sample wallet and chain index
+#       -> phoenix-db-fixture rewrites them into legacy wallet.dat/blkindex.dat
 #       -> phoenix-db-migrate copies them into wallet/ and blkindex/
 #       -> markers are written only after verified installs
 #       -> the LMDB daemon loads the migrated wallet and chain index
@@ -15,7 +16,8 @@
 # targets, corrupt sources, and interruption at each install step.
 #
 # Usage:
-#   src/test/regression_db_migrate.sh [path-to-phoenixcoind] [path-to-phoenix-db-migrate]
+#   src/test/regression_db_migrate.sh [path-to-phoenixcoind] \
+#       [path-to-phoenix-db-migrate] [path-to-phoenix-db-fixture]
 #
 # The RPC port is chosen from the ephemeral range and can be pinned with
 # PXC_REGTEST_PORT for debugging or constrained environments.
@@ -25,6 +27,7 @@ set -u
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BIN="${1:-$ROOT/src/phoenixcoind}"
 MIGRATE="${2:-$ROOT/src/phoenix-db-migrate}"
+FIXTURE="${3:-$ROOT/src/phoenix-db-fixture}"
 
 DATADIR="$(mktemp -d "/tmp/db-migrate.XXXXXX")"
 ENCDIR="$(mktemp -d "/tmp/db-migrate-enc.XXXXXX")"
@@ -160,6 +163,28 @@ run_migrate() {
     "$MIGRATE" --datadir="$dir" "$@" > "$dir/migrate.log" 2>&1
 }
 
+# Rewrite one LMDB environment from the daemon-created fixture into the
+# legacy Berkeley DB layout, then remove the LMDB copy so the converter sees
+# exactly the on-disk shape of a pre-LMDB data directory.
+make_bdb_fixture() {
+    local dir="$1"
+    local env="$2"
+    local target="$3"
+    local dump="$dir/$env.mdbdump"
+    if ! mdb_dump -s main "$dir/$env" > "$dump" 2>/dev/null; then
+        echo "  ERROR: mdb_dump failed for $dir/$env"
+        return 1
+    fi
+    if ! "$FIXTURE" "$dump" "$target" main; then
+        echo "  ERROR: phoenix-db-fixture failed for $target"
+        return 1
+    fi
+    rm -f "$dump"
+    rm -rf "$dir/$env"
+    rm -f "$dir/$env.backend"
+    return 0
+}
+
 sha_of() { sha256sum "$1" | cut -d' ' -f1; }
 
 marker_is() { [ "$(cat "$1" 2>/dev/null)" = "$2" ]; }
@@ -172,10 +197,18 @@ if [ ! -x "$MIGRATE" ]; then
     echo "ERROR: phoenix-db-migrate not found at $MIGRATE" >&2
     exit 1
 fi
+if [ ! -x "$FIXTURE" ]; then
+    echo "ERROR: phoenix-db-fixture not found at $FIXTURE" >&2
+    exit 1
+fi
+if ! command -v mdb_dump >/dev/null 2>&1; then
+    echo "ERROR: mdb_dump is required to build the legacy fixtures" >&2
+    exit 1
+fi
 
-echo "== step 1: populate real Berkeley DB databases =="
-start_at "$DATADIR" "$PORT" -walletbackend=bdb -dbbackend=bdb \
-    || { echo "FAILED: could not start the BDB daemon"; exit 1; }
+echo "== step 1: create the legacy Berkeley DB fixture =="
+start_at "$DATADIR" "$PORT" \
+    || { echo "FAILED: could not start the LMDB daemon"; exit 1; }
 
 ADDR=$(rpc getnewaddress alice 2>/dev/null)
 WIF=$(rpc dumpprivkey "$ADDR" 2>/dev/null)
@@ -189,12 +222,17 @@ rpc keypoolrefill 200 >/dev/null 2>&1
 check "generated a legacy address" "$([ -n "$ADDR" ] && [ -n "$WIF" ]; echo $?)"
 check "generated a hybrid address" "$([ -n "$HYB" ] && [ -n "$HYB_KEY" ]; echo $?)"
 check "stored a redeem script" "$([ -n "$MULTI" ]; echo $?)"
-check "BDB layout before migration" \
-    "$([ -f "$DATADIR/wallet.dat" ] && [ -f "$DATADIR/blkindex.dat" ]; echo $?)"
 
 KEYPOOL_BEFORE=$(rpc getinfo 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["keypoolsize"])' 2>/dev/null)
 
-stop_at "$DATADIR" "$PORT" || { echo "FAILED: BDB daemon did not stop"; exit 1; }
+stop_at "$DATADIR" "$PORT" || { echo "FAILED: fixture daemon did not stop"; exit 1; }
+
+make_bdb_fixture "$DATADIR" wallet "$DATADIR/wallet.dat" \
+    || { echo "FAILED: could not build the wallet fixture"; exit 1; }
+make_bdb_fixture "$DATADIR" blkindex "$DATADIR/blkindex.dat" \
+    || { echo "FAILED: could not build the chain fixture"; exit 1; }
+check "legacy layout before migration" \
+    "$([ -f "$DATADIR/wallet.dat" ] && [ -f "$DATADIR/blkindex.dat" ] && [ ! -e "$DATADIR/wallet" ] && [ ! -e "$DATADIR/blkindex" ]; echo $?)"
 
 BDB_WALLET_SUM=$(sha_of "$DATADIR/wallet.dat")
 BDB_CHAIN_SUM=$(sha_of "$DATADIR/blkindex.dat")
@@ -289,12 +327,14 @@ check "second run left the BDB chain unchanged" \
     "$([ "$(sha_of "$DATADIR/blkindex.dat")" = "$BDB_CHAIN_SUM" ]; echo $?)"
 
 echo "== step 6: encrypted wallet conversion =="
-start_at "$ENCDIR" "$ENC_PORT" -walletbackend=bdb -dbbackend=bdb \
-    || { echo "FAILED: could not start the encrypted BDB daemon"; exit 1; }
+start_at "$ENCDIR" "$ENC_PORT" \
+    || { echo "FAILED: could not start the encrypted fixture daemon"; exit 1; }
 ENC_ADDR=$(rpc_dir "$ENCDIR" "$ENC_PORT" getnewaddress enc 2>/dev/null)
 rpc_dir "$ENCDIR" "$ENC_PORT" encryptwallet 'correct horse battery staple' >/dev/null 2>&1
 sleep 2
 stop_at "$ENCDIR" "$ENC_PORT"
+make_bdb_fixture "$ENCDIR" wallet "$ENCDIR/wallet.dat" \
+    || { echo "FAILED: could not build the encrypted wallet fixture"; exit 1; }
 run_migrate "$ENCDIR" --wallet
 check "encrypted wallet converted" "$([ $? = 0 ]; echo $?)"
 check "encrypted wallet marker says lmdb" "$(marker_is "$ENCDIR/wallet.backend" lmdb; echo $?)"

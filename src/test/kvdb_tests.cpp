@@ -19,7 +19,6 @@
 #endif
 
 #include "allocators.h"
-#include "bdb_kv.h"
 #include "db.h"
 #include "lmdb_kv.h"
 #include "main.h"
@@ -54,34 +53,6 @@ static std::filesystem::path MakeTempDir(const std::string &tag)
     BOOST_REQUIRE_MESSAGE(!ec, "could not create temp directory " << dir << ": " << ec.message());
     return dir;
 }
-
-/** Temporarily removes or overrides one command-line argument. */
-class ArgOverride
-{
-public:
-    explicit ArgOverride(const std::string &name) : name(name),
-        fHadValue(mapArgs.count(name) != 0)
-    {
-        if (fHadValue)
-            strValue = mapArgs[name];
-        mapArgs.erase(name);
-    }
-
-    ~ArgOverride()
-    {
-        if (fHadValue)
-            mapArgs[name] = strValue;
-        else
-            mapArgs.erase(name);
-    }
-
-    void Set(const std::string &value) { mapArgs[name] = value; }
-
-private:
-    std::string name;
-    std::string strValue;
-    bool fHadValue;
-};
 
 template <typename DBType>
 struct DBGuard
@@ -777,10 +748,12 @@ void RunNoSyncCrashConsistency(const std::string &tag)
 
 void RunChainIndexStartupAction(const std::string & /*tag*/)
 {
-    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, false), CHAIN_INDEX_USE_EXISTING);
-    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, false), CHAIN_INDEX_USE_EXISTING);
-    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, true), CHAIN_INDEX_MIGRATE_BDB);
-    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, true), CHAIN_INDEX_FAIL_MISSING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, false, false), CHAIN_INDEX_USE_EXISTING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, false, false), CHAIN_INDEX_USE_EXISTING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, true, false), CHAIN_INDEX_INIT_NEW);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(false, true, true), CHAIN_INDEX_REQUIRES_MIGRATION);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, true, false), CHAIN_INDEX_FAIL_MISSING);
+    BOOST_CHECK_EQUAL(GetChainIndexStartupAction(true, true, true), CHAIN_INDEX_FAIL_MISSING);
 }
 
 void RunLMDBMapSizeParsing(const std::string & /*tag*/)
@@ -813,42 +786,6 @@ void RunLMDBMapSizeParsing(const std::string & /*tag*/)
         BOOST_REQUIRE(ParseLMDBMapSize("4096", nBytes, strError));
 }
 
-void RunLMDBWalletMigrationMapSize(const std::string & /*tag*/)
-{
-    const size_t nMiB = 1024ULL * 1024ULL;
-    const size_t nMaxBytes =
-        static_cast<size_t>(GetLMDBMaxMapSizeMiB()) * nMiB;
-    const size_t nConfigured = 512ULL * nMiB;
-
-    // A small source fits in the configured map, so nothing changes.
-    BOOST_CHECK_EQUAL(
-        GetLMDBWalletMapSizeForMigration(nConfigured, 128ULL * nMiB),
-        nConfigured);
-
-    // A wallet larger than the configured map gets room for the copy.  This
-    // is the size that failed with MDB_MAP_FULL before migration pre-sizing.
-    const uintmax_t nHeavyWallet = 1186258944ULL;
-    const size_t nSized =
-        GetLMDBWalletMapSizeForMigration(nConfigured, nHeavyWallet);
-    BOOST_CHECK_GT(nSized, nConfigured);
-    BOOST_CHECK_GT(nSized, nHeavyWallet);
-    BOOST_CHECK_LE(nSized, nMaxBytes);
-    const size_t nPageSize = GetSystemPageSize();
-    if (nPageSize > 0)
-        BOOST_CHECK_EQUAL(nSized % nPageSize, 0);
-
-    // An explicit map that is already large enough is never reduced.
-    BOOST_CHECK_EQUAL(
-        GetLMDBWalletMapSizeForMigration(nMaxBytes, 128ULL * nMiB),
-        nMaxBytes);
-
-    // The result is capped at the platform's LMDB address-space limit, even
-    // for a source that cannot possibly fit.
-    BOOST_CHECK_EQUAL(
-        GetLMDBWalletMapSizeForMigration(0, (std::numeric_limits<uintmax_t>::max)()),
-        nMaxBytes);
-}
-
 void RunBlockIndexRollback(const std::string & /*tag*/)
 {
     const uint256 hash("0x00000000000000000000000000000000000000000000000000000000deadbeef");
@@ -879,18 +816,15 @@ void RunChainBackendMarker(const std::string &tag)
 
     BOOST_CHECK(!ReadChainBackendMarker(dir, marker));
     BOOST_CHECK(!HasLMDBChainIndex(dir));
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir));
 
     BOOST_REQUIRE(WriteChainBackendMarker(dir, "bdb"));
     BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "bdb");
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
 
-    // A bdb marker is authoritative too: even a leftover blkindex/ directory
-    // must not let an LMDB start adopt the data directory without an explicit
-    // migration.
-    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    // A bdb marker is authoritative and now always requires offline
+    // migration, even when a leftover blkindex/ directory exists.
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir));
     {
         CLMDBDatabase stale;
         BOOST_REQUIRE(stale.Open((dir / "blkindex").string()));
@@ -898,20 +832,17 @@ void RunChainBackendMarker(const std::string &tag)
         stale.Close();
     }
     BOOST_CHECK(HasLMDBChainIndex(dir));
-    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir));
 
-    // Switching to LMDB must block a later BDB start.
+    // An LMDB marker is the only accepted state.
     BOOST_REQUIRE(WriteChainBackendMarker(dir, "lmdb"));
     BOOST_REQUIRE(ReadChainBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "lmdb");
-    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(dir));
 
     // Unknown markers are rejected instead of guessing.
     BOOST_REQUIRE(WriteChainBackendMarker(dir, "sqlite"));
-    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(!CheckChainBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(dir));
 
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
@@ -927,17 +858,14 @@ void RunChainBackendMarker(const std::string &tag)
         stale.Close();
     }
     BOOST_CHECK(HasLMDBChainIndex(legacy));
-    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckChainBackendCompatibility(legacy));
 
     // A truncated placeholder is an incomplete environment, not an index.
-    // Fail closed so a BDB start cannot silently use a stale
-    // blkindex.dat while the user believes the LMDB index is present.
+    // Fail closed so a stale blkindex.dat cannot be used by accident.
     std::filesystem::resize_file(legacy / "blkindex" / "data.mdb", 0, ec);
     BOOST_REQUIRE(!ec);
     BOOST_CHECK(!HasLMDBChainIndex(legacy));
-    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_BDB));
-    BOOST_CHECK(!CheckChainBackendCompatibility(legacy, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckChainBackendCompatibility(legacy));
 
     std::filesystem::remove_all(legacy, ec);
 }
@@ -1001,18 +929,16 @@ void RunWalletBackendMarker(const std::string &tag)
 
     BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
     BOOST_CHECK(!HasLMDBWallet(dir));
-    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir));
 
     BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
     BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "bdb");
-    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
 
-    // A bdb marker is authoritative too: even a leftover wallet/ directory
-    // must not let an LMDB start adopt the data directory without an explicit
+    // A bdb marker is authoritative: even a leftover wallet/ directory must
+    // not let an LMDB start adopt the data directory without an explicit
     // migration.
-    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir));
     {
         CLMDBDatabase stale;
         BOOST_REQUIRE(stale.Open((dir / "wallet").string()));
@@ -1020,19 +946,17 @@ void RunWalletBackendMarker(const std::string &tag)
         stale.Close();
     }
     BOOST_CHECK(HasLMDBWallet(dir));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir));
 
-    // Switching to LMDB must block a later BDB start.
+    // An LMDB marker is the only accepted state.
     BOOST_REQUIRE(WriteWalletBackendMarker(dir, "lmdb"));
     BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
     BOOST_CHECK_EQUAL(marker, "lmdb");
-    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(dir));
 
     // Unknown markers are rejected instead of guessing.
     BOOST_REQUIRE(WriteWalletBackendMarker(dir, "sqlite"));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_BDB));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(dir));
 
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
@@ -1048,17 +972,14 @@ void RunWalletBackendMarker(const std::string &tag)
         stale.Close();
     }
     BOOST_CHECK(HasLMDBWallet(legacy));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
-    BOOST_CHECK(CheckWalletBackendCompatibility(legacy, DB_BACKEND_LMDB));
+    BOOST_CHECK(CheckWalletBackendCompatibility(legacy));
 
-    // An empty or truncated placeholder is an incomplete environment and is
-    // rejected for both backends instead of silently falling back to
-    // wallet.dat.
+    // An empty or truncated placeholder is an incomplete environment, not an
+    // invitation to fall back to wallet.dat.
     std::filesystem::resize_file(legacy / "wallet" / "data.mdb", 0, ec);
     BOOST_REQUIRE(!ec);
     BOOST_CHECK(!HasLMDBWallet(legacy));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_BDB));
-    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy, DB_BACKEND_LMDB));
+    BOOST_CHECK(!CheckWalletBackendCompatibility(legacy));
 
     std::filesystem::remove_all(legacy, ec);
 }
@@ -1074,7 +995,7 @@ void RunWalletStartupAction(const std::string & /*tag*/)
     // No marker and an empty LMDB wallet: migrate wallet.dat when present,
     // otherwise create a new wallet.
     BOOST_CHECK(GetWalletStartupAction(false, true, false) == WALLET_INIT_NEW);
-    BOOST_CHECK(GetWalletStartupAction(false, true, true) == WALLET_MIGRATE_BDB);
+    BOOST_CHECK(GetWalletStartupAction(false, true, true) == WALLET_REQUIRES_MIGRATION);
 
     // A marker saying LMDB is authoritative makes an empty wallet data loss,
     // even when a stale wallet.dat is still lying around.
@@ -1507,12 +1428,11 @@ void RunWalletLMDBDiagnostics(const std::string &tag)
     diag = GetDBDiagnostics(dir, dir);
     BOOST_CHECK_GT(diag.wallet.db.nEntries, nBefore);
 
-    // A BDB chain backend is reported without LMDB environment counters.
-    if (!IsLMDBChainEnabled()) {
-        BOOST_CHECK_EQUAL(diag.chain.strActiveBackend, "bdb");
-        BOOST_CHECK(!diag.chain.fLMDBEnabled);
-        BOOST_CHECK(diag.chain.fOpenedCleanly);
-        BOOST_CHECK_EQUAL(diag.chain.env.nMapSize, 0U);
+    // The chain role is LMDB-only once the fixture has opened it.
+    if (IsLMDBChainEnabled())
+    {
+        BOOST_CHECK_EQUAL(diag.chain.strActiveBackend, "lmdb");
+        BOOST_CHECK(diag.chain.fLMDBEnabled);
     }
 
     // Closing the environment must show up as a problem instead of
@@ -1544,91 +1464,10 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
     }
 }
 
-// Regression: an existing wallet.dat is copied into an empty LMDB wallet
-// before wallet.backend is written.  The test uses the mocked Berkeley DB
-// environment for the source records and a temporary directory for the LMDB
-// side, so it never touches the configured data directory.
-void RunWalletLMDBMigration(const std::string &tag)
-{
-    const std::filesystem::path dir = MakeTempDir(tag);
-    struct Guard {
-        std::filesystem::path dir;
-        ~Guard() {
-            CloseLMDBWalletDB();
-            std::error_code ec;
-            std::filesystem::remove_all(dir, ec);
-        }
-    } guard{dir};
-
-    CloseLMDBWalletDB();
-    BOOST_REQUIRE(!IsLMDBWalletEnabled());
-
-    {
-        // Records in the Berkeley DB wallet that startup must carry over.
-        WalletDBTestAccess db("wallet.dat", "cr+");
-        BOOST_REQUIRE(db.Write(std::string("migration-probe"),
-                               std::string("value")));
-    }
-    {
-        // InitLMDBWalletDB() only migrates when wallet.dat exists on disk.
-        std::ofstream wallet(dir / "wallet.dat", std::ios::trunc);
-        BOOST_REQUIRE(wallet.good());
-        wallet << "berkeley db wallet";
-    }
-
-    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
-    BOOST_CHECK(IsLMDBWalletEnabled());
-
-    std::string marker;
-    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
-    BOOST_CHECK_EQUAL(marker, "lmdb");
-    BOOST_CHECK(HasLMDBWallet(dir));
-
-    // The Berkeley DB file is the migration source and must survive untouched.
-    BOOST_CHECK(std::filesystem::exists(dir / "wallet.dat"));
-
-    {
-        WalletDBTestAccess db("wallet.dat", "r");
-        std::string value;
-        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
-        BOOST_CHECK_EQUAL(value, "value");
-    }
-
-    // A restart must use the populated LMDB wallet, not migrate again.
-    CloseLMDBWalletDB();
-    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
-    BOOST_CHECK(IsLMDBWalletEnabled());
-    {
-        WalletDBTestAccess db("wallet.dat", "r");
-        std::string value;
-        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
-        BOOST_CHECK_EQUAL(value, "value");
-    }
-
-    // A crash after the transaction commits but before the marker is written
-    // must adopt the populated LMDB wallet, not re-import stale wallet.dat.
-    CloseLMDBWalletDB();
-    {
-        std::error_code ec;
-        BOOST_REQUIRE(std::filesystem::remove(dir / "wallet.backend", ec));
-        BOOST_REQUIRE(!ec);
-    }
-    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
-    BOOST_CHECK(IsLMDBWalletEnabled());
-    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
-    BOOST_CHECK_EQUAL(marker, "lmdb");
-    {
-        WalletDBTestAccess db("wallet.dat", "r");
-        std::string value;
-        BOOST_REQUIRE(db.Read(std::string("migration-probe"), value));
-        BOOST_CHECK_EQUAL(value, "value");
-    }
-}
-
-// Regression: wallet.backend is authoritative in both directions.  A bdb
-// marker must refuse -walletbackend=lmdb even when a leftover wallet/
-// contains a real LMDB environment, otherwise a stale environment could be
-// adopted and the marker silently rewritten to lmdb.
+// Regression: wallet.backend is authoritative.  A bdb marker must refuse
+// startup even when a leftover wallet/ contains a real LMDB environment,
+// otherwise a stale environment could be adopted and the marker silently
+// rewritten to lmdb.
 void RunWalletBDBMarkerAuthority(const std::string &tag)
 {
     struct Guard {
@@ -1641,7 +1480,7 @@ void RunWalletBDBMarkerAuthority(const std::string &tag)
         BOOST_REQUIRE(WriteWalletBackendMarker(dir, "bdb"));
         BOOST_REQUIRE(std::filesystem::create_directories(dir / "wallet"));
 
-        BOOST_CHECK(!CheckWalletBackendCompatibility(dir, DB_BACKEND_LMDB));
+        BOOST_CHECK(!CheckWalletBackendCompatibility(dir));
         BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
         BOOST_CHECK(!IsLMDBWalletEnabled());
 
@@ -2168,19 +2007,9 @@ void RunWalletLMDBBackup(const std::string &tag)
 
 } // namespace
 
-BOOST_AUTO_TEST_CASE(bdb_kvdb_basic_crud)
-{
-    RunBasicCrud<CBDBDatabase>("bdb_basic");
-}
-
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_basic_crud)
 {
     RunBasicCrud<CLMDBDatabase>("lmdb_basic");
-}
-
-BOOST_AUTO_TEST_CASE(bdb_kvdb_transactions)
-{
-    RunTransactions<CBDBDatabase>("bdb_transactions");
 }
 
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_transactions)
@@ -2188,29 +2017,14 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_transactions)
     RunTransactions<CLMDBDatabase>("lmdb_transactions");
 }
 
-BOOST_AUTO_TEST_CASE(bdb_kvdb_iteration)
-{
-    RunIteration<CBDBDatabase>("bdb_iteration");
-}
-
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_iteration)
 {
     RunIteration<CLMDBDatabase>("lmdb_iteration");
 }
 
-BOOST_AUTO_TEST_CASE(bdb_kvdb_persistence)
-{
-    RunPersistence<CBDBDatabase>("bdb_persistence");
-}
-
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_persistence)
 {
     RunPersistence<CLMDBDatabase>("lmdb_persistence");
-}
-
-BOOST_AUTO_TEST_CASE(bdb_kvdb_repeated_read_transactions)
-{
-    RunRepeatedReadTransactions<CBDBDatabase>("bdb_reads");
 }
 
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_repeated_read_transactions)
@@ -2236,11 +2050,6 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_readers)
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_concurrent_writers)
 {
     RunConcurrentWriters("lmdb_concurrent_writers");
-}
-
-BOOST_AUTO_TEST_CASE(bdb_kvdb_prefix_iteration)
-{
-    RunPrefixIteration<CBDBDatabase>("bdb_prefix");
 }
 
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_prefix_iteration)
@@ -2303,11 +2112,6 @@ BOOST_AUTO_TEST_CASE(lmdb_mapsize_resolution)
     RunLMDBMapSizeResolution("lmdb_mapsize_resolution");
 }
 
-BOOST_AUTO_TEST_CASE(lmdb_wallet_migration_mapsize)
-{
-    RunLMDBWalletMigrationMapSize("lmdb_wallet_migration_mapsize");
-}
-
 BOOST_AUTO_TEST_CASE(chain_index_startup_action)
 {
     RunChainIndexStartupAction("chain_index_startup_action");
@@ -2330,28 +2134,6 @@ BOOST_AUTO_TEST_CASE(chain_backend_marker)
     RunChainBackendMarker("chain_backend_marker");
 }
 
-BOOST_AUTO_TEST_CASE(chain_backend_default_lmdb)
-{
-    ArgOverride backend("-dbbackend");
-
-    // No explicit switch: production selects LMDB.
-    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_LMDB);
-
-    // Explicit Berkeley DB remains available for compatibility and recovery.
-    backend.Set("bdb");
-    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_BDB);
-    backend.Set("BDB");
-    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_BDB);
-
-    backend.Set("lmdb");
-    BOOST_CHECK_EQUAL(GetConfiguredDBBackend(), DB_BACKEND_LMDB);
-}
-
-BOOST_AUTO_TEST_CASE(bdb_kvdb_large_value_iteration)
-{
-    RunLargeValueIteration<CBDBDatabase>("bdb_large_values");
-}
-
 BOOST_AUTO_TEST_CASE(lmdb_kvdb_large_value_iteration)
 {
     RunLargeValueIteration<CLMDBDatabase>("lmdb_large_values");
@@ -2360,36 +2142,6 @@ BOOST_AUTO_TEST_CASE(lmdb_kvdb_large_value_iteration)
 BOOST_AUTO_TEST_CASE(wallet_backend_marker)
 {
     RunWalletBackendMarker("wallet_backend_marker");
-}
-
-BOOST_AUTO_TEST_CASE(wallet_backend_default_lmdb)
-{
-    ArgOverride backend("-walletbackend");
-
-    // No explicit switch: production selects LMDB.
-    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_LMDB);
-
-    // Explicit Berkeley DB remains available for compatibility and recovery.
-    backend.Set("bdb");
-    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_BDB);
-    backend.Set("BDB");
-    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_BDB);
-
-    backend.Set("lmdb");
-    BOOST_CHECK_EQUAL(GetConfiguredWalletBackend(), DB_BACKEND_LMDB);
-}
-
-BOOST_AUTO_TEST_CASE(wallet_startup_check_lmdb)
-{
-    const std::filesystem::path dir = MakeTempDir("wallet_startup_check_lmdb");
-    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
-    struct Guard {
-        ~Guard() { CloseLMDBWalletDB(); }
-    } guard;
-
-    // The LMDB wallet is validated when its environment opens, so the legacy
-    // wallet.dat salvage/verify pass must not run.
-    BOOST_CHECK(CheckWalletDatabaseAtStartup() == WalletStartupCheckResult::Ok);
 }
 
 BOOST_AUTO_TEST_CASE(wallet_startup_action)
@@ -2410,11 +2162,6 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_backup)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
 {
     RunWalletLMDBStartupRefusal("wallet_lmdb_startup_refusal");
-}
-
-BOOST_AUTO_TEST_CASE(wallet_lmdb_migration)
-{
-    RunWalletLMDBMigration("wallet_lmdb_migration");
 }
 
 BOOST_AUTO_TEST_CASE(wallet_lmdb_rewrite_rename_old_failure)

@@ -22,7 +22,7 @@
 #
 # Real blocks 1-4 are used because block 1 is a hardened checkpoint and their
 # raw bytes need no mining or network access.  See
-# regression_lmdb_chain_migration.sh for the same fixture.
+# regression_mainnet_fragment.sh for the same fixture.
 #
 # Usage: src/test/regression_lmdb_import_batch.sh [path-to-phoenixcoind]
 #
@@ -199,7 +199,7 @@ make_block_file "$CLEAN_BLOCKS" \
 }
 
 echo "== step 1: import four blocks in one batch =="
-PHOENIX_TEST_NOTIFY_BATCH=1 start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+PHOENIX_TEST_NOTIFY_BATCH=1 start_node "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not start the importing daemon"; exit 1;
 }
 
@@ -222,7 +222,7 @@ stop_node || { echo "FAILED: clean-import daemon did not shut down"; exit 1; }
 
 echo "== step 2: re-import the same file without stopping at duplicates =="
 : > "$DATADIR/debug.log"
-start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+start_node "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not restart the daemon"; exit 1;
 }
 check_height_and_tip 4 "${BLOCK_HASH[4]}" "duplicate import"
@@ -249,7 +249,7 @@ make_block_file "$BAD_BLOCKS" \
     exit 1
 }
 
-PHOENIX_TEST_NOTIFY_BATCH=1 start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$BAD_BLOCKS" || {
+PHOENIX_TEST_NOTIFY_BATCH=1 start_node "-loadblock=$BAD_BLOCKS" || {
     echo "FAILED: could not start the rollback daemon"; exit 1;
 }
 check "the rejected block stopped the import" \
@@ -267,7 +267,7 @@ check "block 2 is absent from the rolled-back index" \
 stop_node || { echo "FAILED: rollback daemon did not shut down"; exit 1; }
 
 echo "== step 4: a clean re-import reaches the correct tip =="
-start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+start_node "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not start the recovery daemon"; exit 1;
 }
 check "the recovery import committed one four-block batch" \
@@ -285,7 +285,7 @@ rm -rf "$DATADIR"
 DATADIR="$(mktemp -d "/tmp/lmdb-import-batch.XXXXXX")"
 
 PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT=1 start_node \
-    -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+    "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not start the commit-failure daemon"; exit 1;
 }
 check "the failed commit stopped the import" \
@@ -302,7 +302,7 @@ stop_node || { echo "FAILED: commit-failure daemon did not shut down"; exit 1; }
 
 echo "== step 6: the failed batch left nothing behind after a restart =="
 : > "$DATADIR/debug.log"
-start_node -dbbackend=lmdb -walletbackend=bdb || {
+start_node || {
     echo "FAILED: could not restart after the failed commit"; exit 1;
 }
 check_height_and_tip 0 "$GENESIS_HASH" "after failed-commit restart"
@@ -314,7 +314,7 @@ check "block 2 is absent after the failed-commit restart" \
 stop_node || { echo "FAILED: restart daemon did not shut down"; exit 1; }
 
 echo "== step 7: a clean import succeeds after a failed commit =="
-start_node -dbbackend=lmdb -walletbackend=bdb "-loadblock=$CLEAN_BLOCKS" || {
+start_node "-loadblock=$CLEAN_BLOCKS" || {
     echo "FAILED: could not start the post-failure import daemon"; exit 1;
 }
 check "the post-failure import committed one four-block batch" \

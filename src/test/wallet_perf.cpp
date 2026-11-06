@@ -3,22 +3,19 @@
 // file LICENCE or http://opensource.org/license/mit
 
 // Reproducible wallet backend benchmark.  It is a separate binary because the
-// unit-test fixture deliberately uses an in-memory Berkeley DB environment;
+// unit-test fixture uses a throw-away data directory and smaller workloads;
 // timings and database sizes are only meaningful with the real on-disk
-// backends.
+// backend.
 //
 // Typical use:
 //
 //   src/wallet_perf seed /tmp/wallet-perf/seed
-//   cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/bdb
 //   cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/lmdb
-//   src/wallet_perf bdb /tmp/wallet-perf/bdb
 //   src/wallet_perf lmdb /tmp/wallet-perf/lmdb
 //
 // The seed phase writes a wallet with realistic record counts: transactions
 // with multiple inputs and outputs, legacy keys, keypool entries, redeem
-// scripts, watch-only scripts and address book labels.  The bdb and lmdb
-// phases run the identical operations so their numbers are comparable.
+// scripts, watch-only scripts and address book labels.
 
 #include <algorithm>
 #include <chrono>
@@ -214,7 +211,6 @@ std::vector<CKeyID> WalletKeyIDs(const CWallet &wallet)
 void SetBenchArgs()
 {
     mapArgs["-keypool"] = "100";
-    mapArgs["-privdb"] = "1";
 }
 
 int Seed(const std::filesystem::path &dir,
@@ -227,8 +223,8 @@ int Seed(const std::filesystem::path &dir,
 
     SetBenchArgs();
     std::filesystem::create_directories(dir);
-    if (!bitdb.Open(dir)) {
-        std::fprintf(stderr, "cannot open Berkeley DB environment in %s\n",
+    if (!InitLMDBWalletDBForTest(dir)) {
+        std::fprintf(stderr, "cannot open LMDB wallet in %s\n",
                      dir.string().c_str());
         return 1;
     }
@@ -294,12 +290,14 @@ int Seed(const std::filesystem::path &dir,
                     nTx, nKeys, nScripts, nKeyPool);
     }
 
-    bitdb.Flush(true);
-    bitdb.Close();
+    CloseLMDBWalletDB();
 
-    Emit("seed", "wallet_file_bytes", DirectorySize(dir / "wallet.dat"),
-         "bytes", "Berkeley DB wallet.dat");
-    Emit("seed", "wallet_dir_bytes", DirectorySize(dir), "bytes",
+    Emit("seed", "wallet_data_bytes",
+         DirectorySize(dir / "wallet" / "data.mdb"), "bytes",
+         "LMDB wallet data.mdb");
+    Emit("seed", "wallet_dir_bytes", DirectorySize(dir / "wallet"), "bytes",
+         "LMDB wallet directory");
+    Emit("seed", "data_dir_bytes", DirectorySize(dir), "bytes",
          "whole seed data directory");
     return 0;
 }
@@ -484,61 +482,6 @@ void RunOperations(const char *backend, CWallet &wallet, uint64_t salt,
     }
 }
 
-int RunBDB(const std::filesystem::path &dir,
-           const std::map<std::string, std::string> &opts)
-{
-    SetBenchArgs();
-    BenchmarkConfig cfg;
-    cfg.insertTx = GetOptUInt(opts, "insert-tx", cfg.insertTx);
-    cfg.insertKeys = GetOptUInt(opts, "insert-keys", cfg.insertKeys);
-    cfg.lookupOps = GetOptUInt(opts, "lookup-ops", cfg.lookupOps);
-    cfg.diskLookupOps =
-        GetOptUInt(opts, "disk-lookup-ops", cfg.diskLookupOps);
-    cfg.recordOps = GetOptUInt(opts, "record-ops", cfg.recordOps);
-    cfg.keypool = GetOptUInt(opts, "keypool", cfg.keypool);
-
-    const auto startupStart = Clock::now();
-    if (!bitdb.Open(dir)) {
-        std::fprintf(stderr, "cannot open Berkeley DB environment in %s\n",
-                     dir.string().c_str());
-        return 1;
-    }
-    const double envOpenMs = ElapsedMs(startupStart);
-
-    std::unique_ptr<CWallet> wallet(new CWallet("wallet.dat"));
-    bool fFirstRun = false;
-    const auto loadStart = Clock::now();
-    const DBErrors result = wallet->LoadWallet(fFirstRun);
-    const double loadMs = ElapsedMs(loadStart);
-    if (result != DB_LOAD_OK) {
-        std::fprintf(stderr, "wallet load returned %d\n", result);
-        return 1;
-    }
-    const double startupMs = ElapsedMs(startupStart);
-
-    Emit("bdb", "startup_env_open", envOpenMs, "ms",
-         "Berkeley DB environment open");
-    Emit("bdb", "startup_load_wallet", loadMs, "ms",
-         "CWallet::LoadWallet on the large wallet");
-    Emit("bdb", "wallet_startup_total", startupMs, "ms",
-         "environment open plus wallet load");
-
-    RunOperations("bdb", *wallet, 0x66666666ULL, cfg);
-
-    const auto shutdownStart = Clock::now();
-    wallet.reset();
-    bitdb.Flush(true);
-    bitdb.Close();
-    Emit("bdb", "wallet_shutdown_total", ElapsedMs(shutdownStart), "ms",
-         "wallet delete, flush and environment close");
-
-    Emit("bdb", "db_wallet_file_bytes", DirectorySize(dir / "wallet.dat"),
-         "bytes", "Berkeley DB wallet.dat");
-    Emit("bdb", "db_dir_bytes", DirectorySize(dir), "bytes",
-         "whole data directory after benchmark");
-    return 0;
-}
-
 int RunLMDB(const std::filesystem::path &dir,
             const std::map<std::string, std::string> &opts)
 {
@@ -552,37 +495,10 @@ int RunLMDB(const std::filesystem::path &dir,
     cfg.recordOps = GetOptUInt(opts, "record-ops", cfg.recordOps);
     cfg.keypool = GetOptUInt(opts, "keypool", cfg.keypool);
 
-    const auto migrationStart = Clock::now();
-    if (!bitdb.Open(dir)) {
-        std::fprintf(stderr, "cannot open Berkeley DB environment in %s\n",
-                     dir.string().c_str());
-        return 1;
-    }
-    const double migrationOpenMs = ElapsedMs(migrationStart);
-
-    const auto migrateStart = Clock::now();
-    if (!InitLMDBWalletDBForTest(dir)) {
-        std::fprintf(stderr, "LMDB wallet migration failed in %s\n",
-                     dir.string().c_str());
-        return 1;
-    }
-    const double migrateMs = ElapsedMs(migrateStart);
-    Emit("lmdb", "migration_env_open", migrationOpenMs, "ms",
-         "Berkeley DB source environment open");
-    Emit("lmdb", "wallet_migration_total", migrateMs, "ms",
-         "migrate wallet.dat into an LMDB environment");
-    Emit("lmdb", "migration_total_with_env_open",
-         ElapsedMs(migrationStart), "ms",
-         "source environment open plus migration");
-    Emit("lmdb", "db_after_migration_bytes", DirectorySize(dir / "wallet"),
-         "bytes", "LMDB wallet directory immediately after migration");
-
-    // Restart the LMDB wallet and measure the cold open/load path that a
-    // normal daemon start uses after migration.
-    CloseLMDBWalletDB();
+    // Measure the cold open/load path that a normal daemon start uses.
     const auto startupStart = Clock::now();
     if (!InitLMDBWalletDBForTest(dir)) {
-        std::fprintf(stderr, "LMDB wallet reopen failed in %s\n",
+        std::fprintf(stderr, "LMDB wallet open failed in %s\n",
                      dir.string().c_str());
         return 1;
     }
@@ -600,11 +516,11 @@ int RunLMDB(const std::filesystem::path &dir,
     const double startupMs = ElapsedMs(startupStart);
 
     Emit("lmdb", "startup_env_open", envOpenMs, "ms",
-         "LMDB environment reopen");
+         "LMDB environment open");
     Emit("lmdb", "startup_load_wallet", loadMs, "ms",
          "CWallet::LoadWallet on the large wallet");
     Emit("lmdb", "wallet_startup_total", startupMs, "ms",
-         "environment reopen plus wallet load");
+         "environment open plus wallet load");
 
     RunOperations("lmdb", *wallet, 0x77777777ULL, cfg);
 
@@ -613,8 +529,6 @@ int RunLMDB(const std::filesystem::path &dir,
     CloseLMDBWalletDB();
     Emit("lmdb", "wallet_shutdown_total", ElapsedMs(shutdownStart), "ms",
          "wallet delete and LMDB environment close");
-    bitdb.Flush(true);
-    bitdb.Close();
 
     Emit("lmdb", "db_wallet_data_bytes",
          DirectorySize(dir / "wallet" / "data.mdb"), "bytes",
@@ -631,11 +545,10 @@ void Usage(const char *program)
     std::fprintf(stderr,
                  "usage: %s seed <dir> [--tx=N] [--keys=N] [--scripts=N] "
                  "[--keypool=N]\n"
-                 "       %s bdb <dir> [--insert-tx=N] [--insert-keys=N] "
+                 "       %s lmdb <dir> [--insert-tx=N] [--insert-keys=N] "
                  "[--lookup-ops=N] [--disk-lookup-ops=N] [--record-ops=N] "
-                 "[--keypool=N]\n"
-                 "       %s lmdb <dir> [same options as bdb]\n",
-                 program, program, program);
+                 "[--keypool=N]\n",
+                 program, program);
 }
 
 } // namespace
@@ -668,8 +581,6 @@ int main(int argc, char *argv[])
     printf("backend,metric,value,unit,note\n");
     if (mode == "seed")
         return Seed(dir, opts);
-    if (mode == "bdb")
-        return RunBDB(dir, opts);
     if (mode == "lmdb")
         return RunLMDB(dir, opts);
 

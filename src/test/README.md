@@ -680,22 +680,23 @@ instead of reporting stale health.
 
 The RPC surface is `getdbinfo` (safe mode allowed and not wallet-locked),
 which returns a `chain` and `wallet` object with the same fields.  The
-`regression_lmdb_wallet_migration.sh` run asserts on a real daemon that the
-migrated wallet reports `active_backend == "lmdb"`, a matching marker,
-positive map/page counters, a nonzero entry count, `writer_active == false`,
-`read_only == false`, `nosync == false` and an empty `error`.  Field
-definitions and a sample result are in `doc/lmdb.md`, "Health diagnostics".
+`regression_lmdb_wallet_e2e.sh` and `regression_lmdb_wallet_backup.sh` runs
+assert on a real daemon that the wallet reports `active_backend == "lmdb"`, a
+matching marker, positive map/page counters, a nonzero entry count,
+`writer_active == false`, `read_only == false`, `nosync == false` and an empty
+`error`.  Field definitions and a sample result are in `doc/lmdb.md`, "Health
+diagnostics".
 
 ## Shell regression scripts
 
 In addition to the Boost unit suite, this directory contains shell
 regression scripts that drive full `phoenixcoind` daemons end to end.
-They exercise the hybrid private-key export/import flows and the
-Berkeley DB to LMDB wallet and chain-index workflows that need a real
-wallet and database: migration, verified backup/restore, offline
-`checklmdb`, `SIGKILL` crash safety at each durability boundary, the full
-wallet lifecycle and cross-backend parity. Each script takes an optional
-path to a `phoenixcoind` binary (defaults to the freshly built
+They exercise the hybrid private-key export/import flows and the LMDB
+wallet and chain-index workflows that need a real wallet and database:
+the standalone Berkeley DB to LMDB converter, verified backup/restore,
+offline `checklmdb`, `SIGKILL` crash safety at each durability boundary,
+the full wallet lifecycle and batched block import. Each script takes an
+optional path to a `phoenixcoind` binary (defaults to the freshly built
 `src/phoenixcoind`), prints a `PASS`/`FAIL` tally, and exits non-zero on
 any failure:
 
@@ -725,27 +726,19 @@ any failure:
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
 - `regression_db_migrate.sh` — the standalone `phoenix-db-migrate` converter.
-  It creates a real BDB wallet and chain index with a daemon, records their
-  hashes and `db_dump` counts, runs the converter, and requires both `lmdb`
-  markers, matching LMDB record counts, byte-identical BDB sources and a clean
-  staging directory. It then starts the LMDB daemon and checks addresses,
-  private keys, hybrid keys, account labels, redeem scripts, keypool size and
-  `getdbinfo`; a second run must report `already migrated` without changing
-  anything. It also covers an encrypted wallet, dry runs, ambiguous markers, a
-  missing target, a corrupt source, and interruption after N records, after the
-  LMDB commit and after the install rename. Set `PXC_REGTEST_PORT` to pin the
-  daemon RPC port.
-- `regression_lmdb_chain_migration.sh` — full Berkeley DB to LMDB chain
-  index handoff: a daemon started with `-dbbackend=bdb` accepts real mainnet
-  blocks 1-2, the next start with the LMDB default (or explicit
-  `-dbbackend=lmdb`) migrates every block-index and transaction record and
-  writes the `blkindex.backend` marker, the LMDB daemon connects blocks 3-4
-  through the normal `submitblock` path, and two further restarts preserve
-  the tip, height, block bytes and transaction lookups. Raw record counts
-  are compared with `db_dump` and `mdb_dump` when those tools are installed;
-  otherwise those particular checks are skipped. The RPC port is allocated
-  dynamically, so concurrent runs do not collide, and can be pinned with
-  `PXC_REGTEST_PORT`.
+  An LMDB daemon creates a sample wallet and chain index; `mdb_dump` and the
+  test-only `phoenix-db-fixture` helper rewrite them into legacy
+  `wallet.dat`/`blkindex.dat` files, so the converter is exercised against the
+  real on-disk shape of a pre-LMDB data directory without needing a
+  BDB-capable daemon. The test records the source hashes and record counts,
+  runs the converter, and requires both `lmdb` markers, matching LMDB record
+  counts, byte-identical BDB sources and a clean staging directory. It then
+  starts the LMDB daemon and checks addresses, private keys, hybrid keys,
+  account labels, redeem scripts, keypool size and `getdbinfo`; a second run
+  must report `already migrated` without changing anything. It also covers an
+  encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
+  source, and interruption after N records, after the LMDB commit and after
+  the install rename. Set `PXC_REGTEST_PORT` to pin the daemon RPC port.
 - `regression_lmdb_import_batch.sh` — `-loadblock` / `bootstrap.dat` bulk
   import on the LMDB chain index. A clean four-block file must commit as one
   batch and preserve the tip, block bytes and transaction lookups across a
@@ -763,12 +756,6 @@ any failure:
   the batch's final commit. The test then requires the in-memory tip and
   block index to return to genesis, the failed batch's entries to be absent
   after a restart, and a later clean import to reach the full four-block tip.
-- `regression_lmdb_wallet_migration.sh` — real Berkeley DB wallet to LMDB
-  handoff: `wallet.dat` stays byte-for-byte unchanged, every raw record is
-  copied, keys and labels survive, the migration runs once, an explicit BDB
-  start is refused while the marker says LMDB, `backupwallet` produces a
-  restorable environment, a failed migration leaves no marker so it can
-  be retried, and `getdbinfo` reports the migrated wallet as healthy.
 - `regression_lmdb_wallet_backup.sh` — the operational backup and restore
   workflow: an online `backupwallet` creates a compacted, verified copy with
   no `lock.mdb`; `-checklmdb`/`-checklmdbdeep` and the `checklmdb` RPC accept
@@ -780,46 +767,26 @@ any failure:
   the marker; and restoring the snapshot brings back the address and label
   while discarding a post-backup address-book entry.  It also restarts after
   the restore and signs with the restored and newly created keys.
-- `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on real
-  daemons: populate a BDB wallet with imported keys, labels, watch-only and
-  multisig scripts, signed messages, keypool entries and hybrid keys; send
-  real hybrid-signed transactions; encrypt, restart and unlock the wallet;
-  migrate to LMDB and verify every key, label, transaction, signature,
-  hybrid key and keypool path; then use the migrated wallet normally with
-  new keys, labels, signatures and another hybrid-signed transaction before
-  a final restart. The fixed chain fragment includes blocks 5 and 6, whose
-  coinbases pay embedded WIFs. The test starts its daemons with
+- `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on a real
+  daemon: create an LMDB wallet and populate it with imported keys, labels,
+  watch-only and multisig scripts, signed messages, keypool entries and
+  hybrid keys; send real hybrid-signed transactions; encrypt, restart and
+  unlock the wallet; verify every key, label, transaction, signature, hybrid
+  key and keypool path after a restart; then use the wallet normally with new
+  keys, labels, signatures and another hybrid-signed transaction before a
+  final restart. The fixed chain fragment includes blocks 5 and 6, whose
+  coinbases pay embedded WIFs. The test starts its daemon with
   `PHOENIX_TEST_COINBASE_MATURITY=0` so those coinbases are spendable
   without mining 101 blocks; the `LoadBlockIndex` override is test-only,
   accepts only values from 0 to `BASE_MATURITY`, and is inert unless set.
 - `regression_lmdb_wallet_crash.sh` — `SIGKILL` crash safety for the LMDB
-  wallet, mirroring the chain-index validations.  A test-only hook
-  (`TestWalletCrashPoint`, armed by `PHOENIX_TEST_CRASH_FILE`) kills the
-  daemon at every durable boundary: during migration, around the
-  `wallet.backend` marker, around every per-record write and wallet
-  transaction, and around the encryption rewrite.  Each case requires the
-  restarted wallet to be either the pre-operation state or the fully
-  committed state, a partial migration to be discarded and re-run, a
-  committed environment without a marker to be adopted deterministically,
-  and `wallet.dat` to stay byte-for-byte unchanged.  Set `PXC_ONLY=<regex>`
-  to filter cases and `PXC_KEEP_WORK=1` to keep the temporary datadirs while
-  debugging.
-- `regression_lmdb_wallet_parity.sh` — logical backend parity, not raw
-  record counts: it stops a populated BDB wallet at a known state, copies
-  the datadir twice, migrates exactly one copy to LMDB, and then runs the
-  two wallets as independent daemons on separate ports.  At each checkpoint
-  it canonicalizes the whole wallet view (`dumpwallet`, `dumphybridkeys`,
-  transaction history, accounts, received-by tallies, address groupings,
-  unspent outputs, hybrid address book, balances, selected
-  `gettransaction` results) and requires the two sides to match.  It
-  compares full key material before encryption and structural state after
-  it, performs equivalent deterministic operations on both sides,
-  cross-verifies signatures between the backends, checks that the shared
-  hybrid pool allocates identically, grows the legacy keypool, and
-  re-compares after a restart.  The only discarded fields are timestamps
-  plus, in structural mode, txids, addresses, scripts/public keys, output
-  positions, and ECDSA-DER-dependent size/fee ratios.  `PXC_KEEP_WORK=1`
-  keeps both snapshots and per-checkpoint diffs.
+  wallet.  A test-only hook (`TestWalletCrashPoint`, armed by
+  `PHOENIX_TEST_CRASH_FILE`) kills the daemon at every durable boundary:
+  around every per-record write and wallet transaction, and around the
+  encryption rewrite.  Each case requires the restarted wallet to be either
+  the pre-operation state or the fully committed state.  Set
+  `PXC_ONLY=<regex>` to filter cases and `PXC_KEEP_WORK=1` to keep the
+  temporary datadirs while debugging.
 
 Run a single script with:
 
@@ -834,7 +801,7 @@ For CI or nightly jobs, the LMDB backup/restore path has dedicated targets:
 cd src
 make -f Makefile.linux check-lmdb-backup   # focused unit tests + backup/restore script
 make -f Makefile.linux check-db-migrate    # standalone BDB-to-LMDB converter suite
-make -f Makefile.linux nightly-lmdb        # adds the wallet and chain migration regressions
+make -f Makefile.linux nightly-lmdb        # adds the wallet lifecycle, crash and import regressions
 ```
 
 `check-lmdb-backup` is the restore test that should run whenever the wallet,
