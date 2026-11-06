@@ -9,6 +9,13 @@ Berkeley DB `wallet.dat` remains available with `-walletbackend=bdb` for
 compatibility and recovery.  See [Wallet backend](#wallet-backend) below.
 Address storage (`peers.dat`) is unaffected.
 
+Existing Berkeley DB installations can be converted offline with the
+standalone `phoenix-db-migrate` utility before starting the LMDB daemon.  It
+verifies the source, copies the records transactionally, and writes the
+authority markers only after the LMDB environment is installed.  See
+[`db-migrate.md`](db-migrate.md) for the operator procedure, backup and disk
+space requirements, verification steps and failure recovery.
+
 ## Chain index backend
 
 1. Stop Phoenixcoin.

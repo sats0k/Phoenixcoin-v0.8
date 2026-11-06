@@ -12,6 +12,14 @@ Changes since v0.8.3.
 
 ### Added
 
+- A standalone `phoenix-db-migrate` utility converts legacy Berkeley DB
+  `wallet.dat` and `blkindex.dat` files into LMDB before the daemon starts. It
+  opens the sources read-only, verifies them with Berkeley DB, copies raw
+  records transactionally, reads every record back byte-for-byte, compares
+  record counts inside and after the commit, and writes the `lmdb` authority
+  markers only after the environment is installed. Interrupted runs are
+  restartable at every install boundary, and the original files are left
+  untouched. See `doc/db-migrate.md`.
 - A locked (encrypted) wallet keeps showing its hybrid holdings instead of
   hiding them.
   `listhybridaddresses` now walks the at-rest `mapHybridKeyDisk` records

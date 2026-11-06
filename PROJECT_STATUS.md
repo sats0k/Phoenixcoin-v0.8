@@ -53,6 +53,11 @@ Implemented components include:
 - LMDB as the default chain-index and wallet backend, with first-start
   migration from Berkeley DB, authoritative bidirectional backend markers,
   verified wallet-record migration and no implicit fallback
+- A standalone `phoenix-db-migrate` converter for offline Berkeley DB to LMDB
+  migration: read-only sources, Berkeley DB verification, transactional raw
+  record copy, byte-for-byte read-back, in-transaction and post-commit record
+  counts, marker-after-install, restartable interrupt handling and untouched
+  source files
 - Verified `backupwallet` (compacted copy with a full staged-record scan and
   entry-count comparison) plus offline `checklmdb` / `-checklmdb` structural
   verification and live `getdbinfo` health diagnostics

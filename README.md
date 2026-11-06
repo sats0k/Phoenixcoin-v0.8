@@ -381,6 +381,14 @@ reports live backend and map statistics, while `-checklmdb` /
 environment such as a backup. See [`doc/lmdb.md`](doc/lmdb.md) for migration,
 options, backup, recovery and health diagnostics.
 
+For an offline conversion of an existing Berkeley DB data directory, use the
+standalone `phoenix-db-migrate` utility. It reads `wallet.dat` and
+`blkindex.dat` read-only, verifies every copied record, installs the LMDB
+environments and writes the `lmdb` markers only after verification. The
+original BDB files are left untouched. See
+[`doc/db-migrate.md`](doc/db-migrate.md) for the backup, disk-space, downtime
+and verification procedure.
+
 ---
 
 # Legacy Transaction Compatibility

@@ -724,6 +724,17 @@ any failure:
   too-few-fields lines, unparseable timestamps, timestamps with trailing
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
+- `regression_db_migrate.sh` — the standalone `phoenix-db-migrate` converter.
+  It creates a real BDB wallet and chain index with a daemon, records their
+  hashes and `db_dump` counts, runs the converter, and requires both `lmdb`
+  markers, matching LMDB record counts, byte-identical BDB sources and a clean
+  staging directory. It then starts the LMDB daemon and checks addresses,
+  private keys, hybrid keys, account labels, redeem scripts, keypool size and
+  `getdbinfo`; a second run must report `already migrated` without changing
+  anything. It also covers an encrypted wallet, dry runs, ambiguous markers, a
+  missing target, a corrupt source, and interruption after N records, after the
+  LMDB commit and after the install rename. Set `PXC_REGTEST_PORT` to pin the
+  daemon RPC port.
 - `regression_lmdb_chain_migration.sh` — full Berkeley DB to LMDB chain
   index handoff: a daemon started with `-dbbackend=bdb` accepts real mainnet
   blocks 1-2, the next start with the LMDB default (or explicit
@@ -822,6 +833,7 @@ For CI or nightly jobs, the LMDB backup/restore path has dedicated targets:
 ```
 cd src
 make -f Makefile.linux check-lmdb-backup   # focused unit tests + backup/restore script
+make -f Makefile.linux check-db-migrate    # standalone BDB-to-LMDB converter suite
 make -f Makefile.linux nightly-lmdb        # adds the wallet and chain migration regressions
 ```
 
