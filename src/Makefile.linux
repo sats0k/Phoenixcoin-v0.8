@@ -247,15 +247,22 @@ test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 # backupwallet on a live node, offline verification, destination refusals,
 # rejection of copied/truncated environments, fail-closed startup, and a
 # point-in-time restore on a real daemon.
-.PHONY: check-lmdb-backup nightly-lmdb
+.PHONY: check-lmdb-backup check-db-migrate nightly-lmdb
 check-lmdb-backup:
 	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind test_phoenixcoin
 	./test_phoenixcoin --run_test=kvdb_tests/lmdb_environment_verify:kvdb_tests/wallet_lmdb_backup
 	./test/regression_lmdb_wallet_backup.sh ./phoenixcoind
 
+# Standalone Berkeley DB to LMDB converter, including interruption recovery.
+check-db-migrate:
+	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind phoenix-db-migrate
+	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate
+
 # Longer-running LMDB regression set for CI/nightly jobs.  The backup restore
 # test runs first because it exercises the recovery path operators rely on.
 nightly-lmdb: check-lmdb-backup
+	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenix-db-migrate
+	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate
 	./test/regression_lmdb_wallet_migration.sh ./phoenixcoind
 	./test/regression_lmdb_chain_migration.sh ./phoenixcoind
 	./test/regression_lmdb_import_batch.sh ./phoenixcoind
@@ -265,9 +272,32 @@ nightly-lmdb: check-lmdb-backup
 wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
+# Standalone Berkeley DB to LMDB converter.  This is the only executable that
+# links db_cxx; phoenixcoind, test_phoenixcoin and the GUI must never link it.
+# MIGRATELIBS intentionally omits Boost, OpenSSL, secp256k1 and miniUPnP.
+MIGRATEOBJS = obj/db_migrate.o
+MIGRATELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH) $(LMDB_LIB_PATH))
+ifdef DYNAMIC
+MIGRATELIBS += \
+    -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
+    -l:liblmdb.so$(LMDB_LIB_SUFFIX)
+else ifdef STATIC
+MIGRATELIBS += \
+    -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
+    -l:liblmdb$(LMDB_LIB_SUFFIX).a
+else
+MIGRATELIBS += \
+    -ldb_cxx$(BDB_LIB_SUFFIX) \
+    -l:liblmdb.so$(LMDB_LIB_SUFFIX)
+endif
+MIGRATELIBS += -lpthread -lrt
+
+phoenix-db-migrate: $(MIGRATEOBJS)
+	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
+
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
 	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
-	-rm -f phoenixcoind test_phoenixcoin wallet_perf
+	-rm -f phoenixcoind test_phoenixcoin wallet_perf phoenix-db-migrate
 
 FORCE:

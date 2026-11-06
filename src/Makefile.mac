@@ -160,8 +160,17 @@ obj/neoscrypt_asm.o: neoscrypt_asm.S
 phoenixcoind: $(OBJS:obj/%=obj/%)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
+# Standalone Berkeley DB to LMDB converter.  Only this executable links
+# db_cxx; the daemon and GUI must not.
+MIGRATEOBJS = obj/db_migrate.o
+MIGRATELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH))
+MIGRATELIBS += -ldb_cxx$(BDB_LIB_SUFFIX) -llmdb
+
+phoenix-db-migrate: $(MIGRATEOBJS)
+	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
+
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
-	-rm -f phoenixcoind
+	-rm -f phoenixcoind phoenix-db-migrate
 
 FORCE:
