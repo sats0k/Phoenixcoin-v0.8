@@ -388,9 +388,10 @@ New `src/test/regression_db_migrate.sh`:
 
 1. Build `phoenixcoind` and `phoenix-db-migrate`.
 2. Create a temporary datadir.
-3. Start the current daemon with `-walletbackend=bdb -dbbackend=bdb` to create
-   real BDB fixtures (this step disappears when the daemon is LMDB-only; then
-   use archived fixtures or a fixture-builder utility).
+3. Create real BDB fixtures: an LMDB daemon creates sample wallet and chain
+   environments, `mdb_dump` dumps them, and the test-only `phoenix-db-fixture`
+   helper rewrites the dumps into legacy `wallet.dat` / `blkindex.dat` files.
+   This avoids needing a BDB-capable daemon now that the daemon is LMDB-only.
 4. Create keys, hybrid keys, encrypted wallet state, keypool entries,
    transactions, labels and watch-only scripts; mine/import a few blocks.
 5. Stop the daemon cleanly.

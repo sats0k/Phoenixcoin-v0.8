@@ -393,6 +393,25 @@ New coverage:
   instead of `boost::posix_time::microsec_clock`, which is monotonic and
   the right clock for elapsed-time comparisons.
 
+### Removed
+
+- Berkeley DB has been removed from the daemon, GUI and test binary. LMDB is
+  the only runtime database; only the standalone `phoenix-db-migrate`
+  converter (and the test-only fixture helper) still links `libdb_cxx`.
+  Startup no longer imports legacy databases. A `bdb` marker, or a
+  `wallet.dat` / `blkindex.dat` without a matching `lmdb` marker, fails
+  explicitly and points at the converter; it is never opened as an empty
+  LMDB environment.
+- `-walletbackend=bdb` and `-dbbackend=bdb` now fail with
+  `Berkeley DB support has been removed.` and the instruction to run
+  `phoenix-db-migrate` instead of silently ignoring the option.
+  `-salvagewallet` is rejected for the same reason, and the obsolete
+  `-detachdb`, `-privdb`, `-dbcache` and `-dblogsize` options are gone.
+- The daemon-side `MigrateToLMDB` / `MigrateWalletToLMDB` startup paths,
+  `CDBEnv`/`bitdb` and the BDB `CDB` implementation, including the
+  `bdb_kv` wrapper, are removed. The converter is self-contained and uses
+  `libdb_cxx` + `liblmdb` only.
+
 ---
 
 ## [0.8.3]

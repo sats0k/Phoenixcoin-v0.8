@@ -326,8 +326,7 @@ Implemented functionality includes:
 * Bulk hybrid-key backup/restore via dump file (`dumphybridkeys` / `importhybridkeys`)
 
 Hybrid keys are persisted in the wallet database: the LMDB environment under
-`<datadir>/wallet/` by default, or `wallet.dat` when the Berkeley DB backend is
-selected with `-walletbackend=bdb`.
+`<datadir>/wallet/`.
 
 The wallet maintains the classical secp256k1 component together with the corresponding ML-DSA private key.
 
@@ -359,35 +358,25 @@ See [`SECURITY.md`](SECURITY.md) for the detailed cryptographic security model.
 
 # Database Backends
 
-The chain index and the wallet each use their own database backend. LMDB is
-the production default for both. Berkeley DB remains available for
-compatibility and recovery with `-dbbackend=bdb` / `-walletbackend=bdb`; there
-is no implicit fallback between the two backends.
+The chain index and the wallet both use LMDB. It is the only supported
+runtime backend; Berkeley DB support has been removed. There is no implicit
+fallback to a legacy database.
 
-On the first LMDB start an existing `blkindex.dat` or `wallet.dat` is copied
-into its LMDB environment. The source file is left untouched, and a failed copy
-leaves no marker so the migration can be retried. Wallet migration verifies
-every copied record inside the transaction before committing; chain-index
-migration copies the records and commits them as one transaction. The selected
-backend is recorded in `blkindex.backend` / `wallet.backend`, printed at
-startup, and enforced: a marker for one backend refuses a start configured for
-the other.
+Existing Berkeley DB data directories must be converted offline with the
+standalone `phoenix-db-migrate` utility. It reads `wallet.dat` and
+`blkindex.dat` read-only, verifies every copied record, installs the LMDB
+environments and writes the `lmdb` markers only after verification. The
+original Berkeley DB files are left untouched as a recovery copy. See
+[`doc/db-migrate.md`](doc/db-migrate.md) for the backup, disk-space, downtime
+and verification procedure.
 
 LMDB commits fsync by default (`-lmdbnosync=0`), the map grows automatically as
 it fills up to `-lmdbmaxmapsize` / `-lmdbmaxwalletsize`, and `backupwallet`
 writes a compacted, verified copy of the wallet environment. `getdbinfo`
 reports live backend and map statistics, while `-checklmdb` /
 `-checklmdbdeep` and the `checklmdb <path> [full]` RPC verify an offline
-environment such as a backup. See [`doc/lmdb.md`](doc/lmdb.md) for migration,
-options, backup, recovery and health diagnostics.
-
-For an offline conversion of an existing Berkeley DB data directory, use the
-standalone `phoenix-db-migrate` utility. It reads `wallet.dat` and
-`blkindex.dat` read-only, verifies every copied record, installs the LMDB
-environments and writes the `lmdb` markers only after verification. The
-original BDB files are left untouched. See
-[`doc/db-migrate.md`](doc/db-migrate.md) for the backup, disk-space, downtime
-and verification procedure.
+environment such as a backup. See [`doc/lmdb.md`](doc/lmdb.md) for options,
+backup, recovery and health diagnostics.
 
 ---
 
@@ -478,9 +467,9 @@ Minimum versions used by this development branch include:
 
 * **OpenSSL 3.5 or newer**
 * **Boost 1.89 or newer**
-* **LMDB and Berkeley DB C/C++ libraries** (both are linked; LMDB is the
-  default backend, Berkeley DB remains available for compatibility and
-  recovery)
+* **LMDB** (linked by the daemon, GUI and tests). Berkeley DB is only needed
+  to build the standalone `phoenix-db-migrate` converter and the test-only
+  fixture helper.
 * **libsecp256k1** for the classical secp256k1 key operations
 * C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
   `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
@@ -867,12 +856,10 @@ src/test/regression_hybridkeys_file.sh
 src/test/regression_hybridkeys_malformed.sh
 src/test/regression_importhybridkey.sh
 src/test/regression_privkey_roundtrip.sh
-src/test/regression_lmdb_chain_migration.sh
+src/test/regression_lmdb_import_batch.sh
 src/test/regression_lmdb_wallet_backup.sh
 src/test/regression_lmdb_wallet_crash.sh
 src/test/regression_lmdb_wallet_e2e.sh
-src/test/regression_lmdb_wallet_migration.sh
-src/test/regression_lmdb_wallet_parity.sh
 ```
 
 The LMDB backend, migration, backup, recovery and diagnostics are documented

@@ -1,121 +1,60 @@
 # LMDB chain index backend
 
-Phoenixcoin stores the block index and the transaction/UTXO index in the chain
-database.  LMDB is the production default; Berkeley DB (`blkindex.dat`) remains
-available with `-dbbackend=bdb` for compatibility and recovery.
+Phoenixcoin stores the block index, the transaction/UTXO index and the wallet
+in LMDB.  LMDB is the only supported backend; Berkeley DB support has been
+removed.  Address storage (`peers.dat`) is unaffected.
 
-The wallet has a separate backend switch.  LMDB is the production default;
-Berkeley DB `wallet.dat` remains available with `-walletbackend=bdb` for
-compatibility and recovery.  See [Wallet backend](#wallet-backend) below.
-Address storage (`peers.dat`) is unaffected.
-
-Existing Berkeley DB installations can be converted offline with the
-standalone `phoenix-db-migrate` utility before starting the LMDB daemon.  It
+Existing Berkeley DB installations must be converted offline with the
+standalone `phoenix-db-migrate` utility before starting this daemon.  It
 verifies the source, copies the records transactionally, and writes the
-authority markers only after the LMDB environment is installed.  See
+authority markers only after the LMDB environment is installed.  The
+Berkeley DB files are left untouched as a recovery copy.  See
 [`db-migrate.md`](db-migrate.md) for the operator procedure, backup and disk
 space requirements, verification steps and failure recovery.
 
 ## Chain index backend
 
-1. Stop Phoenixcoin.
-2. Back up the data directory.
-3. Start with `-dbbackend=lmdb` (or leave the default in place).
+The chain index lives in `<datadir>/blkindex/`.  On startup:
 
-On the first LMDB start Phoenixcoin copies every record from an existing
-`blkindex.dat` into `<datadir>/blkindex/`.  The copy runs in a single LMDB
-transaction, so an interrupted migration rolls back and is retried on the next
-start.  `blkindex.dat` is left in place and is not modified.
+- a missing index is created empty;
+- an existing non-empty index is opened;
+- `<datadir>/blkindex.backend` records the authority state.  `lmdb` requires a
+  non-empty LMDB index; if `blkindex/` is missing, empty, or removed, startup
+  fails rather than silently creating an empty chain;
+- a `bdb` marker means the data directory has not been converted.  Startup
+  fails and points at `phoenix-db-migrate`; it never opens the legacy
+  `blkindex.dat` as an empty LMDB index;
+- missing or conflicting markers in a directory that still contains
+  `blkindex.dat` also fail explicitly and point at the converter.
 
-After a successful migration Phoenixcoin writes `<datadir>/blkindex.backend`
-containing `lmdb`.  This marker makes the data directory's backend explicit:
-
-- starting with `-dbbackend=bdb` fails with a clear error instead of
-  silently loading the stale `blkindex.dat`;
-- a datadir that already contains a non-empty `blkindex/data.mdb` but no marker
-  (created by an older development build) is treated as an LMDB datadir for the
-  same reason;
-- a marker that says `lmdb` requires a non-empty LMDB index.  If `blkindex/` is
-  missing, empty, or removed, startup fails rather than silently re-importing
-  the migration-time `blkindex.dat` snapshot;
-- a marker that says `bdb` refuses `-dbbackend=lmdb`, even when a leftover
-  `blkindex/` directory exists.  The `bdb` marker is authoritative: to migrate,
-  back up the data directory, remove `blkindex.backend` and any stale
-  `blkindex/` directory, then restart with `-dbbackend=lmdb`.  Removing only
-  the marker would let the stale LMDB index be adopted instead of migrating
-  `blkindex.dat`;
-- migration from `blkindex.dat` only runs when no marker exists at all.
-
-## Returning to Berkeley DB
-
-Back up the data directory, then remove both `<datadir>/blkindex` and
-`<datadir>/blkindex.backend` and start with `-dbbackend=bdb`.  Phoenixcoin will
-start with Berkeley DB again and use the untouched `blkindex.dat`.  Any blocks
-imported while LMDB was active must be re-downloaded or re-imported, because
-that work only exists in the LMDB index.
+The daemon no longer imports a Berkeley DB chain index at startup, and there is
+no option to select a backend.  The converter creates the marker only after it
+has verified the new environment, so an interrupted conversion is never
+adopted as a live index.
 
 ## Wallet backend
 
-The wallet backend is independent of the chain index backend.  LMDB is the
-production default; Berkeley DB remains available for compatibility and
-recovery with `-walletbackend=bdb`.  At startup the node prints the selected
-backend, for example `Wallet backend: LMDB`.
+The wallet lives in `<datadir>/wallet/` and follows the same marker rules via
+`<datadir>/wallet.backend`.  It is an LMDB environment directory, not a single
+file.  Berkeley DB `wallet.dat` is only read by `phoenix-db-migrate`, which
+leaves it unchanged.
 
-To move an existing Berkeley DB `wallet.dat` to LMDB explicitly:
+If the wallet environment is missing or incomplete while the marker says
+`lmdb`, startup fails instead of creating an empty wallet.  A `bdb` marker, or
+a legacy `wallet.dat` without a matching marker, also fails explicitly and
+points at the converter.
 
-1. Stop Phoenixcoin and back up the data directory.
-2. Start with `-walletbackend=lmdb` (or leave the default in place).
+`-salvagewallet` and the removed Berkeley DB backend options
+(`-walletbackend`, `-dbbackend`, `-detachdb`, `-privdb`, `-dbcache`,
+`-dblogsize`) fail explicitly with `Berkeley DB support has been removed.` and
+the instruction to run `phoenix-db-migrate`.
 
-The LMDB wallet lives in `<datadir>/wallet/`.  The first LMDB start converts an
-existing `wallet.dat`: every record is copied into the new environment inside a
-single write transaction, read back and compared byte-for-byte before the
-transaction commits, and the final record count must match the source.  Only
-then is `<datadir>/wallet.backend` written with `lmdb`.  `wallet.dat` is opened
-read-only and is left unchanged, so the Berkeley DB wallet remains available
-until you deliberately remove it.
-
-If the copy fails, the transaction is aborted, the newly created `wallet/` is
-removed, no marker is written, and startup fails with an error.  The original
-`wallet.dat` is untouched, a normal BDB start still works, and selecting LMDB
-again retries the migration.  A crash after the commit but before the marker is
-written is also safe: the populated `wallet/` is used on the next LMDB start and
-the marker is written then.
-
-The map for the one-shot copy is sized from `wallet.dat` itself, so a wallet
-larger than `-lmdbwalletsize` still migrates; the startup log reports
-`LMDB wallet map size increased ... to fit the wallet.dat migration`.  After
-that the wallet map grows automatically while the node runs, up to
-`-lmdbmaxwalletsize`; see [Map usage and growth](#map-usage-and-growth).
-
-The marker makes ownership explicit:
-
-- starting with `-walletbackend=bdb` fails instead of silently opening a
-  stale `wallet.dat`;
-- a non-empty `<datadir>/wallet/data.mdb` without a marker is treated as an
-  LMDB wallet for the same reason;
-- a marker that says `lmdb` requires a non-empty LMDB wallet, so a missing or
-  deleted `wallet/` fails rather than creating an empty wallet;
-- a marker that says `bdb` refuses `-walletbackend=lmdb`, even when a leftover
-  `wallet/` directory exists.  The `bdb` marker is authoritative: to migrate,
-  back up the data directory, remove both `wallet.backend` and any stale
-  `wallet/` directory, then restart with `-walletbackend=lmdb`.  Removing only
-  the marker would let the stale LMDB wallet be adopted instead of migrating
-  `wallet.dat`;
-- Berkeley DB `wallet.dat` is left untouched while LMDB is active.
-
-`-salvagewallet` is Berkeley DB specific and is rejected together with
-`-walletbackend=lmdb`.  An LMDB wallet is an environment directory, so
-`backupwallet <destination>` writes a directory, not a single file.  If
-`<destination>` is an existing directory the copy is written to
-`<destination>/wallet`; otherwise `<destination>` names the new backup
-directory.  The target must not exist yet or must be empty; an existing
-non-empty target is refused instead of being overwritten.
-
-To return to Berkeley DB, stop the node, back up the data directory, remove
-both `<datadir>/wallet` and `<datadir>/wallet.backend`, and start with
-`-walletbackend=bdb`.  The untouched `wallet.dat` is then used again.  Any
-keys or transactions created while the LMDB wallet was active exist only in
-the LMDB copy.
+An LMDB wallet is an environment directory, so `backupwallet <destination>`
+writes a directory, not a single file.  If `<destination>` is an existing
+directory the copy is written to `<destination>/wallet`; otherwise
+`<destination>` names the new backup directory.  The target must not exist yet
+or must be empty; an existing non-empty target is refused instead of being
+overwritten.
 
 ## Online backup and restore
 
@@ -189,10 +128,10 @@ old backup deliberately; the command will not overwrite one.
    phoenixcoind -checklmdb=$HOME/.phoenixcoin/wallet -checklmdbdeep
    ```
 
-4. Start with the LMDB wallet selected:
+4. Start the node:
 
    ```
-   phoenixcoind -walletbackend=lmdb
+   phoenixcoind
    ```
 
 5. Check `getdbinfo`: `wallet.data_file.complete` must be `true`,
@@ -209,15 +148,14 @@ its address-book entry and transaction history do not.
 ### Restoring the chain index
 
 There is no online chain-index backup command.  To back up `blkindex/`,
-`blkindex.backend`, `blk0001.dat` and `txleveldb` consistently, stop the node
+`blkindex.backend` and `blk0001.dat` consistently, stop the node
 first and copy the whole data directory.  A live `cp`/`rsync` of `blkindex/` is
 subject to the same torn-copy risk as the wallet.  If only the wallet matters,
 `backupwallet` is safe while the node runs.
 
 If the chain index is lost or incomplete, restore a stopped-node backup.  There
 is no `-reindex` mode in this codebase; if no backup exists, remove `blkindex/`
-and `blkindex.backend` (or `blkindex.dat` for Berkeley DB) and let the node
-download the chain again.
+and `blkindex.backend` and let the node download the chain again.
 
 ## Offline verification
 
@@ -277,7 +215,6 @@ known address proves the data is the state you intended to keep.
 
 ## Options
 
-- `-dbbackend=lmdb|bdb` — chain index backend, default `lmdb`.
 - `-lmdbmapsize=<MiB>` — initial size of the LMDB chain index map.  The default
   is 4096 MiB on 64-bit platforms and 1024 MiB elsewhere.  If the existing
   environment is larger it is reopened at its current size.  The value must be a
@@ -292,19 +229,16 @@ known address proves the data is the state you intended to keep.
   a write transaction would exhaust the map.  When disabled the map is fixed at
   `-lmdbmapsize` (and `-lmdbmaxmapsize` is ignored).
 - `-lmdbnosync=<0|1>` — default `0`.  Each commit fsyncs, using LMDB's
-  strongest normal durability mode.  Set to `1` to skip fsync, matching
-  Berkeley DB's `DB_TXN_WRITE_NOSYNC` behaviour and avoiding an fsync per
-  block during initial sync; transactions remain atomic and consistent, but a
-  system crash may lose the most recent commits.  A clean shutdown always
-  flushes the environment.  `MDB_WRITEMAP`, `MDB_MAPASYNC` and
+  strongest normal durability mode.  Set to `1` to skip fsync and avoid an
+  fsync per block during initial sync; transactions remain atomic and
+  consistent, but a system crash may lose the most recent commits.  A clean
+  shutdown always flushes the environment.  `MDB_WRITEMAP`, `MDB_MAPASYNC` and
   `MDB_NOMETASYNC` are never enabled.  This option applies to both LMDB
   environments.
-- `-walletbackend=lmdb|bdb` — wallet backend, default `lmdb`.
 - `-lmdbwalletsize=<MiB>` — initial size of the LMDB wallet map, default
   4096 MiB on 64-bit platforms and 256 MiB elsewhere.  It is validated like
-  `-lmdbmapsize`, enlarged automatically when the existing wallet or a pending
-  `wallet.dat` migration needs more room, and grows automatically at runtime
-  subject to `-lmdbmaxwalletsize`.
+  `-lmdbmapsize`, enlarged automatically when the existing wallet needs more
+  room, and grows automatically at runtime subject to `-lmdbmaxwalletsize`.
 - `-lmdbmaxwalletsize=<MiB>` — automatic wallet map growth ceiling, default
   1 TiB on 64-bit platforms and 2048 MiB elsewhere.  If less than
   `-lmdbwalletsize` startup fails.
@@ -321,8 +255,7 @@ When the mapped file is already larger than the configured initial map size,
 the map is enlarged automatically at open time, so a datadir created with a
 larger `-lmdbmapsize` can be started without repeating the option.  The wallet
 behaves the same way: an existing `wallet/` is reopened large enough for
-`data.mdb`, and a pending `wallet.dat` migration reserves space from the source
-file before the copy starts.
+`data.mdb`.
 
 With `-lmdbruntimegrow=1` (the default), a write that exhausts the map does not
 fail the operation.  Phoenixcoin aborts the LMDB transaction, waits until no
@@ -427,23 +360,21 @@ The result has a `chain` and a `wallet` object with the same shape:
 
 Field meanings:
 
-- `configured_backend` is what the command line selected; `active_backend`
-  and `lmdb_enabled` describe what startup actually opened.
-- `marker` reports the `blkindex.backend` / `wallet.backend` file.  A missing
-  marker matches Berkeley DB; `marker.matches_backend` is false if the marker
-  and the active backend disagree, which is a migration or startup problem
-  rather than a healthy state.
+- `configured_backend` is `lmdb`; `active_backend` and `lmdb_enabled` describe
+  what startup actually opened.
+- `marker` reports the `blkindex.backend` / `wallet.backend` file.
+  `marker.matches_backend` is false if the marker and the active backend
+  disagree, which is a startup problem rather than a healthy state.
 - `opened_cleanly` is true when both the LMDB environment and its main
   database handle opened successfully.  `environment_open`, `database_open`
-  and `error` narrow down a false value.  Berkeley DB reports `opened_cleanly`
-  as true and leaves the LMDB counters at zero.
+  and `error` narrow down a false value.
 - `data_file` is the on-disk inspection that startup uses before opening the
   environment.  `present` and `bytes` describe `data.mdb`, `lock_present`
   reports `lock.mdb`, and `complete` is false for an empty, missing or
   truncated file.  `reason` explains an incomplete state, for example
   `data.mdb is missing` or `data.mdb is only 4096 bytes, too small to contain
-  two LMDB meta pages`.  A healthy live LMDB backend has `complete: true` and
-  an empty `reason`; Berkeley DB leaves these fields false/zero.
+  two LMDB meta pages`.  A healthy live backend has `complete: true` and an
+  empty `reason`.
 - `environment.map_size` is the current map limit (the configured initial size
   or a size chosen while opening or growing), not a preallocated file size.
   `max_map_size` is the automatic growth ceiling and `auto_grow` reports
@@ -474,7 +405,8 @@ Adding a block writes its block-index record and, when it becomes the best
 chain, the best-chain pointer in one transaction.  If any part of that write
 fails, the transaction is aborted and the newly created in-memory
 `mapBlockIndex` entry is removed again, so a failed write cannot leave an index
-entry whose database record was rolled back.  This applies to both backends.
+entry whose database record was rolled back.  This applies to the chain index
+and the wallet.
 
 ### Bulk block import
 
@@ -483,7 +415,7 @@ in its own transaction.  While the node is below the checkpoint estimate, the
 importer groups consecutive best-chain blocks into one chain-index
 transaction.  A batch only starts when all of the following hold:
 
-- the chain index uses LMDB;
+- the chain index is open in read-write mode;
 - the node is in initial block download and `nBestHeight` is below
   `Checkpoints::GetTotalBlocksEstimate()`;
 - the mempool and both orphan pools are empty;
@@ -532,15 +464,14 @@ consistent and is reconciled on the next start.
 
 There is no `-reindex` mode in this codebase, and blocks are not replayed from
 the `blk0001.dat` files.  If the index is lost, remove the chain index
-(`blkindex/` and `blkindex.backend` for LMDB, or `blkindex.dat` for Berkeley DB)
-and the node creates a fresh index containing only the genesis block, then
-downloads the chain again.
+(`blkindex/` and `blkindex.backend`) and the node creates a fresh index
+containing only the genesis block, then downloads the chain again.
 
 If the marker says `lmdb` but the LMDB index is missing or empty, restore
-`blkindex/` from a backup.  To deliberately fall back to the migration-time
-snapshot, remove only `blkindex.backend`; the next LMDB start will then import
-`blkindex.dat` again.  That snapshot does not contain blocks or UTXO changes
-made after the original migration, so prefer a backup when one exists.
+`blkindex/` from a backup.  Removing the marker does not make the daemon read a
+legacy `blkindex.dat`; the daemon never imports Berkeley DB data.  Use
+`phoenix-db-migrate` to rebuild an LMDB index from a legacy source, or
+resynchronise from the network.
 
 ## Validation
 
@@ -552,7 +483,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports;
   that sanitizer run predates the later wallet, backup and runtime-growth
   suites.
-- `regression_lmdb_chain_migration.sh` passed 64/64 checks with
+- `regression_db_migrate.sh` (the standalone converter suite) passed with
   AddressSanitizer and UndefinedBehaviorSanitizer enabled.
 - `regression_lmdb_import_batch.sh` passed 62/62 checks in the normal build:
   a four-block `-loadblock` import commits as one batch and survives a
@@ -572,36 +503,35 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 
 Crash recovery was checked at two points:
 
-- Killing the daemon part-way through migration left no backend marker.
-  The next start discarded the partial index, repeated the migration, and
-  produced the same 588001 records and chain tip as an uninterrupted
-  migration.
+- Killing `phoenix-db-migrate` part-way through a copy left no `lmdb` marker
+  and no incomplete environment in place.  The next run discarded the staging
+  directory, repeated the copy, and produced the same record count and chain
+  tip as an uninterrupted run.
 - Three `SIGKILL`/restart cycles during initial sync at and above height
   202135 always reopened the last committed tip or a later one.  The tip
   block and its coinbase transaction remained readable after every restart,
   and syncing continued to height 227811 with 665129 records.
 
 A full BDB chain at height 202135 (588001 records: 202136 `blockindex` and
-385861 `tx`) was migrated in about three seconds.  LMDB contained exactly
+385861 `tx`) was converted in about three seconds.  LMDB contained exactly
 588001 entries in a 72118272-byte `data.mdb`, and the BDB and LMDB tips had the
-same hash.  The migrated node then continued syncing normally.
+same hash.  The converted node then continued syncing normally.
 
-The wallet tests in `kvdb_tests` cover the wallet backend marker, the startup
-action matrix (including migration), `CWalletDB` routing, commit/abort,
-persistence across an environment restart, and prefix scans through `CDBScan`.
-They check that the marker appears only after the source is intact and the copy
-is committed, and that a restart uses the LMDB wallet without migrating again.
-A dedicated regression covers the reverse authority case: with a `bdb` marker,
-an existing `wallet.dat`, and a real LMDB environment left in `wallet/`, an LMDB
-start is refused, the marker stays `bdb`, and the stale environment is not
-adopted or modified.
+The wallet tests in `kvdb_tests` cover the wallet marker, the startup action
+matrix (existing, missing, migration required, new), `CWalletDB` routing,
+commit/abort, persistence across an environment restart, and prefix scans
+through `CDBScan`.  A dedicated regression covers the authority cases: with a
+`bdb` marker, an existing `wallet.dat`, and a real LMDB environment left in
+`wallet/`, startup is refused, the marker stays `bdb`, and the stale environment
+is not adopted or modified.
 
 `wallet_migration_tests` compares wallet semantics, not record counts.  It
 builds a wallet containing compressed and uncompressed keys, key metadata,
 watch-only and redeem scripts, address labels, a default key, a populated
 keypool, hybrid keys, hybrid address labels, and transactions with block
 association, timestamps, order positions, labels, spent outputs and
-abandoned/conflicted metadata.  After migration it requires:
+abandoned/conflicted metadata.  After the LMDB environment is reopened it
+requires:
 
 - every raw record to survive byte-for-byte, including encrypted key material;
 - key IDs, public keys, private keys, metadata, default key and scripts to be
@@ -752,43 +682,35 @@ stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
-`regression_lmdb_wallet_migration.sh` passed 46/46 checks.  It starts from a
-real Berkeley DB wallet and verifies the complete handoff:
+`regression_db_migrate.sh` passed 53/53 checks.  It drives the standalone
+converter against fixtures built from an LMDB daemon:
 
-- `wallet.dat` is byte-for-byte unchanged before and after the switch, and the
-  LMDB wallet contains exactly the same number of raw records;
-- legacy keys, hybrid keys, and address-book entries still resolve after the
-  migration and after a restart;
-- the migration runs once, the restart does not copy again, and addresses
-  created while LMDB is active survive a restart;
-- an explicit BDB start is refused while `wallet.backend` says `lmdb`;
-- `backupwallet` produces a restorable LMDB environment;
-- a deliberately unreadable `wallet.dat` fails startup without writing a
-  marker or leaving `wallet/` behind, the untouched BDB wallet still starts,
-  and a retry after restoring the file migrates successfully;
-- the retry deliberately starts with `-lmdbwalletsize=1`; the map is enlarged
-  from `wallet.dat` before the copy and the migration completes instead of
-  failing with `MDB_MAP_FULL`.
+- a sample LMDB wallet and chain index are dumped with `mdb_dump` and rewritten
+  into legacy `wallet.dat`/`blkindex.dat` files with the test-only
+  `phoenix-db-fixture` helper, so no BDB-capable daemon is needed;
+- the converter writes both `lmdb` markers only after verified installs, the
+  LMDB record counts match the source, and the Berkeley DB files stay
+  byte-for-byte unchanged;
+- a second run reports `already migrated` without changing anything;
+- an encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
+  source, and interruption after N records, after the LMDB commit and after
+  the install rename are all covered.
 
-`regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It is the full
-lifecycle counterpart to the migration regression and drives real daemons
-through:
+`regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It drives a real
+daemon through the full LMDB wallet lifecycle:
 
-- a populated Berkeley DB wallet: imported coinbase keys, labelled receiving
-  addresses, a watch-only address, a multisig script, a signed message,
-  keypool state and labelled hybrid keys;
-- real wallet transactions before the switch, including a hybrid-signed spend
-  that reaches the mempool;
+- imported coinbase keys, labelled receiving addresses, a watch-only address,
+  a multisig script, a signed message, keypool state and labelled hybrid keys;
+- real wallet transactions, including a hybrid-signed spend that reaches the
+  mempool;
 - `encryptwallet`, the shutdown it triggers, and an encrypted restart with
   wrong-passphrase, lock and unlock checks;
 - additional keypool and hybrid state while the wallet is unlocked;
-- the LMDB migration, a restart, and verification of every key, label,
-  transaction, signature, hybrid key and keypool path through RPC;
-- normal use of the migrated wallet: new addresses and labels, message
-  signing, new hybrid keys, a keypool refill and a brand new hybrid-signed
-  transaction;
-- one final restart that proves the new state persisted, while `wallet.dat`
-  stays byte-for-byte unchanged and no second migration runs.
+- a restart that verifies every key, label, transaction, signature, hybrid key
+  and keypool path through RPC;
+- normal use of the wallet: new addresses and labels, message signing, new
+  hybrid keys, a keypool refill and a brand new hybrid-signed transaction;
+- one final restart that proves the new state persisted.
 
 This codebase has no regtest mode, and spending a mainnet coinbase normally
 needs 101 confirmations.  The test therefore submits a fixed six-block chain
@@ -848,71 +770,43 @@ make -f Makefile.linux nightly-lmdb
 
 `check-lmdb-backup` builds the daemon and test binary, runs the two focused
 unit tests, then runs `regression_lmdb_wallet_backup.sh`.  `nightly-lmdb` adds
-the wallet and chain migration regressions.
-
-## Wallet backend parity
-
-Record counts and byte-identical copies prove that migration moved data; they
-do not prove that the two backends interpret it the same way.
-`regression_lmdb_wallet_parity.sh` (passed 118/118 checks) closes that gap by
-comparing the *logical* wallet state of a BDB wallet and an independently
-migrated LMDB wallet:
-
-- one populated BDB wallet is stopped at a known state, its datadir is copied
-  twice, and exactly one copy is migrated to LMDB;
-- both copies then run as independent daemons on separate datadirs and RPC
-  ports, so neither side can answer for the other;
-- at every checkpoint the test canonicalizes `dumpwallet`, `dumphybridkeys`,
-  `listtransactions`, `listaccounts`, `listreceivedbyaccount` and
-  `...byaddress`, `listaddressgroupings`, `listunspent`,
-  `listhybridaddresses`, balances, and selected `gettransaction` results, and
-  requires the two canonical documents to be equal.
-
-Before encryption the comparison is `full`: every WIF, address, label, script,
-txid, hybrid key and pool tag must match.  `encryptwallet` intentionally
-regenerates the legacy keypool with fresh random keys, so later checkpoints
-compare `structural` state: key material and address identities are reduced to
-their shape (per-tag counts, labels, amounts), while transactions, account
-entries, hybrid keys, balances and unspent values are still compared exactly.
-Only timestamps are always dropped; structural mode also drops identity fields
-and the ECDSA-DER-dependent `size_bytes`/`fee_per_kb` values, which vary by a
-byte between independently created equivalent transactions.
-
-The checkpoints cover the migration itself, equivalent deterministic
-operations (`importprivkey`, `importhybridkey`, `setaccount`, `move`,
-`gethybridaddress`, and cross-backend `signmessage`/`verifymessage`), an
-encrypted restart followed by a real 40 PXC hybrid-signed spend, legacy
-keypool growth from 50 to 81 entries plus fresh address allocation, and a final
-restart.  The deterministic phase deliberately consumes no legacy keypool
-keys, so the full comparison really covers the whole pool, and the shared
-hybrid pool must allocate the same address on both branches.
+the converter suite and the wallet lifecycle, crash and batch-import
+regressions.
 
 ## Wallet backend performance
 
 `src/test/wallet_perf.cpp` is a standalone benchmark binary.  It is kept out
-of `test_phoenixcoin` because the unit-test fixture deliberately uses an
-in-memory Berkeley DB environment; on-disk timings and database sizes are only
-meaningful against the real backends.  Build it with:
+of `test_phoenixcoin` because the unit-test fixture deliberately uses a
+throw-away data directory and smaller workloads; on-disk timings and database
+sizes are only meaningful with a real environment.  Build it with:
 
 ```
 cd src
 make -j4 DYNAMIC=1 -f Makefile.linux wallet_perf
 ```
 
-The benchmark has three phases.  `seed` creates one realistic Berkeley DB
-wallet, `bdb` and `lmdb` restore independent copies of that seed and run the
-identical operations on each backend.  The seed used below contained 10,000
-transactions (one to three inputs and two to three outputs each), 1,000 legacy
-keys, 200 redeem scripts, 200 watch-only scripts, 200 address book labels and
-a 100-key keypool; its `wallet.dat` was 6.43 MB.  After seeding, each measured
-run inserted 2,000 more transactions, generated 500 keys, performed 1,000,000
-in-memory lookups and 5,000 direct record reads, added 500 of each
+The benchmark has two phases.  `seed` creates one realistic LMDB wallet and
+`lmdb` runs the measured operations on a copy of it:
+
+```
+src/wallet_perf seed /tmp/wallet-perf/seed
+cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/lmdb
+src/wallet_perf lmdb /tmp/wallet-perf/lmdb
+```
+
+The seed used below contained 10,000 transactions (one to three inputs and two
+to three outputs each), 1,000 legacy keys, 200 redeem scripts, 200 watch-only
+scripts, 200 address book labels and a 100-key keypool.  After seeding, each
+measured run inserted 2,000 more transactions, generated 500 keys, performed
+1,000,000 in-memory lookups and 5,000 direct record reads, added 500 of each
 script/label record, and refilled a 100-key keypool.
 
-The numbers below are medians of three runs on an Intel Xeon E3-1220L (four
-threads) with an ext4 filesystem on NVMe, so they include real writeback.
-Both backends run with their normal no-sync commit setting; the final flush is
-included in shutdown.
+The table below is a historical comparison recorded before Berkeley DB support
+was removed.  The numbers are medians of three runs on an Intel Xeon E3-1220L
+(four threads) with an ext4 filesystem on NVMe, so they include real writeback.
+Both backends ran with their normal no-sync commit setting; the final flush is
+included in shutdown.  The LMDB column remains representative of the current
+backend; the Berkeley DB column is retained for context only.
 
 | Metric | Berkeley DB | LMDB | Difference |
 | --- | ---: | ---: | ---: |
@@ -1077,17 +971,15 @@ builds:
 | Check | Result |
 | --- | --- |
 | `kvdb_tests/wallet_*`, `wallet_migration_tests`, `accounting_tests` | 15 cases, 12441 assertions |
-| `regression_lmdb_wallet_migration.sh` | 46/46 |
 | `regression_lmdb_wallet_e2e.sh` | 107/107 |
 | `regression_lmdb_wallet_crash.sh` | 359/359 |
-| `regression_lmdb_wallet_parity.sh` | 118/118 |
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
 | full unit suite | 158 cases |
 
 These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated. The current normal-build suite is 185 cases; the
-later database atomicity, keypool-staging and invariant tests were added
-after these sanitizer runs.
+backend was validated, before Berkeley DB was removed; the script totals are
+from that version. The current normal-build suite is 173 cases, and the crash
+regression now covers normal operation and the encryption rewrite only.
 
 The targeted unit runs used LeakSanitizer (`detect_leaks=1`) and reported no
 leaks.  Broad runs used `detect_leaks=0` because of pre-existing RPC/asio
@@ -1119,35 +1011,23 @@ call decrements the skip and the call that finds it at zero raises
 `SIGKILL` (falling back to `std::_Exit(137)`), after flushing stdio so
 `debug.log` records how far the operation got.  With no file or no
 environment variable the hook is inert, and it applies only to the LMDB
-wallet, never to Berkeley DB or the chain index.
+wallet, never to the chain index.
 
-The crash points cover the whole wallet lifecycle:
+The crash points cover the wallet lifecycle:
 
 - per-record writes: `wallet-write-{before,after}-commit:<type>`, where the
   type is the record family (`tx`, `name`, `key`, `pool`, `hyb`, ...), so a
   case can target one write without counting unrelated records;
 - explicit transactions: `wallet-txn-{before,after}-commit` (hybrid import,
   keypool top-up, `AddToWallet`, `CommitTransaction` and encryption rewrite);
-- migration: `wallet-migrate-record` (copying one exact record),
-  `wallet-migrate-{before,after}-commit`;
-- the backend marker: `wallet-marker-{before,after}-rename`;
 - the encryption rewrite: `wallet-rewrite-{after-copy,after-old-rename,
   after-install}`.
 
-The script builds a Berkeley DB wallet on the same fixed mainnet fragment,
-migrates a reference copy to LMDB, and gives every case its own datadir
-copy, so no case can influence another and the user's real datadir is never
-touched.  The cases fall into three groups:
+The script builds a reference LMDB wallet on the same fixed mainnet fragment
+and gives every case its own datadir copy, so no case can influence another
+and the user's real datadir is never touched.  The cases fall into two groups:
 
-- **A. Migration.**  Killed mid-copy, just before the commit, just after the
-  commit but before the marker, before the marker temp file is renamed, and
-  after the marker is written.  A partial migration is empty from LMDB's
-  view because the transaction never committed, so startup discards it and
-  repeats the migration; an LMDB environment committed without a marker is
-  adopted and gets the marker written.  In every case the migration runs
-  exactly once to completion, `wallet.dat` stays byte-for-byte unchanged,
-  and the recovered wallet matches a clean migration record for record.
-- **B. Normal operation.**  Sends, receiving (`importprivkey`), labels,
+- **A. Normal operation.**  Sends, receiving (`importprivkey`), labels,
   keypool refills, hybrid imports and `encryptwallet` are killed on either
   side of their commit.  Before the commit the operation must be absent
   after restart and remain repeatable; after it the operation and its
@@ -1157,10 +1037,9 @@ touched.  The cases fall into three groups:
   either side of the commit cannot leave the order position ahead of the
   transaction, a rotated default key without its label, or a transaction
   without the spent state of its inputs.
-- **C. Marker creation.**  The three marker/rewrite boundaries above must
-  take a deterministic startup path: a leftover `wallet.backend.tmp` is
-  removed, a committed environment is adopted, and an interrupted
-  encryption rewrite is completed.
+- **B. Encryption rewrite.**  The three rewrite boundaries above must take a
+  deterministic startup path: an interrupted rewrite is completed, and a
+  committed environment is adopted.
 
 Interrupted `RewriteWalletLMDB` is repaired by
 `RecoverInterruptedWalletRewrite`, called from
