@@ -97,10 +97,8 @@ void Shutdown(void */*parg*/) {
     {
         fShutdown = true;
         nTransactionsUpdated++;
-        bitdb.Flush(false);
         StopNode();
         CloseLMDBChainDB();
-        bitdb.Flush(true);
         std::filesystem::remove(GetPidFile());
         UnregisterWallet(pwalletMain);
         delete pwalletMain;
@@ -315,8 +313,6 @@ std::string HelpMessage()
         "  -gen                   " + _("Generate coins") + "\n" +
         "  -gen=0                 " + _("Don't generate coins") + "\n" +
         "  -datadir=<dir>         " + _("Specify data directory") + "\n" +
-        "  -dbcache=<n>           " + _("Set database cache size in megabytes (default: 25)") + "\n" +
-        "  -dblogsize=<n>         " + _("Set database disk log size in megabytes (default: 100)") + "\n" +
         "  -timeout=<n>           " + _("Specify connection timeout in milliseconds (default: 5000)") + "\n" +
         "  -proxy=<ip:port>       " + _("Connect through socks proxy") + "\n" +
         "  -socks=<n>             " + _("Select the version of socks proxy to use (4-5, default: 5)") + "\n" +
@@ -345,8 +341,7 @@ std::string HelpMessage()
         "  -upnp                  " + _("Use UPnP to map the listening port (default: 0)") + "\n" +
 #endif
 #endif
-        "  -detachdb              " + _("Detach block and address databases. Increases shutdown time (default: 0)") + "\n" +
-        "  -dbbackend=<backend>   " + _("Chain index backend: lmdb or bdb (default: lmdb)") + "\n" +
+        "  -dbbackend=<backend>   " + _("Chain index backend (only lmdb is supported)") + "\n" +
         "  -lmdbmapsize=<n>       " + _("Initial LMDB chain map size in MiB (default: 4096 on 64-bit, 1024 on 32-bit)") + "\n" +
         "  -lmdbmaxmapsize=<n>    " + _("Automatic LMDB chain map growth ceiling in MiB (default: 1 TiB on 64-bit, 2048 on 32-bit)") + "\n" +
         "  -lmdbwalletsize=<n>    " + _("Initial LMDB wallet map size in MiB (default: 4096 on 64-bit, 256 on 32-bit)") + "\n" +
@@ -355,7 +350,7 @@ std::string HelpMessage()
         "  -lmdbnosync=<0|1>      " + _("Skip fsync on LMDB commits (default: 0); enabling it may lose recent writes on a system crash") + "\n" +
         "  -checklmdb=<dir>       " + _("Check an offline LMDB environment (for example a backup) and exit") + "\n" +
         "  -checklmdbdeep         " + _("With -checklmdb, read every record instead of only the environment metadata") + "\n" +
-        "  -walletbackend=<b>     " + _("Wallet backend: lmdb or bdb (default: lmdb)") + "\n" +
+        "  -walletbackend=<b>     " + _("Wallet backend (only lmdb is supported)") + "\n" +
         "  -paytxfee=<amt>        " + _("Fee per KB to add to transactions you send") + "\n" +
 #ifdef QT_GUI
         "  -server                " + _("Accept command line and JSON-RPC commands") + "\n" +
@@ -381,7 +376,6 @@ std::string HelpMessage()
         "  -upgradewallet         " + _("Upgrade wallet to latest format") + "\n" +
         "  -keypool=<n>           " + _("Set key pool size to <n> (default: 100)") + "\n" +
         "  -rescan                " + _("Rescan the block chain for missing wallet transactions") + "\n" +
-        "  -salvagewallet         " + _("Attempt to recover private keys from a corrupt wallet.dat") + "\n" +
         "  -checkblocks=<n>       " + _("How many blocks to check at startup (default: 2500, 0 = all)") + "\n" +
         "  -checklevel=<n>        " + _("How thorough the block verification is (0-6, default: 1)") + "\n" +
         "  -loadblock=<file>      " + _("Imports blocks from external blk000?.dat file") + "\n" +
@@ -474,8 +468,12 @@ bool AppInit2()
     std::string strDBBackend = GetArg("-dbbackend", "lmdb");
     std::transform(strDBBackend.begin(), strDBBackend.end(), strDBBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
-    if (strDBBackend != "bdb" && strDBBackend != "lmdb")
-        return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'bdb' or 'lmdb'"),
+    if (strDBBackend == "bdb")
+        return InitError(_("Berkeley DB support has been removed.\n"
+                           "Please migrate your database to LMDB using "
+                           "phoenix-db-migrate."));
+    if (strDBBackend != "lmdb")
+        return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'lmdb'"),
                                    strDBBackend.c_str()));
 
     if (mapArgs.count("-lmdbruntimegrow"))
@@ -505,8 +503,12 @@ bool AppInit2()
     std::string strWalletBackend = GetArg("-walletbackend", "lmdb");
     std::transform(strWalletBackend.begin(), strWalletBackend.end(), strWalletBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
-    if (strWalletBackend != "bdb" && strWalletBackend != "lmdb")
-        return InitError(strprintf(_("Invalid -walletbackend '%s': expected 'bdb' or 'lmdb'"),
+    if (strWalletBackend == "bdb")
+        return InitError(_("Berkeley DB support has been removed.\n"
+                           "Please migrate your database to LMDB using "
+                           "phoenix-db-migrate."));
+    if (strWalletBackend != "lmdb")
+        return InitError(strprintf(_("Invalid -walletbackend '%s': expected 'lmdb'"),
                                    strWalletBackend.c_str()));
 
     {
@@ -525,8 +527,9 @@ bool AppInit2()
                                        strError.c_str()));
     }
 
-    if (strWalletBackend == "lmdb" && GetBoolArg("-salvagewallet"))
-        return InitError(_("-salvagewallet is not supported with -walletbackend=lmdb"));
+    if (GetBoolArg("-salvagewallet"))
+        return InitError(_("-salvagewallet is not supported: Berkeley DB support "
+                           "has been removed."));
 
     if (mapArgs.count("-bind")) {
         // when specifying an explicit binding address, you want to listen on it
@@ -556,11 +559,6 @@ bool AppInit2()
         SoftSetBoolArg("-discover", false);
     }
 
-    if (GetBoolArg("-salvagewallet")) {
-        // Rewrite just private keys: rescan to find transactions
-        SoftSetBoolArg("-rescan", true);
-    }
-
     // ********************************************************* Step 3: parameter-to-internal-flags
 
     fDebug = GetBoolArg("-debug");
@@ -570,8 +568,6 @@ bool AppInit2()
         fDebugNet = true;
     else
         fDebugNet = GetBoolArg("-debugnet");
-
-    bitdb.SetDetach(GetBoolArg("-detachdb", false));
 
 #if !defined(WINDOWS) && !defined(QT_GUI)
     fDaemon = GetBoolArg("-daemon");
@@ -665,7 +661,7 @@ bool AppInit2()
 
     printf("Phoenixcoin %s (%s)\n", FormatFullVersion().c_str(), CLIENT_BUILD_DATE_TIME.c_str());
     printf("Using OpenSSL release: %s\n", SSLeay_version(SSLEAY_VERSION));
-    printf("Using BerkeleyDB release: %s\n", DbEnv::version(0, 0, 0));
+    printf("Using LMDB release: %s\n", MDB_VERSION_STRING);
     printf("Using Boost v%d.%d.%d\n",
       BOOST_VERSION / 100000, (BOOST_VERSION / 100) % 1000, BOOST_VERSION % 100);
 #ifdef USE_UPNP
@@ -685,39 +681,8 @@ bool AppInit2()
 
     uiInterface.InitMessage(_("Verifying database integrity..."));
 
-    if (!bitdb.Open(GetDataDir()))
-    {
-        string msg = strprintf(_("Error initializing database environment %s!"
-                                 " To recover, BACKUP THAT DIRECTORY, then remove"
-                                 " everything from it except for wallet.dat."), strDataDir.c_str());
-        return InitError(msg);
-    }
-
     if (!InitLMDBWalletDB())
         return InitError(_("Error initializing the wallet database"));
-
-    switch (CheckWalletDatabaseAtStartup())
-    {
-    case WalletStartupCheckResult::Ok:
-        break;
-
-    case WalletStartupCheckResult::Recovered:
-    {
-        string msg = strprintf(_("Warning: wallet.dat corrupt, data salvaged!"
-                                 " Original wallet.dat saved as wallet.{timestamp}.bak in %s; if"
-                                 " your balance or transactions are incorrect you should"
-                                 " restore from a backup."), strDataDir.c_str());
-        uiInterface.ThreadSafeMessageBox(msg, _("Phoenixcoin"),
-          CClientUIInterface::OK | CClientUIInterface::ICON_EXCLAMATION | CClientUIInterface::MODAL);
-        break;
-    }
-
-    case WalletStartupCheckResult::SalvageFailed:
-        return false;
-
-    case WalletStartupCheckResult::VerifyFailed:
-        return InitError(_("wallet.dat corrupt, salvage failed"));
-    }
 
     // ********************************************************* Step 6: network initialization
 
@@ -832,14 +797,6 @@ bool AppInit2()
         AddOneShot(strDest);
 
     // ********************************************************* Step 7: load blockchain
-
-    if (!bitdb.Open(GetDataDir()))
-    {
-        string msg = strprintf(_("Error initializing database environment %s!"
-                                 " To recover, BACKUP THAT DIRECTORY, then remove"
-                                 " everything from it except for wallet.dat."), strDataDir.c_str());
-        return InitError(msg);
-    }
 
     if (!InitLMDBChainDB())
         return InitError(_("Error initializing chain index database"));

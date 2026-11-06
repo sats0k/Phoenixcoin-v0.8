@@ -49,11 +49,11 @@ SECP256K1_LIB_PATH =
 DEFS = -DMSG_NOSIGNAL=0 -DBOOST_SPIRIT_THREADSAFE
 
 INCS = $(addprefix -I,$(CURDIR) $(CURDIR)/obj $(DEPSDIR)/include \
-$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH) \
+$(BOOST_INCLUDE_PATH) $(OPENSSL_INCLUDE_PATH) \
 $(SECP256K1_INCLUDE_PATH))
 
 LIBS = -L$(DEPSDIR)/lib \
-$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(OPENSSL_LIB_PATH) \
+$(addprefix -L,$(BOOST_LIB_PATH) $(OPENSSL_LIB_PATH) \
 $(SECP256K1_LIB_PATH))
 
 LIBS += \
@@ -61,7 +61,6 @@ LIBS += \
     -lboost_filesystem$(BOOST_LIB_SUFFIX) \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
-    -ldb_cxx$(BDB_LIB_SUFFIX) \
     -llmdb \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
@@ -111,7 +110,6 @@ OBJS = \
     obj/wallet.o \
     obj/walletdb.o \
     obj/lmdbdb.o \
-    obj/bdb_kv.o \
     obj/lmdb_kv.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \

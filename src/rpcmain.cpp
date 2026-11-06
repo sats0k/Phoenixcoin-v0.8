@@ -196,14 +196,10 @@ Value help(const Array &params, bool fHelp) {
 Value stop(const Array &params, bool fHelp) {
 
     if(fHelp || (params.size() > 1)) {
-        string msg = "stop [detach]\n"
-          "Stops the Phoenixcoin server.\n"
-          "[detach] is true or false to detach the data base or not.";
+        string msg = "stop\n"
+          "Stops the Phoenixcoin server.";
         throw(runtime_error(msg));
     }
-
-    if(params.size() > 0)
-      bitdb.SetDetach(params[0].get_bool());
 
     StartShutdown();
 

@@ -204,7 +204,6 @@ HEADERS += src/qt/gui.h \
     src/key.h \
     src/db.h \
     src/db_kv.h \
-    src/bdb_kv.h \
     src/lmdbdb.h \
     src/lmdb_kv.h \
     src/walletdb.h \
@@ -296,7 +295,6 @@ SOURCES += src/qt/phoenixcoin.cpp \
     src/addrman.cpp \
     src/db.cpp \
     src/lmdbdb.cpp \
-    src/bdb_kv.cpp \
     src/lmdb_kv.cpp \
     src/walletdb.cpp \
     src/qt/clientmodel.cpp \
@@ -427,9 +425,9 @@ macx:QMAKE_LFLAGS_THREAD += -pthread
 macx:QMAKE_CXXFLAGS_THREAD += -pthread
 
 # Set libraries and includes at end, to use platform-defined defaults if not overridden
-INCLUDEPATH += $$BOOST_INCLUDE_PATH $$BDB_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH
-LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(BDB_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,)
-LIBS += -lssl -lcrypto -ldb_cxx$$BDB_LIB_SUFFIX -llmdb -lsecp256k1
+INCLUDEPATH += $$BOOST_INCLUDE_PATH $$OPENSSL_INCLUDE_PATH $$QRENCODE_INCLUDE_PATH
+LIBS += $$join(BOOST_LIB_PATH,,-L,) $$join(OPENSSL_LIB_PATH,,-L,) $$join(QRENCODE_LIB_PATH,,-L,)
+LIBS += -lssl -lcrypto -llmdb -lsecp256k1
 # -lgdi32 has to happen after -lcrypto (see  #681)
 win32:LIBS += -lws2_32 -lmswsock -lshlwapi -lole32 -loleaut32 -luuid -lgdi32
 LIBS += -lboost_thread$$BOOST_LIB_SUFFIX

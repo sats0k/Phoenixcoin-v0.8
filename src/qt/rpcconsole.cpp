@@ -12,7 +12,6 @@
 
 #include <openssl/crypto.h>  /* for SSLEAY_VERSION */
 #include <boost/version.hpp>  /* for BOOST_VERSION */
-#include <db_cxx.h>  /* for DbEnv::version() */
 #include <lmdb.h>  /* for MDB_VERSION_STRING */
 
 #ifndef Q_MOC_RUN
@@ -566,19 +565,7 @@ QString RPCConsole::FormatBytes(quint64 nBytes) {
 
 void RPCConsole::updateDatabaseVersion()
 {
-    const bool fLMDBChain = GetConfiguredDBBackend() == DB_BACKEND_LMDB;
-    const bool fLMDBWallet = GetConfiguredWalletBackend() == DB_BACKEND_LMDB;
-
-    QString strVersion;
-    if (fLMDBChain || fLMDBWallet)
-        strVersion = QString::fromUtf8(MDB_VERSION_STRING);
-    if (!fLMDBChain || !fLMDBWallet)
-    {
-        if (!strVersion.isEmpty())
-            strVersion += QString::fromUtf8(" / ");
-        strVersion += QString::fromUtf8(DbEnv::version(0, 0, 0));
-    }
-    ui->versionDB->setText(strVersion);
+    ui->versionDB->setText(QString::fromUtf8(MDB_VERSION_STRING));
 }
 
 void RPCConsole::setTrafficGraphRange(int nMinutes) {

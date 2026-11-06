@@ -58,18 +58,17 @@ DEFS = -DBOOST_SPIRIT_THREADSAFE
 TESTDEFS = -DTEST_DATA_DIR=$(abspath test/data)
 
 INCS = $(addprefix -I,$(CURDIR) $(CURDIR)/obj \
-$(BOOST_INCLUDE_PATH) $(BDB_INCLUDE_PATH) $(LMDB_INCLUDE_PATH) \
+$(BOOST_INCLUDE_PATH) $(LMDB_INCLUDE_PATH) \
 $(OPENSSL_INCLUDE_PATH))
 
 LIBS = -L$(DEPSDIR)/lib \
-$(addprefix -L,$(BOOST_LIB_PATH) $(BDB_LIB_PATH) $(LMDB_LIB_PATH) \
+$(addprefix -L,$(BOOST_LIB_PATH) $(LMDB_LIB_PATH) \
 $(OPENSSL_LIB_PATH))
 
 ifdef DYNAMIC
 LIBS += \
     -l:libboost_thread.so$(BOOST_LIB_SUFFIX) \
     -l:libboost_chrono.so$(BOOST_LIB_SUFFIX) \
-    -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
     -l:liblmdb.so$(LMDB_LIB_SUFFIX) \
     -l:libssl.so$(OPENSSL_LIB_SUFFIX) \
     -l:libcrypto.so$(OPENSSL_LIB_SUFFIX)
@@ -79,7 +78,6 @@ else ifdef STATIC
 LIBS += \
     -l:libboost_thread$(BOOST_LIB_SUFFIX).a \
     -l:libboost_chrono$(BOOST_LIB_SUFFIX).a \
-    -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
     -l:liblmdb$(LMDB_LIB_SUFFIX).a \
     -l:libssl$(OPENSSL_LIB_SUFFIX).a \
     -l:libcrypto$(OPENSSL_LIB_SUFFIX).a
@@ -88,7 +86,6 @@ else
 LIBS += \
     -lboost_thread$(BOOST_LIB_SUFFIX) \
     -lboost_chrono$(BOOST_LIB_SUFFIX) \
-    -ldb_cxx$(BDB_LIB_SUFFIX) \
     -l:liblmdb.so$(LMDB_LIB_SUFFIX) \
     -lssl$(OPENSSL_LIB_SUFFIX) \
     -lcrypto$(OPENSSL_LIB_SUFFIX)
@@ -143,7 +140,6 @@ OBJS = \
     obj/wallet.o \
     obj/walletdb.o \
     obj/lmdbdb.o \
-    obj/bdb_kv.o \
     obj/lmdb_kv.o \
     obj/hybrid_signer.o \
     obj/hybrid_verify.o \
@@ -255,20 +251,19 @@ check-lmdb-backup:
 
 # Standalone Berkeley DB to LMDB converter, including interruption recovery.
 check-db-migrate:
-	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind phoenix-db-migrate
-	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate
+	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind phoenix-db-migrate phoenix-db-fixture
+	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate ./phoenix-db-fixture
 
 # Longer-running LMDB regression set for CI/nightly jobs.  The backup restore
-# test runs first because it exercises the recovery path operators rely on.
-nightly-lmdb: check-lmdb-backup
-	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenix-db-migrate
-	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate
-	./test/regression_lmdb_wallet_migration.sh ./phoenixcoind
-	./test/regression_lmdb_chain_migration.sh ./phoenixcoind
+# and converter tests run first because they exercise the recovery paths
+# operators rely on.
+nightly-lmdb: check-lmdb-backup check-db-migrate
+	./test/regression_lmdb_wallet_e2e.sh ./phoenixcoind
+	./test/regression_lmdb_wallet_crash.sh ./phoenixcoind
 	./test/regression_lmdb_import_batch.sh ./phoenixcoind
 
 # On-disk wallet backend benchmark.  Kept separate from the Boost suite so the
-# default tests keep using the in-memory mock Berkeley DB environment.
+# default tests keep using the fast temporary LMDB environment.
 wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
@@ -295,9 +290,26 @@ MIGRATELIBS += -lpthread -lrt
 phoenix-db-migrate: $(MIGRATEOBJS)
 	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
 
+# Test-only helper that writes a legacy-layout Berkeley DB file from an LMDB
+# dump, so the converter regression suite can build BDB fixtures without an
+# old daemon.  It links db_cxx and is never installed.
+FIXTUREOBJS = obj-test/bdb_fixture.o
+FIXTURELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH))
+ifdef DYNAMIC
+FIXTURELIBS += -l:libdb_cxx.so$(BDB_LIB_SUFFIX)
+else ifdef STATIC
+FIXTURELIBS += -l:libdb_cxx$(BDB_LIB_SUFFIX).a
+else
+FIXTURELIBS += -ldb_cxx$(BDB_LIB_SUFFIX)
+endif
+FIXTURELIBS += -lpthread -lrt
+
+phoenix-db-fixture: $(FIXTUREOBJS)
+	$(LD) $(LDFLAGS) -o $@ $^ $(FIXTURELIBS)
+
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
 	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
-	-rm -f phoenixcoind test_phoenixcoin wallet_perf phoenix-db-migrate
+	-rm -f phoenixcoind test_phoenixcoin wallet_perf phoenix-db-migrate phoenix-db-fixture
 
 FORCE:

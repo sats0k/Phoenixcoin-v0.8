@@ -29,7 +29,6 @@ public:
         Fee,               // qint64
         DisplayUnit,       // CoinUnits::Unit
         DisplayAddresses,  // bool
-        DetachDatabases,   // bool
         Language,          // QString
         CoinControlFeatures, /* bool */
         QtStyle,             /* int */

@@ -4,6 +4,7 @@ src/phoenixcoind
 src/test_phoenixcoin
 src/wallet_perf
 src/phoenix-db-migrate
+src/phoenix-db-fixture
 .*.swp
 *.*~*
 *.bak
