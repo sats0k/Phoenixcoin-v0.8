@@ -54,9 +54,11 @@ win32:MINIUPNPC_LIB_PATH="/home/Administrator/miniupnpc-2.3.0"
 
 macx:BOOST_LIB_SUFFIX=-mt-x64
 
-OBJECTS_DIR = build
-MOC_DIR = build
-UI_DIR = build
+# Anchor generated files to the build directory so out-of-tree (shadow)
+# builds do not read or write moc/ui files in the source tree.
+OBJECTS_DIR = $$OUT_PWD/build
+MOC_DIR = $$OUT_PWD/build
+UI_DIR = $$OUT_PWD/build
 
 # use: qmake RELEASE_AMD64=1
 contains(RELEASE_AMD64, 1) {
