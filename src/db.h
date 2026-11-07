@@ -40,8 +40,7 @@ bool BackupWallet(const CWallet& wallet, const std::string& strDest);
 
 /**
  * Flushes the active wallet database to disk.  Returns false when the LMDB
- * sync fails, or when a Berkeley DB flush was skipped because the environment
- * was busy; callers should retry on the next flush interval.  Hides the
+ * sync fails; callers should retry on the next flush interval.  Hides the
  * backend from the wallet loop.
  */
 bool FlushWalletDB(const std::string& strFile);
@@ -244,18 +243,15 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir);
 
 /**
  * Validates the configured wallet backend and opens the LMDB wallet when it is
- * selected.  On first use, an existing wallet.dat is copied into the empty
- * LMDB wallet in a single transaction.  The Berkeley DB file is left untouched
- * so a failed or unwanted migration does not destroy the original wallet.
- *
- * A wallet.backend marker records that the data directory has moved to LMDB so
- * that a later BDB start cannot silently open a stale wallet.dat.
+ * selected.  An existing wallet.dat is an explicit migration error and is
+ * never imported automatically.  A wallet.backend marker records that LMDB is
+ * authoritative, so a later start cannot silently adopt a stale wallet.dat.
  */
 bool InitLMDBWalletDB();
 void CloseLMDBWalletDB();
 bool IsLMDBWalletEnabled();
 
-/** Flushes pending LMDB wallet commits to disk.  No-op for a BDB wallet. */
+/** Flushes pending LMDB wallet commits to disk. */
 bool FlushLMDBWallet(bool fForce = true);
 
 /** Begins a transaction on the active wallet backend (LMDB). */
