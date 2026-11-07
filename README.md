@@ -662,10 +662,10 @@ Testing has covered:
   round trip, atomic import under injected mid-transaction write failure,
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
-* Berkeley DB to LMDB chain-index and wallet migration, including
-  byte-for-byte record copying, semantic wallet equality and cross-backend
-  parity
-* Wallet crash safety under `SIGKILL` at every migration, marker, write and
+* Offline Berkeley DB to LMDB chain-index and wallet conversion with
+  byte-for-byte record copying, semantic wallet equality, chain-tip
+  preservation and restartable installs
+* Wallet crash safety under `SIGKILL` at every marker, write and
   encryption-rewrite boundary
 * Verified LMDB backup/restore and offline structural verification
 * Wallet write-boundary, hybrid-key and keypool rollback atomicity,
@@ -673,11 +673,11 @@ Testing has covered:
   commits
 
 An automated unit-test suite covers these scenarios under
-`src/test/hybrid_multisig_tests.cpp` (33 test cases), `kvdb_tests.cpp` (48
-cases for the database backends and LMDB operations) and
-`wallet_migration_tests.cpp` (13 cases for migration semantics, atomicity and
+`src/test/hybrid_multisig_tests.cpp` (33 test cases), `kvdb_tests.cpp` (36
+cases for the database layer and LMDB operations) and
+`wallet_persistence_tests.cpp` (20 cases for persistence, atomicity and
 hybrid invariants), alongside the re-enabled legacy Boost suites (script,
-multisig, transaction, P2SH, miner, DoS). The full suite reports **178 test
+multisig, transaction, P2SH, miner, DoS). The full suite reports **173 test
 cases** and passes with no errors:
 
 ```bash
@@ -838,12 +838,12 @@ src/wallet.cpp
 
 Hybrid RPC integration is implemented through the wallet/RPC sources.
 
-Automated hybrid, database and migration tests are located under:
+Automated hybrid, database and persistence tests are located under:
 
 ```text
 src/test/hybrid_multisig_tests.cpp
 src/test/kvdb_tests.cpp
-src/test/wallet_migration_tests.cpp
+src/test/wallet_persistence_tests.cpp
 ```
 
 Full-daemon shell regression scripts for the hybrid key export/import file

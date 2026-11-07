@@ -341,24 +341,24 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 185 test cases. The database work added two new
-suites, `kvdb_tests` (48 cases for the backend abstraction, Berkeley DB and
-LMDB environments, migration, backup/verification and runtime map growth)
-and `wallet_migration_tests` (20 cases for wallet migration semantics,
+The Boost suite is at 173 test cases. The database work added two new
+suites, `kvdb_tests` (36 cases for the backend abstraction, LMDB
+environments, marker authority, backup/verification and runtime map growth)
+and `wallet_persistence_tests` (20 cases for wallet persistence semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).
 New coverage:
 
 - `kvdb_tests`: the backend-neutral interfaces, cursor/iterator error
-  reporting, LMDB environment handling and concurrency, BDB-to-LMDB chain
-  index and wallet migration, record verification, `backupwallet` staging
-  and restore, offline `checklmdb` verification, `getdbinfo` counters,
-  runtime map growth and its ceiling, fixed-map map-full handling, and
-  map-size parsing limits.
-- `wallet_migration_tests`: migration from Berkeley DB with key, label and
-  encryption-state equality, cross-backend parity, the staged hybrid-key
-  write path, `checkhybridkeys`, write-boundary rollback, explicit LMDB
-  rewrite failure injection, and ECDSA keypool refill rollback through the
-  staged `CStagedKey` path. Three `AddToWallet()` cases inject a failed
+  reporting, LMDB environment handling and concurrency, authoritative
+  backend markers and fail-closed startup, record verification,
+  `backupwallet` staging and restore, offline `checklmdb` verification,
+  `getdbinfo` counters, runtime map growth and its ceiling, fixed-map
+  map-full handling, and map-size parsing limits.
+- `wallet_persistence_tests`: LMDB wallet persistence with key, label and
+  encryption-state equality, the staged hybrid-key write path,
+  `checkhybridkeys`, write-boundary rollback, explicit LMDB rewrite failure
+  injection, and ECDSA keypool refill rollback through the staged
+  `CStagedKey` path. Three `AddToWallet()` cases inject a failed
   `orderposnext`/`tx` write, a failed update `tx` write or commit, a failed
   default-key rotation, and a transaction whose new `tx` record and
   spent-coin `tx` record must share one batch; a failure at either record or

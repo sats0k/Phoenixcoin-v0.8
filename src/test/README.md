@@ -14,7 +14,7 @@ The currently enabled test sources are:
 ```
 test_bitcoin.cpp
 hybrid_multisig_tests.cpp
-wallet_migration_tests.cpp
+wallet_persistence_tests.cpp
 accounting_tests.cpp
 allocator_tests.cpp
 base32_tests.cpp
@@ -361,19 +361,19 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 185 test cases...
+Running 173 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 185 cases: `kvdb_tests` (48), `hybrid_multisig_tests`
-(33), `wallet_migration_tests` (20), `util_tests` (12) and the re-enabled
-legacy suites. `wallet_migration_tests.cpp` covers Berkeley DB to LMDB
-wallet migration, encryption-state equality, cross-backend parity,
-write-boundary rollback, explicit rewrite-failure handling and hybrid-key
-invariants; `kvdb_tests.cpp` covers the backend abstraction, cursor error
-reporting, LMDB environments, migration, verified backup/restore,
-`checklmdb`, `getdbinfo` and runtime map growth.
+The full suite is 173 cases: `kvdb_tests` (36), `hybrid_multisig_tests`
+(33), `wallet_persistence_tests` (20), `util_tests` (12) and the re-enabled
+legacy suites. `wallet_persistence_tests.cpp` covers LMDB wallet
+persistence, encryption-state equality, write-boundary rollback, explicit
+rewrite-failure handling and hybrid-key invariants; `kvdb_tests.cpp` covers
+the backend abstraction, cursor error reporting, LMDB environments,
+marker authority and fail-closed startup, verified backup/restore,
+`checklmdb`, `getdbinfo`, map growth and corruption handling.
 
 The hybrid message-key suite now also covers the `dumphybridkey` /
 `importhybridkey` round trip: a key exported as WIF + Base64-DER is
@@ -443,37 +443,34 @@ size comparison can notice.
 ## Wallet backend benchmark
 
 `test/wallet_perf.cpp` builds a separate `wallet_perf` executable for
-on-disk wallet backend measurements. It is not part of `test_phoenixcoin`
-because the Boost fixture uses an in-memory Berkeley DB environment, where
-timings and database sizes would not reflect a real wallet.
+on-disk LMDB wallet measurements. It is not part of `test_phoenixcoin`
+because the Boost fixture uses a throw-away temporary LMDB environment,
+where timings and database sizes would not reflect a real wallet.
 
 ```
 cd src
 make -j4 DYNAMIC=1 -f Makefile.linux wallet_perf
 ```
 
-Seed one realistic wallet, copy the seed once per backend so every run starts
-from the same records, then run the operations:
+Seed one realistic wallet, copy the seed so every run starts from the same
+records, then run the operations:
 
 ```
 ./wallet_perf seed /tmp/wallet-perf/seed --tx=10000 --keys=1000 --scripts=200
-cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/bdb
 cp -a /tmp/wallet-perf/seed /tmp/wallet-perf/lmdb
-./wallet_perf bdb  /tmp/wallet-perf/bdb  --insert-tx=2000 --insert-keys=500 \
-    --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
 ./wallet_perf lmdb /tmp/wallet-perf/lmdb --insert-tx=2000 --insert-keys=500 \
     --lookup-ops=1000000 --disk-lookup-ops=5000 --record-ops=500 --keypool=100
 ```
 
-Each mode prints CSV rows (`backend,metric,value,unit,note`) for startup,
-migration, shutdown, insertion and lookup latency, keypool refill, the
-script/address operations that stand in for descriptors in this wallet
-format, and database size. Methodology and measured results are in
-`doc/lmdb.md`, "Wallet backend performance".
+Each run prints CSV rows (`backend,metric,value,unit,note`) for startup,
+shutdown, insertion and lookup latency, keypool refill, the script/address
+operations that stand in for descriptors in this wallet format, and
+database size. Methodology and measured results are in `doc/lmdb.md`,
+"Wallet backend performance".
 
 ## Wallet write atomicity tests
 
-`wallet_migration_tests` also contains twelve failure-injection tests that
+`wallet_persistence_tests` also contains twelve failure-injection tests that
 pin the wallet write transaction boundaries. They rely on the test-only
 hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 `SetTestWalletCommitFailure(nSkip)`, `ClearTestWalletWriteFailures()` — which
@@ -613,7 +610,7 @@ also arm `SetTestWalletRewriteAbort(true)` so the fatal path with no usable
 environment returns instead of exiting.  Each case requires `wallet.backend`
 to remain `lmdb`, `wallet.dat` not to appear as a Berkeley DB file, later
 writes to stay in LMDB, and a restart to repair the directory.
-`wallet_migration_tests/wallet_encryption_rewrite_failure_is_not_success`
+`wallet_persistence_tests/wallet_encryption_rewrite_failure_is_not_success`
 uses the same hooks to force a post-encryption rewrite failure.  It requires
 `EncryptWallet()` to report failure while plaintext bytes are still present
 in `wallet/data.mdb`, then verifies that a successful rewrite removes them
@@ -621,9 +618,9 @@ and the encrypted wallet still restarts, unlocks and signs.
 
 ## Hybrid-key invariant diagnostics
 
-`wallet_migration_tests` also drives the production checker
+`wallet_persistence_tests` also drives the production checker
 `CWallet::CheckHybridKeys()` (RPC `checkhybridkeys [deep]`). The shared
-`CheckHybridKeyInvariants` helper used by the migration, import and keypool
+`CheckHybridKeyInvariants` helper used by the persistence, import and keypool
 tests now calls it as well, so those paths exercise the same rule operators
 run.
 

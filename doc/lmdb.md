@@ -493,7 +493,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   any transaction, and an injected final commit failure restores the tip and
   block index in memory, leaves no batch entries after a restart and still
   allows a later clean import to reach the correct tip.
-- The full unit suite passed 185 test cases with no errors in the normal build.
+- The full unit suite passed 173 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -525,7 +525,7 @@ through `CDBScan`.  A dedicated regression covers the authority cases: with a
 `wallet/`, startup is refused, the marker stays `bdb`, and the stale environment
 is not adopted or modified.
 
-`wallet_migration_tests` compares wallet semantics, not record counts.  It
+`wallet_persistence_tests` compares wallet semantics, not record counts.  It
 builds a wallet containing compressed and uncompressed keys, key metadata,
 watch-only and redeem scripts, address labels, a default key, a populated
 keypool, hybrid keys, hybrid address labels, and transactions with block
@@ -569,7 +569,7 @@ keys, lock, and sign again after another restart.  It also scans the compacted
 fails if any plaintext secret leaked into the LMDB environment.
 
 Wallet write atomicity is covered by twelve failure-injection tests in
-`wallet_migration_tests`.  They use the test-only hooks
+`wallet_persistence_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
 The hooks are one-shot, inert until armed, and never affect
@@ -682,15 +682,16 @@ stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
-`regression_db_migrate.sh` passed 53/53 checks.  It drives the standalone
+`regression_db_migrate.sh` passed 56/56 checks.  It drives the standalone
 converter against fixtures built from an LMDB daemon:
 
-- a sample LMDB wallet and chain index are dumped with `mdb_dump` and rewritten
-  into legacy `wallet.dat`/`blkindex.dat` files with the test-only
-  `phoenix-db-fixture` helper, so no BDB-capable daemon is needed;
+- a sample LMDB wallet and a four-block mainnet chain index are dumped with
+  `mdb_dump` and rewritten into legacy `wallet.dat`/`blkindex.dat` files with
+  the test-only `phoenix-db-fixture` helper, so no BDB-capable daemon is
+  needed;
 - the converter writes both `lmdb` markers only after verified installs, the
-  LMDB record counts match the source, and the Berkeley DB files stay
-  byte-for-byte unchanged;
+  LMDB record counts match the source, the chain height and tip are preserved,
+  and the Berkeley DB files stay byte-for-byte unchanged;
 - a second run reports `already migrated` without changing anything;
 - an encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
   source, and interruption after N records, after the LMDB commit and after
@@ -952,7 +953,7 @@ instead of landing in Berkeley DB, and that a restart repairs the directory.
 of exiting, so the test can inspect the on-disk state; both hooks apply only
 to the LMDB wallet.
 
-`wallet_migration_tests/wallet_encryption_rewrite_failure_is_not_success`
+`wallet_persistence_tests/wallet_encryption_rewrite_failure_is_not_success`
 covers the encryption caller.  It fails the post-encryption rewrite after
 the encrypted records have been committed, requires `EncryptWallet()` to
 return false (the test-only abort hook turns the production exit into an
@@ -970,7 +971,7 @@ builds:
 
 | Check | Result |
 | --- | --- |
-| `kvdb_tests/wallet_*`, `wallet_migration_tests`, `accounting_tests` | 15 cases, 12441 assertions |
+| `kvdb_tests/wallet_*`, `wallet_persistence_tests`, `accounting_tests` | 15 cases, 12441 assertions |
 | `regression_lmdb_wallet_e2e.sh` | 107/107 |
 | `regression_lmdb_wallet_crash.sh` | 359/359 |
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |

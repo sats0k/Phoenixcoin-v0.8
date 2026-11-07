@@ -6,6 +6,12 @@ Version: `0.8.4` (unchanged).
 Scope: every tracked source file, build file, runtime option, on-disk database,
 test/script/fixture and document that still depends on Berkeley DB (BDB).
 
+> **Historical note:** Phases 1-4 are now implemented on this branch. The
+> runtime is LMDB-only, `wallet_migration_tests.cpp` was renamed to
+> `wallet_persistence_tests.cpp`, and the converter suite is part of
+> `nightly-lmdb`. This document is retained as the Phase 0 inventory; the
+> per-file action columns describe the plan at that time, not the final tree.
+
 This document is the gate for Phase 1/2. No BDB implementation is deleted
 until this inventory is reviewed.
 
