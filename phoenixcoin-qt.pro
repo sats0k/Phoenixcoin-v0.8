@@ -59,10 +59,15 @@ win32:MINIUPNPC_LIB_PATH="/home/Administrator/miniupnpc-2.3.0"
 macx:BOOST_LIB_SUFFIX=-mt-x64
 
 # Anchor generated files to the build directory so out-of-tree (shadow)
-# builds do not read or write moc/ui files in the source tree.
-OBJECTS_DIR = $$OUT_PWD/build
-MOC_DIR = $$OUT_PWD/build
-UI_DIR = $$OUT_PWD/build
+# builds do not read or write moc/ui files in the source tree.  A shadow
+# build gets its own directory name: if it shared "build" with an in-tree
+# build, qmake would resolve generated includes against the source tree and
+# could use stale moc/ui headers.
+equals(OUT_PWD, $$_PRO_FILE_PWD_): GEN_DIR = build
+else: GEN_DIR = .shadow-build
+OBJECTS_DIR = $$OUT_PWD/$$GEN_DIR
+MOC_DIR = $$OUT_PWD/$$GEN_DIR
+UI_DIR = $$OUT_PWD/$$GEN_DIR
 
 # use: qmake RELEASE_AMD64=1
 contains(RELEASE_AMD64, 1) {
@@ -142,9 +147,9 @@ contains(USE_IPV6, -) {
 # regenerate src/build.h
 !win32|contains(USE_BUILD_INFO, 1) {
     genbuild.depends = FORCE
-    genbuild.commands = cd $$PWD; /bin/sh share/genbuild.sh $$OUT_PWD/build/build.h
-    genbuild.target = $$OUT_PWD/build/build.h
-    PRE_TARGETDEPS += $$OUT_PWD/build/build.h
+    genbuild.commands = cd $$PWD; /bin/sh share/genbuild.sh $$OUT_PWD/$$GEN_DIR/build.h
+    genbuild.target = $$OUT_PWD/$$GEN_DIR/build.h
+    PRE_TARGETDEPS += $$OUT_PWD/$$GEN_DIR/build.h
     QMAKE_EXTRA_TARGETS += genbuild
     DEFINES += HAVE_BUILD_INFO
 }
