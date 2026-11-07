@@ -25,9 +25,15 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="${1:-$ROOT/src/phoenixcoind}"
 MIGRATE="${2:-$ROOT/src/phoenix-db-migrate}"
 FIXTURE="${3:-$ROOT/src/phoenix-db-fixture}"
+
+# Real mainnet blocks 1-4, so the converted chain index carries a non-empty
+# best chain and transaction index instead of just a genesis placeholder.
+# shellcheck source=regression_mainnet_fragment.sh
+. "$SCRIPT_DIR/regression_mainnet_fragment.sh"
 
 DATADIR="$(mktemp -d "/tmp/db-migrate.XXXXXX")"
 ENCDIR="$(mktemp -d "/tmp/db-migrate-enc.XXXXXX")"
@@ -210,6 +216,14 @@ echo "== step 1: create the legacy Berkeley DB fixture =="
 start_at "$DATADIR" "$PORT" \
     || { echo "FAILED: could not start the LMDB daemon"; exit 1; }
 
+for h in 1 2 3 4; do
+    rpc submitblock "${BLOCK_HEX[$h]}" >/dev/null 2>&1
+done
+CHAIN_HEIGHT_BEFORE=$(rpc getblockcount 2>/dev/null)
+CHAIN_TIP_BEFORE=$(rpc getblockhash 4 2>/dev/null)
+check "fixture chain connected to height 4" \
+    "$([ "$CHAIN_HEIGHT_BEFORE" = 4 ] && [ "$CHAIN_TIP_BEFORE" = "${BLOCK_HASH[4]}" ]; echo $?)"
+
 ADDR=$(rpc getnewaddress alice 2>/dev/null)
 WIF=$(rpc dumpprivkey "$ADDR" 2>/dev/null)
 PUBKEY=$(rpc validateaddress "$ADDR" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin)["pubkey"])' 2>/dev/null)
@@ -292,6 +306,10 @@ fi
 
 echo "== step 4: the LMDB daemon uses the migrated data =="
 start_at "$DATADIR" "$PORT" || { echo "FAILED: LMDB daemon did not start"; exit 1; }
+check "migrated chain height is preserved" \
+    "$([ "$(rpc getblockcount 2>/dev/null)" = "$CHAIN_HEIGHT_BEFORE" ]; echo $?)"
+check "migrated chain tip is preserved" \
+    "$([ "$(rpc getblockhash 4 2>/dev/null)" = "$CHAIN_TIP_BEFORE" ]; echo $?)"
 check "legacy address is still owned" \
     "$(rpc validateaddress "$ADDR" 2>/dev/null | grep -q '"ismine" : true'; echo $?)"
 check "legacy private key is unchanged" \
