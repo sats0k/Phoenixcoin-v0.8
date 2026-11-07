@@ -43,29 +43,49 @@ bool TransactionFilterProxy::filterAcceptsRow(int sourceRow, const QModelIndex &
     return true;
 }
 
+void TransactionFilterProxy::beginFilterChangeCompat()
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    beginFilterChange();
+#endif
+}
+
+void TransactionFilterProxy::endFilterChangeCompat()
+{
+#if QT_VERSION >= QT_VERSION_CHECK(6, 10, 0)
+    endFilterChange();
+#else
+    invalidateFilter();
+#endif
+}
+
 void TransactionFilterProxy::setDateRange(const QDateTime &from, const QDateTime &to)
 {
+    beginFilterChangeCompat();
     this->dateFrom = from;
     this->dateTo = to;
-    invalidateFilter();
+    endFilterChangeCompat();
 }
 
 void TransactionFilterProxy::setAddressPrefix(const QString &addrPrefix)
 {
+    beginFilterChangeCompat();
     this->addrPrefix = addrPrefix;
-    invalidateFilter();
+    endFilterChangeCompat();
 }
 
 void TransactionFilterProxy::setTypeFilter(quint32 modes)
 {
+    beginFilterChangeCompat();
     this->typeFilter = modes;
-    invalidateFilter();
+    endFilterChangeCompat();
 }
 
 void TransactionFilterProxy::setMinAmount(qint64 minimum)
 {
+    beginFilterChangeCompat();
     this->minAmount = minimum;
-    invalidateFilter();
+    endFilterChangeCompat();
 }
 
 void TransactionFilterProxy::setLimit(int limit)
