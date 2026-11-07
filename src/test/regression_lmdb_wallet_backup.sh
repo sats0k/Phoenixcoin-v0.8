@@ -200,8 +200,8 @@ start_node || {
     echo "FAILED: could not start the LMDB daemon"; exit 1;
 }
 
-check "wallet.backend says lmdb" \
-    "$([ "$(cat "$DATADIR/wallet.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
+check "no legacy backend marker is created" \
+    "$([ ! -e "$DATADIR/wallet.backend" ]; echo $?)"
 check "LMDB wallet exists" \
     "$([ -s "$DATADIR/wallet/data.mdb" ]; echo $?)"
 
@@ -341,8 +341,8 @@ check "startup with a truncated wallet fails" \
     "$([ $? -ne 0 ]; echo $?)"
 check "startup error names the incomplete wallet" \
     "$(grep -q 'LMDB wallet.*is incomplete' "$REFUSE_LOG" "$DATADIR/debug.log" 2>/dev/null; echo $?)"
-check "failed startup did not rewrite the marker" \
-    "$([ "$(cat "$DATADIR/wallet.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
+check "failed startup did not create a marker" \
+    "$([ ! -e "$DATADIR/wallet.backend" ]; echo $?)"
 
 rm -rf "$DATADIR/wallet"
 mv "$DATADIR/wallet.good" "$DATADIR/wallet"

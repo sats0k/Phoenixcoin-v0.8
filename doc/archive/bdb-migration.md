@@ -268,5 +268,10 @@ Phase 6 completed the removal:
 - no build target installs or links `libdb_cxx`;
 - the LMDB backend and its fail-closed marker behaviour remain unchanged.
 
+Current builds do not create `blkindex.backend` or `wallet.backend`; the LMDB
+environment is authoritative.  A marker written by the archived converter or a
+migration-window build is still read, and a `bdb` or unknown marker still fails
+closed.
+
 The archived converter release is kept separately for recovery only. It is not
 rebuilt, retested or supported as part of current development.

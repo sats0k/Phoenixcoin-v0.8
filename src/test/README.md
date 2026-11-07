@@ -669,8 +669,8 @@ malformed input.
 `kvdb_tests/wallet_lmdb_diagnostics` opens a temporary LMDB
 wallet through `InitLMDBWalletDBForTest`, calls
 `GetDBDiagnostics(chainDir, walletDir)` with explicit directories so the
-real datadir is never touched, and requires a healthy wallet with a matching
-`lmdb` marker and live counters.  A probe write must increase the entry
+real datadir is never touched, and requires a healthy wallet with no legacy
+backend marker and live counters.  A probe write must increase the entry
 count, and closing the environment must turn `opened_cleanly`,
 `environment_open`, `database_open` and `marker.matches_backend` false
 instead of reporting stale health.
@@ -678,8 +678,8 @@ instead of reporting stale health.
 The RPC surface is `getdbinfo` (safe mode allowed and not wallet-locked),
 which returns a `chain` and `wallet` object with the same fields.  The
 `regression_lmdb_wallet_e2e.sh` and `regression_lmdb_wallet_backup.sh` runs
-assert on a real daemon that the wallet reports `active_backend == "lmdb"`, a
-matching marker, positive map/page counters, a nonzero entry count,
+assert on a real daemon that the wallet reports `active_backend == "lmdb"`, no
+legacy marker, positive map/page counters, a nonzero entry count,
 `writer_active == false`, `read_only == false`, `nosync == false` and an empty
 `error`.  Field definitions and a sample result are in `doc/lmdb.md`, "Health
 diagnostics".

@@ -361,8 +361,8 @@ stop_node || { echo "FAILED: encrypted daemon did not stop"; exit 1; }
 
 echo "== step 3: restart and verify the encrypted state =="
 start_node || { echo "FAILED: restart failed"; exit 1; }
-check_eq "wallet.backend says lmdb" "lmdb" \
-    "$(cat "$DATADIR/wallet.backend" 2>/dev/null)"
+check_eq "no legacy backend marker is created" "missing" \
+    "$([ ! -e "$DATADIR/wallet.backend" ] && echo missing || echo present)"
 check "LMDB wallet exists" "$([ -s "$DATADIR/wallet/data.mdb" ]; echo $?)"
 check_eq "restart keeps the chain at height 6" "6" \
     "$(rpc getblockcount 2>/dev/null)"
@@ -494,8 +494,8 @@ check_contains "both the initial and the new transaction are present" "$TX_PRE" 
 
 stop_node || { echo "FAILED: final daemon did not stop"; exit 1; }
 
-check "LMDB wallet marker is still lmdb" \
-    "$([ "$(cat "$DATADIR/wallet.backend" 2>/dev/null)" = "lmdb" ]; echo $?)"
+check "no legacy backend marker is created" \
+    "$([ ! -e "$DATADIR/wallet.backend" ]; echo $?)"
 
 echo
 echo "== summary =="

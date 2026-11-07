@@ -50,9 +50,9 @@ Implemented components include:
   ECDSA key ID straight to its `CHybridKeyID`, so `IsMine()` resolves hybrid outputs in
   constant time instead of re-hashing the public key of every hybrid key the wallet holds
   (coin selection was O(outputs × hybrid keys) `Hash160` operations)
-- LMDB as the only chain-index and wallet runtime backend, with
-  authoritative backend markers and fail-closed startup: a legacy Berkeley DB
-  marker or source is never silently opened as an empty LMDB environment
+- LMDB as the only chain-index and wallet runtime backend, with fail-closed
+  startup and legacy marker handling: a Berkeley DB marker or source is never
+  silently opened as an empty LMDB environment
 - Berkeley DB fully removed from the source tree and standard build
   environment: no target links `libdb_cxx`, and the converter source, test-only
   fixture, converter regressions and live migration documentation were retired

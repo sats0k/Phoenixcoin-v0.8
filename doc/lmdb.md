@@ -16,14 +16,17 @@ The chain index lives in `<datadir>/blkindex/`.  On startup:
 
 - a missing index is created empty;
 - an existing non-empty index is opened;
-- `<datadir>/blkindex.backend` records the authority state.  `lmdb` requires a
-  non-empty LMDB index; if `blkindex/` is missing, empty, or removed, startup
-  fails rather than silently creating an empty chain;
-- a `bdb` marker means the data directory has not been converted.  Startup
-  fails and points at the archived converter; it never opens the legacy
-  `blkindex.dat` as an empty LMDB index;
-- missing or conflicting markers in a directory that still contains
-  `blkindex.dat` also fail explicitly and point at the archived converter.
+- the LMDB environment itself is authoritative.  Current builds do not write a
+  backend marker; a complete existing `blkindex/` is used, while an incomplete
+  one fails rather than being silently replaced;
+- `<datadir>/blkindex.backend` is legacy state left by a migration-window
+  build.  If it says `lmdb`, a missing or empty `blkindex/` is treated as data
+  loss and startup fails;
+- a legacy `bdb` marker means the data directory has not been converted.
+  Startup fails and points at the archived converter; it never opens the
+  legacy `blkindex.dat` as an empty LMDB index;
+- a legacy `blkindex.dat` without an LMDB index also fails explicitly and
+  points at the archived converter.
 
 The daemon no longer imports a Berkeley DB chain index at startup, and there is
 no option to select a backend.  The archived converter wrote the marker only
@@ -32,15 +35,16 @@ never adopted as a live index.
 
 ## Wallet backend
 
-The wallet lives in `<datadir>/wallet/` and follows the same marker rules via
-`<datadir>/wallet.backend`.  It is an LMDB environment directory, not a single
-file.  A legacy Berkeley DB `wallet.dat` is never read by the daemon; only the
-archived converter can read it, and it leaves the file unchanged.
+The wallet lives in `<datadir>/wallet/` and follows the same rules.  It is an
+LMDB environment directory, not a single file.  Current builds do not create a
+`wallet.backend` marker; the LMDB environment is authoritative.  A legacy
+Berkeley DB `wallet.dat` is never read by the daemon; only the archived
+converter can read it, and it leaves the file unchanged.
 
-If the wallet environment is missing or incomplete while the marker says
-`lmdb`, startup fails instead of creating an empty wallet.  A `bdb` marker, or
-a legacy `wallet.dat` without a matching marker, also fails explicitly and
-points at the converter.
+An incomplete LMDB wallet, or a legacy marker that says `lmdb` while the wallet
+is missing or empty, fails startup instead of creating an empty wallet.  A
+legacy `bdb` marker, or a legacy `wallet.dat` without an LMDB wallet, also fails
+explicitly and points at the converter.
 
 `-salvagewallet` and the removed Berkeley DB backend options
 (`-walletbackend`, `-dbbackend`, `-detachdb`, `-privdb`, `-dbcache`,
@@ -119,8 +123,7 @@ old backup deliberately; the command will not overwrite one.
    cp /media/backup/phoenixcoin-2026-11-03/wallet/data.mdb ~/.phoenixcoin/wallet/
    ```
 
-3. Confirm that `~/.phoenixcoin/wallet.backend` still contains `lmdb`, then
-   verify the restored environment offline before starting:
+3. Verify the restored environment offline before starting:
 
    ```
    phoenixcoind -checklmdb=$HOME/.phoenixcoin/wallet -checklmdbdeep
@@ -145,15 +148,16 @@ its address-book entry and transaction history do not.
 
 ### Restoring the chain index
 
-There is no online chain-index backup command.  To back up `blkindex/`,
-`blkindex.backend` and `blk0001.dat` consistently, stop the node
-first and copy the whole data directory.  A live `cp`/`rsync` of `blkindex/` is
-subject to the same torn-copy risk as the wallet.  If only the wallet matters,
-`backupwallet` is safe while the node runs.
+There is no online chain-index backup command.  To back up `blkindex/` and
+`blk0001.dat` consistently, stop the node first and copy the whole data
+directory.  If the installation has a legacy `blkindex.backend` marker, keep it
+with the backup.  A live `cp`/`rsync` of `blkindex/` is subject to the same
+torn-copy risk as the wallet.  If only the wallet matters, `backupwallet` is
+safe while the node runs.
 
 If the chain index is lost or incomplete, restore a stopped-node backup.  There
 is no `-reindex` mode in this codebase; if no backup exists, remove `blkindex/`
-and `blkindex.backend` and let the node download the chain again.
+(and any legacy `blkindex.backend`) and let the node download the chain again.
 
 ## Offline verification
 
@@ -360,9 +364,11 @@ Field meanings:
 
 - `configured_backend` is `lmdb`; `active_backend` and `lmdb_enabled` describe
   what startup actually opened.
-- `marker` reports the `blkindex.backend` / `wallet.backend` file.
-  `marker.matches_backend` is false if the marker and the active backend
-  disagree, which is a startup problem rather than a healthy state.
+- `marker` reports a legacy `blkindex.backend` / `wallet.backend` file when one
+  is present.  Current builds do not create these files, so `present: false` is
+  normal.  `matches_backend` is true when no legacy marker exists or when it
+  says `lmdb`; it is false for a `bdb` or unknown marker, which is a startup
+  problem rather than a healthy state.
 - `opened_cleanly` is true when both the LMDB environment and its main
   database handle opened successfully.  `environment_open`, `database_open`
   and `error` narrow down a false value.
@@ -462,10 +468,10 @@ consistent and is reconciled on the next start.
 
 There is no `-reindex` mode in this codebase, and blocks are not replayed from
 the `blk0001.dat` files.  If the index is lost, remove the chain index
-(`blkindex/` and `blkindex.backend`) and the node creates a fresh index
-containing only the genesis block, then downloads the chain again.
+(`blkindex/`, plus any legacy `blkindex.backend`) and the node creates a fresh
+index containing only the genesis block, then downloads the chain again.
 
-If the marker says `lmdb` but the LMDB index is missing or empty, restore
+If a legacy marker says `lmdb` but the LMDB index is missing or empty, restore
 `blkindex/` from a backup.  Removing the marker does not make the daemon read a
 legacy `blkindex.dat`; the daemon never imports Berkeley DB data.  Use the
 archived converter described in
@@ -695,12 +701,13 @@ value between 0 and `BASE_MATURITY`; it is inert otherwise, applies only to the
 test daemon process, and is not set by any normal startup path.
 
 A daemon smoke test on a temporary data directory also covered the stage-3
-wiring: the first start created `wallet/` and `wallet.backend` and printed
-`Wallet database: LMDB`; `getnewaddress` worked, the address survived a clean
-restart, and the keypool was refilled through the LMDB wallet; `backupwallet`
-produced an environment that loaded the same addresses when restored into a
-fresh data directory; and `encryptwallet` compacted and rewrote the
-environment, with the encrypted wallet reopening and unlocking after restart.
+wiring: the first start created `wallet/` (no backend marker is written) and
+printed `Wallet database: LMDB`; `getnewaddress` worked, the address survived a
+clean restart, and the keypool was refilled through the LMDB wallet;
+`backupwallet` produced an environment that loaded the same addresses when
+restored into a fresh data directory; and `encryptwallet` compacted and rewrote
+the environment, with the encrypted wallet reopening and unlocking after
+restart.
 
 ### Backup, verification and restore validation
 
@@ -720,7 +727,7 @@ It follows the operator workflow described above:
 - rejects a data file truncated to its two meta pages, zeroed meta pages and
   an empty directory through both the standalone command and the RPC;
 - starts against a truncated live wallet and requires a non-zero exit, a clear
-  `LMDB wallet ... is incomplete` error, and an unchanged `wallet.backend`;
+  `LMDB wallet ... is incomplete` error, and no backend marker creation;
 - restores the point-in-time backup into the live datadir and proves that the
   pre-backup address and label survive while an address-book entry created
   after the backup is gone; then creates a new address, restarts, and signs
@@ -892,9 +899,10 @@ grown to 7.68 MB, slightly below the 7.79 MB Berkeley DB wallet.
 
 `RewriteWalletLMDB()` closes the live environment before it moves `wallet/`
 aside, so every failure after that point must either reopen a usable
-environment or stop the process.  It never disables LMDB: `wallet.backend`
-still says `lmdb`, and a Berkeley DB fallback would accept writes that the
-next LMDB start could not see.  The failure paths are:
+environment or stop the process.  It never disables LMDB: the LMDB environment
+remains authoritative (a legacy `wallet.backend` marker, if present, still says
+`lmdb`), and a Berkeley DB fallback would accept writes that the next LMDB
+start could not see.  The failure paths are:
 
 - a failed rename of `wallet/` leaves the active environment in place and
   reopens it;
@@ -1017,7 +1025,7 @@ Interrupted `RewriteWalletLMDB` is repaired by
 `RecoverInterruptedWalletRewrite`, called from
 `InitLMDBWalletDBInternal`: if `wallet/` is missing it installs the staged
 `wallet.rewrite` environment or restores `wallet.old`, otherwise it removes
-the staging directories, and it removes a stale `wallet.backend.tmp`.
+the staging directories, and it removes a stale legacy `wallet.backend.tmp`.
 `CWallet::ReacceptWalletTransactions` also repairs spent flags from the
 wallet's own transactions before consulting the chain index, so a wallet
 that committed a send but was killed before that bookkeeping still reports

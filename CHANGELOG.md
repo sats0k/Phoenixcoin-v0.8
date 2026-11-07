@@ -397,10 +397,15 @@ New coverage:
 
 - Berkeley DB has been removed from the entire source tree and standard build
   environment. LMDB is the only runtime database, and no target installs or
-  links `libdb_cxx`. Startup no longer imports legacy databases. A `bdb`
-  marker, or a `wallet.dat` / `blkindex.dat` without a matching `lmdb` marker,
-  fails explicitly and points at the archived converter; it is never opened as
-  an empty LMDB environment.
+  links `libdb_cxx`. Startup no longer imports legacy databases. A legacy
+  `bdb` marker, or a `wallet.dat` / `blkindex.dat` without an LMDB
+  environment, fails explicitly and points at the archived converter; it is
+  never opened as an empty LMDB environment.
+- New data directories no longer create `blkindex.backend` or `wallet.backend`.
+  The LMDB environment is the authority. Markers left by migration-window
+  builds and the archived converter are still read; a `bdb` or unknown marker
+  still fails closed, and an `lmdb` marker still turns a missing environment
+  into an explicit data-loss error instead of a fresh database.
 - The standalone converter source, the test-only BDB fixture, the converter
   regression suites and the live migration-window documentation were removed
   after the migration cycle. The historical migration guide in

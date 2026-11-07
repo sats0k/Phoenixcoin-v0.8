@@ -130,11 +130,12 @@ enum ChainIndexStartupAction
 };
 
 /**
- * Decides what startup should do with the LMDB chain index.  A marker saying
- * LMDB is authoritative forbids starting over: an empty index means data loss,
- * not an invitation to resurrect the old blkindex.dat snapshot.  When no marker
- * exists, an existing blkindex.dat must be migrated with phoenix-db-migrate;
- * only a data directory with neither source nor marker initialises a new index.
+ * Decides what startup should do with the LMDB chain index.  A legacy marker
+ * saying LMDB is authoritative forbids starting over: an empty index means
+ * data loss, not an invitation to resurrect the old blkindex.dat snapshot.
+ * When no marker exists, an existing blkindex.dat must be migrated with
+ * phoenix-db-migrate; only a data directory with neither source nor marker
+ * initialises a new index.
  */
 ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB,
                                                    bool fLMDBEmpty,
@@ -174,20 +175,17 @@ bool ResolveLMDBMapSizes(const std::string& strMapSize,
                          size_t& nMaxMapSize,
                          std::string& strError);
 
-/** Reads the blkindex.backend marker from dir.  Returns false when it is absent. */
+/** Reads a legacy blkindex.backend marker.  Returns false when it is absent. */
 bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
-
-/** Atomically writes the blkindex.backend marker in dir. */
-bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
 
 /** Returns true when dir contains a non-empty LMDB chain index. */
 bool HasLMDBChainIndex(const std::filesystem::path& dir);
 
 /**
- * Checks that the LMDB runtime can use the chain index in dir.  A marker
- * records which format owns the index, and a legacy LMDB index without a
- * marker is still treated as authoritative.  A Berkeley DB marker or source
- * is reported as requiring off-line migration.
+ * Checks that the LMDB runtime can use the chain index in dir.  Current builds
+ * do not write a marker, so an existing LMDB index is authoritative on its own.
+ * A marker left by a migration-window build is still honoured, and a Berkeley
+ * DB marker or source is reported as requiring off-line migration.
  */
 bool CheckChainBackendCompatibility(const std::filesystem::path& dir);
 
@@ -195,8 +193,9 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir);
  * Opens the LMDB chain index.  The runtime never imports a Berkeley DB source;
  * an unmigrated blkindex.dat is an explicit error that names the converter.
  *
- * A blkindex.backend marker records that the data directory has moved to LMDB
- * so that a later start cannot silently load a stale index.
+ * No backend marker is created.  A blkindex.backend file from a migration-
+ * window build is still honoured so a later start cannot silently load a stale
+ * index.
  */
 bool InitLMDBChainDB();
 void CloseLMDBChainDB();
@@ -215,8 +214,8 @@ enum WalletStartupAction
 };
 
 /**
- * Decides what startup should do with the LMDB wallet.  A marker saying LMDB
- * is authoritative forbids silently starting from an empty wallet; that is
+ * Decides what startup should do with the LMDB wallet.  A legacy marker saying
+ * LMDB is authoritative forbids silently starting from an empty wallet; that is
  * data loss, not an invitation to create a fresh wallet.  When no marker is
  * present and wallet.dat exists, the wallet must be migrated with
  * phoenix-db-migrate before the daemon can start.
@@ -224,28 +223,26 @@ enum WalletStartupAction
 WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
                                            bool fBDBWalletExists);
 
-/** Reads the wallet.backend marker from dir.  Returns false when it is absent. */
+/** Reads a legacy wallet.backend marker.  Returns false when it is absent. */
 bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
-
-/** Atomically writes the wallet.backend marker in dir. */
-bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
 
 /** Returns true when dir contains a non-empty LMDB wallet. */
 bool HasLMDBWallet(const std::filesystem::path& dir);
 
 /**
- * Checks that the LMDB runtime can use the wallet in dir.  A marker records
- * which format owns the wallet, and a legacy LMDB wallet without a marker is
- * still treated as authoritative.  A Berkeley DB marker or source is reported
- * as requiring off-line migration.
+ * Checks that the LMDB runtime can use the wallet in dir.  Current builds do
+ * not write a marker, so an existing LMDB wallet is authoritative on its own.
+ * A marker left by a migration-window build is still honoured, and a Berkeley
+ * DB marker or source is reported as requiring off-line migration.
  */
 bool CheckWalletBackendCompatibility(const std::filesystem::path& dir);
 
 /**
  * Validates the configured wallet backend and opens the LMDB wallet when it is
  * selected.  An existing wallet.dat is an explicit migration error and is
- * never imported automatically.  A wallet.backend marker records that LMDB is
- * authoritative, so a later start cannot silently adopt a stale wallet.dat.
+ * never imported automatically.  No backend marker is created; a legacy
+ * wallet.backend marker is still honoured so a later start cannot silently
+ * adopt a stale wallet.dat.
  */
 bool InitLMDBWalletDB();
 void CloseLMDBWalletDB();

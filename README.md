@@ -730,9 +730,8 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Locked-wallet hybrid visibility: hybrid addresses, balances and all
       fully owned hybrid output forms are listed as watch-only while the
       wallet is encrypted, and stay non-spendable until unlocked
-* [x] LMDB as the default chain-index and wallet backend, with first-start
-      migration from Berkeley DB, authoritative backend markers and no
-      implicit fallback
+* [x] LMDB as the only chain-index and wallet backend, with a documented
+      offline conversion for legacy Berkeley DB data and no implicit fallback
 * [x] Verified LMDB wallet backup/restore, offline `checklmdb` verification
       and live `getdbinfo` health diagnostics
 * [x] Automatic LMDB map growth and per-commit fsync by default

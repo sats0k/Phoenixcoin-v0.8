@@ -342,8 +342,8 @@ rm -rf "$MATERIAL_SRC"
 
 echo "== setup: snapshot the reference LMDB wallet =="
 copy_dir "$BASE_WALLET" "$REF_LMDB"
-check_eq "reference wallet marker is lmdb" "lmdb" \
-    "$(cat "$REF_LMDB/wallet.backend" 2>/dev/null)"
+check "reference wallet has LMDB data and no legacy marker" \
+    "$([ -s "$REF_LMDB/wallet/data.mdb" ] && [ ! -e "$REF_LMDB/wallet.backend" ]; echo $?)"
 
 # ---------------------------------------------------------------------------
 # Shared verification.  Every recovered wallet must expose the same state the
@@ -351,8 +351,8 @@ check_eq "reference wallet marker is lmdb" "lmdb" \
 # ---------------------------------------------------------------------------
 verify_common() {
     local dir="$1" label="$2" balance="$3"
-    check_eq "$label: marker is lmdb" "lmdb" \
-        "$(cat "$dir/wallet.backend" 2>/dev/null)"
+    check "$label: LMDB wallet has data and no legacy marker" \
+        "$([ -s "$dir/wallet/data.mdb" ] && [ ! -e "$dir/wallet.backend" ]; echo $?)"
     check_eq "$label: chain still at height 6" "6" \
         "$(rpc_dir "$dir" getblockcount 2>/dev/null)"
     check_eq "$label: balance" "$balance" \
@@ -615,8 +615,8 @@ hybrid_case after
 
 verify_encrypted() {
     local dir="$1" label="$2"
-    check_eq "$label: marker is lmdb" "lmdb" \
-        "$(cat "$dir/wallet.backend" 2>/dev/null)"
+    check "$label: LMDB wallet has data and no legacy marker" \
+        "$([ -s "$dir/wallet/data.mdb" ] && [ ! -e "$dir/wallet.backend" ]; echo $?)"
     check_eq "$label: chain still at height 6" "6" \
         "$(rpc_dir "$dir" getblockcount 2>/dev/null)"
     rpc_expect_fail "$label: wallet is locked after the crash" "$dir" \

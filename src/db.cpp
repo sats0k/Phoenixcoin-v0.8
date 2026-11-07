@@ -253,38 +253,6 @@ bool ReadChainBackendMarker(const std::filesystem::path& dir, std::string& strBa
     return true;
 }
 
-bool WriteChainBackendMarker(const std::filesystem::path& dir, const std::string& strBackend)
-{
-    const std::filesystem::path pathMarker = GetChainBackendMarkerPath(dir);
-    const std::filesystem::path pathTmp = pathMarker.string() + ".tmp";
-
-    {
-        std::ofstream file(pathTmp, std::ios::trunc);
-        if (!file)
-            return error("WriteChainBackendMarker(): cannot create %s",
-                         pathTmp.string().c_str());
-        file << strBackend << "\n";
-        file.flush();
-        if (!file)
-            return error("WriteChainBackendMarker(): cannot write %s",
-                         pathTmp.string().c_str());
-    }
-
-    std::error_code ec;
-    std::filesystem::rename(pathTmp, pathMarker, ec);
-    if (ec) {
-        // Windows does not replace an existing file with rename().
-        std::filesystem::remove(pathMarker, ec);
-        std::filesystem::rename(pathTmp, pathMarker, ec);
-    }
-    if (ec) {
-        std::filesystem::remove(pathTmp, ec);
-        return error("WriteChainBackendMarker(): cannot rename %s to %s",
-                     pathTmp.string().c_str(), pathMarker.string().c_str());
-    }
-    return true;
-}
-
 LMDBOnDiskState InspectLMDBEnvironmentOnDisk(const std::filesystem::path& dir)
 {
     LMDBOnDiskState state;
@@ -354,11 +322,12 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir)
         return true;
     }
 
-    // Older LMDB builds did not write a marker.  Treat an existing LMDB chain
-    // index as authoritative so a stale blkindex.dat is never loaded.
+    // Current builds do not write a marker.  An existing LMDB chain index is
+    // authoritative so a stale blkindex.dat is never loaded; a marker left by
+    // a migration-window build was handled above.
     const LMDBOnDiskState state = InspectLMDBEnvironmentOnDisk(dir / "blkindex");
     if (state.fDirectoryExists && !state.fComplete)
-        return error("Found an incomplete LMDB chain index at %s: %s. "
+        return error("The LMDB chain index at %s is incomplete: %s. "
                      "Restore it from a verified backup, or remove the "
                      "directory to let the node create a fresh index.",
                      (dir / "blkindex").string().c_str(),
@@ -418,41 +387,6 @@ bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strB
     return true;
 }
 
-bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend)
-{
-    const std::filesystem::path pathMarker = GetWalletBackendMarkerPath(dir);
-    const std::filesystem::path pathTmp = pathMarker.string() + ".tmp";
-
-    {
-        std::ofstream file(pathTmp, std::ios::trunc);
-        if (!file)
-            return error("WriteWalletBackendMarker(): cannot create %s",
-                         pathTmp.string().c_str());
-        file.write(strBackend.c_str(), strBackend.size());
-        file << "\n";
-        file.flush();
-        if (!file)
-            return error("WriteWalletBackendMarker(): cannot write %s",
-                         pathTmp.string().c_str());
-    }
-
-    TestWalletCrashPoint("wallet-marker-before-rename");
-    std::error_code ec;
-    std::filesystem::rename(pathTmp, pathMarker, ec);
-    if (ec) {
-        // Windows does not replace an existing file with rename().
-        std::filesystem::remove(pathMarker, ec);
-        std::filesystem::rename(pathTmp, pathMarker, ec);
-    }
-    if (ec) {
-        std::filesystem::remove(pathTmp, ec);
-        return error("WriteWalletBackendMarker(): cannot rename %s to %s",
-                     pathTmp.string().c_str(), pathMarker.string().c_str());
-    }
-    TestWalletCrashPoint("wallet-marker-after-rename");
-    return true;
-}
-
 bool HasLMDBWallet(const std::filesystem::path& dir)
 {
     return InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir)).fComplete;
@@ -477,12 +411,13 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir)
         return true;
     }
 
-    // Older LMDB wallets have no marker.  Treat an existing LMDB wallet as
-    // authoritative so that a stale wallet.dat is never opened.
+    // Current builds do not write a marker.  Treat an existing LMDB wallet as
+    // authoritative so that a stale wallet.dat is never opened; a marker left
+    // by a migration-window build was handled above.
     const LMDBOnDiskState state =
         InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir));
     if (state.fDirectoryExists && !state.fComplete)
-        return error("Found an incomplete LMDB wallet at %s: %s. "
+        return error("The LMDB wallet at %s is incomplete: %s. "
                      "Restore it from a verified backup, or run "
                      "phoenix-db-migrate to rebuild it from wallet.dat.",
                      GetWalletLMDBPath(dir).string().c_str(),
@@ -932,13 +867,9 @@ bool InitLMDBChainDB()
         break;
     }
 
-    if (!WriteChainBackendMarker(GetDataDir(), "lmdb"))
-    {
-        g_lmdbChainDb.Close();
-        g_lmdbChainEnv.Close();
-        return false;
-    }
-
+    // No backend marker is written.  A marker created by a migration-window
+    // build is still read above; new data directories simply use the LMDB
+    // environment as the authority.
     g_fLMDBChainEnabled = true;
     printf("Chain index database: LMDB (%s%s)\n", pathChain.string().c_str(),
            fNoSync ? ", nosync" : "");
@@ -1005,7 +936,8 @@ bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
 // moves the active environment to wallet.old and then installs the staged one.
 // A crash between those renames leaves no wallet/ directory at all, which the
 // startup state machine would otherwise report as data loss.  Finish or undo
-// the rewrite before the marker and emptiness checks look at the directory.
+// the rewrite before the compatibility and emptiness checks look at the
+// directory.
 void RecoverInterruptedWalletRewrite(const std::filesystem::path& dir)
 {
     const std::filesystem::path pathWallet = dir / "wallet";
@@ -1013,9 +945,9 @@ void RecoverInterruptedWalletRewrite(const std::filesystem::path& dir)
     const std::filesystem::path pathOld = dir / "wallet.old";
     std::error_code ec;
 
-    // A marker temp file without a marker means the process died between
-    // write() and rename().  The committed wallet is authoritative and the
-    // startup path will write the marker again.
+    // A marker temp file without a marker means a migration-window build died
+    // between write() and rename().  Current builds do not write markers, so
+    // the staged file is simply stale; the committed wallet is authoritative.
     std::filesystem::remove(dir / "wallet.backend.tmp", ec);
 
     const bool fWallet = std::filesystem::exists(pathWallet, ec) && !ec;
@@ -1112,13 +1044,9 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
         break;
     }
 
-    if (!WriteWalletBackendMarker(dir, "lmdb"))
-    {
-        g_lmdbWalletDb.Close();
-        g_lmdbWalletEnv.Close();
-        return false;
-    }
-
+    // No backend marker is written; a marker left by a migration-window build
+    // is still read above.  New data directories use the LMDB environment as
+    // the authority.
     g_fLMDBWalletEnabled = true;
     g_nWalletMapSize = nMapSize;
     g_nWalletMaxMapSize = nMaxMapSize;
@@ -1168,9 +1096,10 @@ bool RewriteRename(const std::filesystem::path& pathFrom,
 }
 
 // A rewrite failure that leaves no usable LMDB environment cannot fall back
-// to Berkeley DB: wallet.backend still marks LMDB as authoritative, so any
-// BDB write would be invisible after the next restart.  Stop instead of
-// continuing with a split wallet.  Tests can arm TestWalletRewriteAbort to
+// to Berkeley DB: the LMDB environment remains authoritative (a legacy
+// wallet.backend marker, if present, still says lmdb), so any BDB write would
+// be invisible after the next restart.  Stop instead of continuing with a
+// split wallet.  Tests can arm TestWalletRewriteAbort to
 // observe the decision without terminating the test process.
 bool FatalWalletRewrite(const char* pszReason)
 {
@@ -1189,10 +1118,10 @@ bool FatalWalletRewrite(const char* pszReason)
 // encryption) stay in the file until the environment is copied or compacted.
 //
 // Once the live environment is closed it must be reopened before the caller
-// resumes, even when the rewrite fails: the marker still says "lmdb", so a
-// Berkeley DB fallback would accept writes that the next LMDB start could not
-// see.  g_fLMDBWalletEnabled and g_pathLMDBWalletDir therefore never change
-// here.
+// resumes, even when the rewrite fails: the LMDB environment remains
+// authoritative, so a Berkeley DB fallback would accept writes that the next
+// LMDB start could not see.  g_fLMDBWalletEnabled and g_pathLMDBWalletDir
+// therefore never change here.
 bool RewriteWalletLMDB()
 {
     if (!g_fLMDBWalletEnabled)
@@ -2237,10 +2166,10 @@ DBBackendDiagnostics CollectDBBackendDiagnostics(
         ? ReadWalletBackendMarker(dir, strMarker)
         : ReadChainBackendMarker(dir, strMarker);
     diag.strMarker = strMarker;
-    // There is no fallback backend any more: the marker only matches when it
-    // says LMDB *and* that environment is the one currently active.
+    // Current builds do not create a marker.  Absence is therefore normal; a
+    // marker left by a migration-window build must still say LMDB.
     diag.fMarkerMatchesBackend =
-        fLMDBEnabled && diag.fMarkerPresent && strMarker == "lmdb";
+        fLMDBEnabled && (!diag.fMarkerPresent || strMarker == "lmdb");
 
     diag.fEnvironmentOpen = env.GetStats(diag.env);
     diag.fDatabaseOpen = db.GetStats(diag.db);
@@ -2254,8 +2183,8 @@ DBBackendDiagnostics CollectDBBackendDiagnostics(
     else if (!diag.disk.fComplete)
         diag.strError = std::string("LMDB data file is incomplete: ") +
                         diag.disk.strReason;
-    else if (!diag.fMarkerMatchesBackend)
-        diag.strError = "backend marker does not match the active backend";
+    else if (diag.fMarkerPresent && !diag.fMarkerMatchesBackend)
+        diag.strError = "legacy backend marker does not match the active backend";
     return diag;
 }
 

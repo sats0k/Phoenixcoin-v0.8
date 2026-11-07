@@ -2631,9 +2631,7 @@ BOOST_AUTO_TEST_CASE(wallet_encryption_rewrite_failure_is_not_success)
     BOOST_CHECK(wallet->IsLocked());
     BOOST_CHECK(IsLMDBWalletEnabled());
 
-    std::string marker;
-    BOOST_REQUIRE(ReadWalletBackendMarker(guard.dir, marker));
-    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(HasLMDBWallet(guard.dir));
 
     // This is the dangerous state the regression exists for: plaintext pages
     // are still physically present in the LMDB file.
