@@ -1,5 +1,6 @@
 #include <QAbstractItemModel>
 #include <QFile>
+#include <QStringConverter>
 #include <QTextStream>
 
 #include "csvmodelwriter.h"
@@ -48,6 +49,9 @@ bool CSVModelWriter::write()
     if(!file.open(QIODevice::WriteOnly | QIODevice::Text))
         return false;
     QTextStream out(&file);
+    // Qt6 defaults to UTF-8, but make it explicit so exports do not depend on
+    // the locale (Qt5 used the locale codec, which differs on Windows).
+    out.setEncoding(QStringConverter::Utf8);
 
     int numRows = 0;
     if(model)

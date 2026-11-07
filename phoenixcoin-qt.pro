@@ -6,7 +6,7 @@ DEFINES += QT_GUI BOOST_THREAD_USE_LIB BOOST_SPIRIT_THREADSAFE
 CONFIG += no_include_pwd
 CONFIG += thread
 QMAKE_CFLAGS += -DNEOSCRYPT_SHA256 -DNEOSCRYPT_ASM -DNEOSCRYPT_OPT
-QT += core gui network
+QT += core gui widgets network
 
 # Performance: force optimised release flags (asserts compiled out, -O3).
 QMAKE_CFLAGS_RELEASE += -O3 -DNDEBUG
@@ -31,12 +31,13 @@ unix:!macx {
     QMAKE_LFLAGS += -flto=auto -Wl,--gc-sections
 }
 
-greaterThan(QT_MAJOR_VERSION, 4) {
-    QT += widgets
-    message("Building with the Qt v5 support$$escape_expand(\\n)")
-} else {
-    error("Qt5 or newer is required to build the GUI")
+lessThan(QT_MAJOR_VERSION, 6) {
+    error("Qt 6.8 or newer is required to build the GUI")
 }
+equals(QT_MAJOR_VERSION, 6):lessThan(QT_MINOR_VERSION, 8) {
+    error("Qt 6.8 or newer is required to build the GUI")
+}
+message("Building with Qt $$QT_VERSION$$escape_expand(\\n)")
 
 
 # Dependency library locations can be customized with:
@@ -57,33 +58,12 @@ OBJECTS_DIR = build
 MOC_DIR = build
 UI_DIR = build
 
-# use: qmake RELEASE_I386=1
-contains(RELEASE_I386, 1) {
-    # Mac: optimised 32-bit x86
-    macx:QMAKE_CFLAGS += -arch i386 -fomit-frame-pointer -msse2 -mdynamic-no-pic -I/usr/local/i386/include
-    macx:QMAKE_CXXFLAGS += -arch i386 -fomit-frame-pointer -msse2 -mdynamic-no-pic -I/usr/local/i386/include
-    macx:QMAKE_LFLAGS += -arch i386 -L/usr/local/i386/lib
-    # Mac: 10.5+ (GCC 4.2.1) compatibility; Qt with Cocoa is broken on 10.4
-    macx:QMAKE_CFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_OBJECTIVE_CFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.5
-    # Windows: optimised 32-bit x86
-    win32:QMAKE_CFLAGS += -march=i686 -fomit-frame-pointer
-    win32:QMAKE_CXXFLAGS += -march=i686 -fomit-frame-pointer
-}
-
 # use: qmake RELEASE_AMD64=1
 contains(RELEASE_AMD64, 1) {
     # Mac: optimised 64-bit x86
     macx:QMAKE_CFLAGS += -DNEOSCRYPT_MOVQ_FIX -arch x86_64 -fomit-frame-pointer -mdynamic-no-pic -I/usr/local/amd64/include
     macx:QMAKE_CXXFLAGS += -arch x86_64 -fomit-frame-pointer -mdynamic-no-pic -I/usr/local/amd64/include
     macx:QMAKE_LFLAGS += -arch x86_64 -L/usr/local/amd64/lib
-    # Mac: 10.5+ (GCC 4.2.1) compatibility
-    macx:QMAKE_CFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_CXXFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_OBJECTIVE_CFLAGS += -mmacosx-version-min=10.5 -isysroot /Developer/SDKs/MacOSX10.5.sdk
-    macx:QMAKE_MACOSX_DEPLOYMENT_TARGET = 10.5
 }
 
 # strip symbols
@@ -152,12 +132,6 @@ contains(USE_IPV6, -) {
     }
     DEFINES += USE_IPV6=$$USE_IPV6
 }
-
-contains(NEED_QT_PLUGINS, 1) {
-    DEFINES += NEED_QT_PLUGINS
-    QTPLUGIN += qcncodecs qjpcodecs qtwcodecs qkrcodecs qtaccessiblewidgets
-}
-
 
 # regenerate src/build.h
 !win32|contains(USE_BUILD_INFO, 1) {
@@ -370,8 +344,6 @@ HEADERS += src/qt/qrcodedialog.h
 SOURCES += src/qt/qrcodedialog.cpp
 FORMS += src/qt/forms/qrcodedialog.ui
 }
-
-CODECFORTR = UTF-8
 
 # for lrelease/lupdate
 # also add new translations to src/qt/phoenixcoin.qrc under translations/

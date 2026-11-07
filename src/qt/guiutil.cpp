@@ -15,6 +15,7 @@
 #include <QLocale>
 #include <QPalette>
 #include <QList>
+#include <QRegularExpression>
 
 #include <QUrlQuery>
 #include <QStandardPaths>
@@ -42,7 +43,7 @@ QString dateTimeStr(const QDateTime &date)
 
 QString dateTimeStr(qint64 nTime)
 {
-    return dateTimeStr(QDateTime::fromTime_t((qint32)nTime));
+    return dateTimeStr(QDateTime::fromSecsSinceEpoch(static_cast<qint64>(nTime)));
 }
 
 QFont AddressFont() {
@@ -230,11 +231,12 @@ QString getSaveFileName(QWidget *parent, const QString &caption,
     QString result = QFileDialog::getSaveFileName(parent, caption, myDir, filter, &selectedFilter);
 
     /* Extract first suffix from filter pattern "Description (*.foo)" or "Description (*.foo *.bar ...) */
-    QRegExp filter_re(".* \\(\\*\\.(.*)[ \\)]");
+    QRegularExpression filter_re(QRegularExpression::anchoredPattern(".* \\(\\*\\.(.*)[ \\)]"));
     QString selectedSuffix;
-    if(filter_re.exactMatch(selectedFilter))
+    QRegularExpressionMatch match = filter_re.match(selectedFilter);
+    if(match.hasMatch())
     {
-        selectedSuffix = filter_re.cap(1);
+        selectedSuffix = match.captured(1);
     }
 
     /* Add suffix if needed */

@@ -592,7 +592,7 @@ void CoinControl::updateView() {
     QFlags<Qt::ItemFlag> flgCheckbox =
       (Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable);
     QFlags<Qt::ItemFlag> flgTristate =
-      (Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsTristate);
+      (Qt::ItemIsSelectable | Qt::ItemIsEnabled | Qt::ItemIsUserCheckable | Qt::ItemIsAutoTristate);
 
     int nDisplayUnit = CoinUnits::PXC;
     if(model && model->getOptionsModel())
@@ -686,7 +686,7 @@ void CoinControl::updateView() {
               QVariant((qlonglong)out.tx->vout[out.i].nValue));
 
             itemOutput->setText(COLUMN_DATE,
-              QDateTime::fromTime_t(out.tx->GetTxTime()).toString("yy-MM-dd hh:mm"));
+              QDateTime::fromSecsSinceEpoch(out.tx->GetTxTime()).toString("yy-MM-dd hh:mm"));
 
             itemOutput->setText(COLUMN_CONFIRMATIONS,
               strPad(QString::number(out.nDepth), 8, " "));
