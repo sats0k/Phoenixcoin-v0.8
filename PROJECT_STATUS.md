@@ -57,7 +57,11 @@ Implemented components include:
   migration: read-only sources, Berkeley DB verification, transactional raw
   record copy, byte-for-byte read-back, in-transaction and post-commit record
   counts, marker-after-install, restartable interrupt handling and untouched
-  source files
+  source files. It reports the converter, Berkeley DB and LMDB versions, reads
+  databases written by older Berkeley DB releases (upgrading a temporary copy
+  when the on-disk format is old, never the source), and fails with the linked
+  version when the source is newer. It is packaged and distributed separately
+  for the LMDB-only release cycle; see `doc/lmdb-only-release.md`
 - Verified `backupwallet` (compacted copy with a full staged-record scan and
   entry-count comparison) plus offline `checklmdb` / `-checklmdb` structural
   verification and live `getdbinfo` health diagnostics
@@ -140,7 +144,7 @@ make -j$(nproc) DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 
 Four libFuzzer targets (`fuzz_MLDSASigner_deserialize`, `fuzz_encrypted_keys`, `fuzz_hybrid_verify`, `fuzz_hybrid_message_parse`) build and run cleanly under Clang with ASan/UBSan; `fuzz_hybrid_message_parse` fuzzes the pure v1 `HYBS` parser extracted into `src/hs/hybrid_message.{h,cpp}`. See `fuzzREADME.md` at the repository root.
 
-Eleven shell regression scripts under `src/test/` drive full daemons end to end. Six exercise the exported-private-key flows (import persistence, cross-node legacy/hybrid round trips, atomic import under injected write failure, bulk file export/import plus its failure modes, and malformed-record rejection); five cover the LMDB database workflows (the standalone Berkeley DB converter, verified wallet backup/restore and offline `checklmdb`, `SIGKILL` crash safety at every durability boundary, the full wallet lifecycle, and batched block import). Each runs as `src/test/<script> [path-to-phoenixcoind]` and reports a `PASS`/`FAIL` tally.
+Twelve shell regression scripts under `src/test/` drive full daemons end to end. Six exercise the exported-private-key flows (import persistence, cross-node legacy/hybrid round trips, atomic import under injected write failure, bulk file export/import plus its failure modes, and malformed-record rejection); six cover the LMDB database workflows (the standalone Berkeley DB converter, converter compatibility with older Berkeley DB libraries, verified wallet backup/restore and offline `checklmdb`, `SIGKILL` crash safety at every durability boundary, the full wallet lifecycle, and batched block import). Each runs as `src/test/<script> [path-to-phoenixcoind]` and reports a `PASS`/`FAIL` tally.
 
 ## Consensus
 
@@ -200,6 +204,9 @@ Remaining work focuses on:
 - Release Quantum node software.
 - Release updated wallet binaries.
 - Coordinate network activation.
+- Run the LMDB-only release cycle with the separately distributed
+  `phoenix-db-migrate` bundle and monitor the migration issues listed in
+  `doc/lmdb-only-release.md`; Phase 6 removes the converter after the cycle.
 
 ## Summary
 

@@ -20,6 +20,27 @@ Changes since v0.8.3.
   markers only after the environment is installed. Interrupted runs are
   restartable at every install boundary, and the original files are left
   untouched. See `doc/db-migrate.md`.
+- This is the LMDB-only release. The daemon, GUI and normal test binary no
+  longer link Berkeley DB; only the separately distributed `phoenix-db-migrate`
+  bundle and the test-only fixture helper do. New and existing LMDB
+  installations start normally, while a Berkeley DB data directory must be
+  converted first and is refused with explicit guidance. See
+  `doc/lmdb-only-release.md` for the upgrade matrix, rollback, retention and
+  release monitoring checklist.
+- `phoenix-db-migrate` now reports its own version and the linked Berkeley DB
+  and LMDB library versions through `--version` and `--help`. Berkeley DB
+  refuses databases written by a newer release, so the converter names the
+  linked version in verification errors and advises rebuilding against the
+  writer's version or newer. Databases written by an older Berkeley DB release
+  are upgraded on a hidden temporary copy and converted from that copy; the
+  original `wallet.dat` and `blkindex.dat` remain byte-for-byte untouched.
+- A separate `dist-db-migrate` build target packages only the converter and its
+  documentation for the migration release cycle. An optional
+  `check-db-migrate-compat` regression builds a fixture with an older
+  `libdb_cxx` (for example 5.3) and verifies that the shipped converter reads
+  it, preserving the converted record and the source file. The check reports
+  `SKIP` when no older Berkeley DB is installed and is included in
+  `nightly-lmdb`.
 - A locked (encrypted) wallet keeps showing its hybrid holdings instead of
   hiding them.
   `listhybridaddresses` now walks the at-rest `mapHybridKeyDisk` records

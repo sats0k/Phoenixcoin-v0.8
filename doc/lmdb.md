@@ -682,13 +682,15 @@ stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
-`regression_db_migrate.sh` passed 56/56 checks.  It drives the standalone
+`regression_db_migrate.sh` passed 59/59 checks.  It drives the standalone
 converter against fixtures built from an LMDB daemon:
 
 - a sample LMDB wallet and a four-block mainnet chain index are dumped with
   `mdb_dump` and rewritten into legacy `wallet.dat`/`blkindex.dat` files with
   the test-only `phoenix-db-fixture` helper, so no BDB-capable daemon is
   needed;
+- `--version` reports the converter, linked Berkeley DB and LMDB library
+  versions;
 - the converter writes both `lmdb` markers only after verified installs, the
   LMDB record counts match the source, the chain height and tip are preserved,
   and the Berkeley DB files stay byte-for-byte unchanged;
@@ -696,6 +698,12 @@ converter against fixtures built from an LMDB daemon:
 - an encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
   source, and interruption after N records, after the LMDB commit and after
   the install rename are all covered.
+
+`regression_db_migrate_compat.sh` builds a database with an older
+`libdb_cxx` (for example 5.3), converts it with the normal converter and checks
+the marker, environment, converted record and unchanged source.  It reports
+`SKIP` when no older library is installed; release builds run it against the
+oldest Berkeley DB version users actually used.
 
 `regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It drives a real
 daemon through the full LMDB wallet lifecycle:
@@ -771,8 +779,9 @@ make -f Makefile.linux nightly-lmdb
 
 `check-lmdb-backup` builds the daemon and test binary, runs the two focused
 unit tests, then runs `regression_lmdb_wallet_backup.sh`.  `nightly-lmdb` adds
-the converter suite and the wallet lifecycle, crash and batch-import
-regressions.
+the converter suite, the optional older-Berkeley-DB compatibility check, and
+the wallet lifecycle, crash and batch-import regressions.  The converter-only
+release bundle is produced with `make -f Makefile.linux dist-db-migrate`.
 
 ## Wallet backend performance
 

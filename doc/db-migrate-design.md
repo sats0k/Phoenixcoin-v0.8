@@ -1,11 +1,14 @@
 # `phoenix-db-migrate` — standalone Berkeley DB to LMDB converter
 
-Status: design accepted for implementation (Phase 2).
+Status: implemented through Phase 5; shipped separately for the LMDB-only
+release cycle.
 Scope: extract the existing in-daemon BDB→LMDB migrations into a separate
 executable that may link Berkeley DB while the Phoenix daemon, GUI and normal
 test binary do not.
 
-Related inventory: [`bdb-removal-inventory.md`](bdb-removal-inventory.md).
+Related: [`bdb-removal-inventory.md`](bdb-removal-inventory.md),
+[`db-migrate.md`](db-migrate.md),
+[`lmdb-only-release.md`](lmdb-only-release.md).
 
 ---
 
@@ -82,9 +85,9 @@ Options:
   --wallet-target=<dir>    Override <datadir>/wallet (testing)
   --chain-target=<dir>     Override <datadir>/blkindex (testing)
   --map-size=<MiB>         Initial LMDB map size (default: derived from source)
-  --dry-run                Validate and report; write nothing
+  --dry-run                Validate and report; write no target or marker
   --verbose                Print per-record progress every 100000 records
-  --version                Print converter version
+  --version                Print converter, Berkeley DB and LMDB versions
   --help                   Print this help
 ```
 
@@ -232,6 +235,26 @@ migration never touches the chain marker and vice versa.
   migration before any LMDB data is created.
 - Open the database with logical name `main`, type `DB_BTREE`, `DB_RDONLY`.
 - Read every record with a cursor. A cursor error aborts the migration.
+
+### 6.2.1 Berkeley DB version compatibility
+
+Phoenixcoin data directories were written by different Berkeley DB releases.
+Berkeley DB can read and verify databases written by the same or an older
+release; a newer library may upgrade an older on-disk format.
+
+- `--version` and `--help` report the linked Berkeley DB and LMDB runtime
+  versions and the Berkeley DB version the converter was compiled against.
+- A source that needs an on-disk upgrade (`DB_OLD_VERSION`) is copied to a
+  hidden temporary file beside the source, upgraded with `DB->upgrade()`, and
+  converted from the copy. The copy is deleted afterwards; the original source
+  is never modified. The operator must reserve space for this temporary copy.
+- A source written by a Berkeley DB newer than the linked library cannot be
+  verified. The converter fails before creating LMDB data, names the linked
+  version, and advises rebuilding against the writer's version or newer.
+- `test/regression_db_migrate_compat.sh` (make target
+  `check-db-migrate-compat`) builds a fixture with an older `libdb_cxx` and
+  verifies that the shipped converter reads it. It is optional and reports
+  `SKIP` when no older library is installed.
 
 ### 6.3 Record-level validation
 

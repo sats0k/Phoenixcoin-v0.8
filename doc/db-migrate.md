@@ -14,8 +14,11 @@ It handles the two persistent BDB databases:
 is not touched.
 
 The converter is a standalone executable. It links Berkeley DB because it reads
-the old files, but the daemon and GUI do not. It is intended for the transition
-release and will be retired after the migration window.
+the old files, but the daemon, GUI and normal test binary do not. It is
+distributed separately from the daemon for one release cycle and will be
+retired after the migration window. See
+[`lmdb-only-release.md`](lmdb-only-release.md) for the upgrade matrix,
+distribution, Berkeley DB version compatibility and release monitoring.
 
 ---
 
@@ -58,11 +61,11 @@ phoenix-db-migrate --datadir=/path/to/datadir --chain
 Useful options:
 
 ```text
---dry-run              Validate the sources and report record counts; write nothing
+--dry-run              Validate the sources and report record counts; write no target or marker
 --verbose              Print progress every 100000 records
 --map-size=<MiB>       Override the automatically chosen LMDB map size
---version              Print the converter version
---help                 Print the full option list
+--version              Print the converter, Berkeley DB and LMDB versions
+--help                 Print the full option list and library versions
 ```
 
 Exit codes: `0` success (including an already-migrated directory), `1`
@@ -74,7 +77,9 @@ migration failed and the sources are untouched, `2` invalid command line.
 
 For each scope it:
 
-1. runs the Berkeley DB verifier on the source and aborts on any error;
+1. runs the Berkeley DB verifier on the source and aborts on any error; if the
+   source uses an older on-disk format, the converter upgrades and verifies a
+   temporary copy, never the original;
 2. checks that every record key starts with a valid serialized string, that
    `tx` and `blockindex` keys carry a 32-byte hash, and that the source contains
    a `version` record;
@@ -97,6 +102,36 @@ encrypted keys, HD/hybrid metadata, keypool entries, transactions, spent-output
 state, address-book entries, watch-only entries, redeem scripts, labels,
 ordering and chain-index records are additionally validated by the normal
 startup path.
+
+---
+
+## Berkeley DB version compatibility
+
+Data directories were written by different Berkeley DB releases, so the
+converter does not assume one version:
+
+```bash
+phoenix-db-migrate --version
+# phoenix-db-migrate 0.8.4
+# Berkeley DB library: 6.2.32 (compiled against 6.2.32)
+# LMDB library: 0.9.35
+```
+
+- Berkeley DB reads databases written by the same or an older release. A
+  newer library may upgrade an older format automatically.
+- A library older than the source cannot verify it. The converter then fails
+  with a message naming the linked version and advises rebuilding against the
+  writer's version or newer. It never writes a target from a failed source.
+- If the source needs an on-disk upgrade, the converter copies it to a hidden
+  temporary file, upgrades and converts the copy, then deletes the copy. The
+  original `wallet.dat` / `blkindex.dat` stays byte-for-byte untouched.
+- Reserve free space for the temporary upgrade copy as well as the LMDB target:
+  up to 3× the source size when an on-disk upgrade is needed, otherwise about
+  2×. A `--dry-run` may also create this temporary copy; it is deleted before
+  the converter exits and no target or marker is written.
+
+See [`lmdb-only-release.md`](lmdb-only-release.md#4-berkeley-db-version-compatibility)
+for the tested compatibility matrix and the release cross-version check.
 
 ---
 
@@ -153,7 +188,8 @@ Do not delete the BDB files immediately.
 | `marker says LMDB, but the LMDB environment ... is missing` | The marker says LMDB is authoritative but the environment is gone. | Restore a verified backup. Do not delete the marker to force a re-import. |
 | `target ... already exists and is not empty; refusing to overwrite` | A different LMDB environment already occupies the target and there is no completion marker. | Inspect it. If it belongs to another installation, move it aside deliberately; if you have a verified backup, restore and retry. |
 | `marker ... contains an unsupported value` | The marker file is corrupt. | Restore the marker from a backup, or stop and investigate before deleting anything. |
-| `Berkeley DB verification failed` | The source is corrupt. | Restore a verified backup and retry. The converter never creates a target from a failed source. |
+| `Berkeley DB verification failed` | The source is corrupt, or it was written by a Berkeley DB newer than the one the converter links. | Restore a verified backup and retry. If the message names an older linked Berkeley DB, obtain or build a converter linked against the writer's version or newer. The converter never creates a target from a failed source. |
+| `cannot upgrade the temporary Berkeley DB copy` | The source needs an on-disk upgrade but the linked Berkeley DB cannot perform it. | Obtain a converter linked against a newer Berkeley DB. The original file is unchanged. |
 | `record count mismatch` or `read-back does not match` | The copy did not verify (disk error, truncated source, concurrent writer). | Ensure no daemon is running, free disk space, and retry. The source is untouched. |
 
 The converter never falls back to opening a BDB database as an empty LMDB
