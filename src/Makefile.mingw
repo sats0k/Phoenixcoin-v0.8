@@ -36,10 +36,6 @@ BOOST_LIB_SUFFIX = -mgw49-mt-x64-1_81
 BOOST_INCLUDE_PATH = /home/Administrator/boost-1.81
 BOOST_LIB_PATH = /home/Administrator/boost-1.81/stage/lib
 
-BDB_LIB_SUFFIX =
-BDB_INCLUDE_PATH= /home/Administrator/db-5.3.28/build_unix
-BDB_LIB_PATH = /home/Administrator/db-5.3.28/build_unix
-
 # OpenSSL 3.5 or newer is required (key.cpp uses the provider API and
 # hs/hybrid_signer.cpp needs EVP_PKEY_ML_DSA_65): adjust the paths below.
 OPENSSL_LIB_SUFFIX =
@@ -150,22 +146,12 @@ obj/neoscrypt_asm.o: neoscrypt_asm.S
 phoenixcoind.exe: $(OBJS:obj/%=obj/%)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-# Standalone Berkeley DB to LMDB converter.  Only this executable links
-# db_cxx; the daemon and GUI must not.
-MIGRATEOBJS = obj/db_migrate.o
-MIGRATELIBS = -L/usr/local/lib $(addprefix -L,$(BDB_LIB_PATH))
-MIGRATELIBS += -ldb_cxx$(BDB_LIB_SUFFIX) -llmdb -lpthread
-
-phoenix-db-migrate.exe: $(MIGRATEOBJS)
-	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
-
 clean:
 # Windows native shell
 	-del /q obj\*.o obj\*.d obj\*.P obj\build.h
 	-del /q phoenixcoind.exe
-	-del /q phoenix-db-migrate.exe
 # MSYS shell
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
-	-rm -f phoenixcoind.exe phoenix-db-migrate.exe
+	-rm -f phoenixcoind.exe
 
 FORCE:

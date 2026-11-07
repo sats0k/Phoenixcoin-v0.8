@@ -41,10 +41,6 @@ BOOST_LIB_SUFFIX =
 BOOST_INCLUDE_PATH =
 BOOST_LIB_PATH =
 
-BDB_LIB_SUFFIX =
-BDB_INCLUDE_PATH =
-BDB_LIB_PATH =
-
 LMDB_LIB_SUFFIX =
 LMDB_INCLUDE_PATH =
 LMDB_LIB_PATH =
@@ -243,8 +239,7 @@ test_phoenixcoin: $(TESTOBJS) $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 # backupwallet on a live node, offline verification, destination refusals,
 # rejection of copied/truncated environments, fail-closed startup, and a
 # point-in-time restore on a real daemon.
-.PHONY: check-lmdb check-lmdb-backup check-db-migrate check-db-migrate-compat \
-        dist-db-migrate nightly-lmdb
+.PHONY: check-lmdb check-lmdb-backup nightly-lmdb
 
 # Full LMDB-only Boost suite.  The unit tests cover persistence, encryption,
 # hybrid keys, keypool, atomic write/commit rollback, backup/restore, startup
@@ -258,25 +253,10 @@ check-lmdb-backup:
 	./test_phoenixcoin --run_test=kvdb_tests/lmdb_environment_verify:kvdb_tests/wallet_lmdb_backup
 	./test/regression_lmdb_wallet_backup.sh ./phoenixcoind
 
-# Standalone Berkeley DB to LMDB converter, including interruption recovery.
-check-db-migrate:
-	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenixcoind phoenix-db-migrate phoenix-db-fixture
-	./test/regression_db_migrate.sh ./phoenixcoind ./phoenix-db-migrate ./phoenix-db-fixture
-
-# Optional cross-version converter check.  It builds a database with an older
-# libdb_cxx (5.3, 5.1 or 4.8, whichever is installed) and converts it with the
-# normal converter.  When no older library is available the script reports
-# SKIP, so the target is safe on ordinary developer machines; release builds
-# run it at least once against the oldest Berkeley DB version users shipped.
-check-db-migrate-compat:
-	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenix-db-migrate
-	./test/regression_db_migrate_compat.sh ./phoenix-db-migrate \
-	    $(if $(PXC_OLD_BDB_LIB),$(PXC_OLD_BDB_LIB),)
-
 # Longer-running LMDB regression set for CI/nightly jobs.  The full unit suite
-# covers the backend guarantees; the backup restore and converter tests run
-# next because they exercise the recovery paths operators rely on.
-nightly-lmdb: check-lmdb check-lmdb-backup check-db-migrate check-db-migrate-compat
+# covers the backend guarantees; the backup restore tests run next because they
+# exercise the recovery paths operators rely on.
+nightly-lmdb: check-lmdb check-lmdb-backup
 	./test/regression_lmdb_wallet_e2e.sh ./phoenixcoind
 	./test/regression_lmdb_wallet_crash.sh ./phoenixcoind
 	./test/regression_lmdb_import_batch.sh ./phoenixcoind
@@ -286,70 +266,9 @@ nightly-lmdb: check-lmdb check-lmdb-backup check-db-migrate check-db-migrate-com
 wallet_perf: obj-test/wallet_perf.o $(filter-out obj/init.o,$(OBJS:obj/%=obj/%))
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-# Standalone Berkeley DB to LMDB converter.  This is the only executable that
-# links db_cxx; phoenixcoind, test_phoenixcoin and the GUI must never link it.
-# MIGRATELIBS intentionally omits Boost, OpenSSL, secp256k1 and miniUPnP.
-MIGRATEOBJS = obj/db_migrate.o
-MIGRATELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH) $(LMDB_LIB_PATH))
-ifdef DYNAMIC
-MIGRATELIBS += \
-    -l:libdb_cxx.so$(BDB_LIB_SUFFIX) \
-    -l:liblmdb.so$(LMDB_LIB_SUFFIX)
-else ifdef STATIC
-MIGRATELIBS += \
-    -l:libdb_cxx$(BDB_LIB_SUFFIX).a \
-    -l:liblmdb$(LMDB_LIB_SUFFIX).a
-else
-MIGRATELIBS += \
-    -ldb_cxx$(BDB_LIB_SUFFIX) \
-    -l:liblmdb.so$(LMDB_LIB_SUFFIX)
-endif
-MIGRATELIBS += -lpthread -lrt
-
-phoenix-db-migrate: $(MIGRATEOBJS)
-	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
-
-# Separate converter distribution.  The LMDB-only daemon and GUI are shipped
-# through the normal release; this bundle contains only phoenix-db-migrate and
-# the migration documentation, so operators of a Berkeley DB installation can
-# convert their data directory before upgrading.  The bundle is retired after
-# the migration release cycle.
-DIST_VERSION = $(shell sed -n 's/^#define CLIENT_VERSION_MAJOR[[:space:]]*//p' clientversion.h).$(shell sed -n 's/^#define CLIENT_VERSION_MINOR[[:space:]]*//p' clientversion.h).$(shell sed -n 's/^#define CLIENT_VERSION_REVISION[[:space:]]*//p' clientversion.h)
-DIST_PLATFORM = $(shell uname -s | tr '[:upper:]' '[:lower:]')-$(shell uname -m)
-DIST_DIR = dist/phoenix-db-migrate-$(DIST_VERSION)-$(DIST_PLATFORM)
-
-dist-db-migrate:
-	@$(MAKE) -f Makefile.linux $(if $(DYNAMIC)$(STATIC),,DYNAMIC=1) phoenix-db-migrate
-	rm -rf "$(DIST_DIR)"
-	mkdir -p "$(DIST_DIR)/doc"
-	cp phoenix-db-migrate "$(DIST_DIR)/"
-	cp ../doc/db-migrate.md ../doc/db-migrate-design.md \
-	    ../doc/lmdb-only-release.md "$(DIST_DIR)/doc/"
-	cp ../LICENCE ../CHANGELOG.md "$(DIST_DIR)/"
-	cd "$(DIST_DIR)" && find . -type f ! -name SHA256SUMS -print0 | \
-	    sort -z | xargs -0 sha256sum > SHA256SUMS
-	@echo "Wrote $(DIST_DIR)"
-
-# Test-only helper that writes a legacy-layout Berkeley DB file from an LMDB
-# dump, so the converter regression suite can build BDB fixtures without an
-# old daemon.  It links db_cxx and is never installed.
-FIXTUREOBJS = obj-test/bdb_fixture.o
-FIXTURELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH))
-ifdef DYNAMIC
-FIXTURELIBS += -l:libdb_cxx.so$(BDB_LIB_SUFFIX)
-else ifdef STATIC
-FIXTURELIBS += -l:libdb_cxx$(BDB_LIB_SUFFIX).a
-else
-FIXTURELIBS += -ldb_cxx$(BDB_LIB_SUFFIX)
-endif
-FIXTURELIBS += -lpthread -lrt
-
-phoenix-db-fixture: $(FIXTUREOBJS)
-	$(LD) $(LDFLAGS) -o $@ $^ $(FIXTURELIBS)
-
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
 	-rm -f obj-test/*.o obj-test/*.d obj-test/*.P
-	-rm -f phoenixcoind test_phoenixcoin wallet_perf phoenix-db-migrate phoenix-db-fixture
+	-rm -f phoenixcoind test_phoenixcoin wallet_perf
 
 FORCE:

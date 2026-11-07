@@ -33,10 +33,6 @@ BOOST_LIB_SUFFIX =
 BOOST_INCLUDE_PATH =
 BOOST_LIB_PATH =
 
-BDB_LIB_SUFFIX =
-BDB_INCLUDE_PATH =
-BDB_LIB_PATH =
-
 # OpenSSL 3.5 or newer is required: key.cpp uses the provider API and
 # hs/hybrid_signer.cpp needs EVP_PKEY_ML_DSA_65.
 OPENSSL_LIB_SUFFIX =
@@ -158,17 +154,8 @@ obj/neoscrypt_asm.o: neoscrypt_asm.S
 phoenixcoind: $(OBJS:obj/%=obj/%)
 	$(LD) $(LDFLAGS) -o $@ $^ $(LIBS)
 
-# Standalone Berkeley DB to LMDB converter.  Only this executable links
-# db_cxx; the daemon and GUI must not.
-MIGRATEOBJS = obj/db_migrate.o
-MIGRATELIBS = -L$(DEPSDIR)/lib $(addprefix -L,$(BDB_LIB_PATH))
-MIGRATELIBS += -ldb_cxx$(BDB_LIB_SUFFIX) -llmdb
-
-phoenix-db-migrate: $(MIGRATEOBJS)
-	$(LD) $(LDFLAGS) -o $@ $^ $(MIGRATELIBS)
-
 clean:
 	-rm -f obj/*.o obj/*.d obj/*.P obj/build.h
-	-rm -f phoenixcoind phoenix-db-migrate
+	-rm -f phoenixcoind
 
 FORCE:
