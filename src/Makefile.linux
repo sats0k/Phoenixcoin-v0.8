@@ -226,7 +226,7 @@ TESTOBJS := \
     obj-test/util_tests.o \
     obj-test/testutil.o \
     obj-test/test_main.o \
-    obj-test/wallet_migration_tests.o \
+    obj-test/wallet_persistence_tests.o \
     obj-test/wallet_tests.o
 
 obj-test/%.o: test/%.cpp

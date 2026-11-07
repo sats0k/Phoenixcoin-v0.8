@@ -32,7 +32,7 @@
 
 extern CWallet *pwalletMain;
 
-BOOST_AUTO_TEST_SUITE(wallet_migration_tests)
+BOOST_AUTO_TEST_SUITE(wallet_persistence_tests)
 
 namespace {
 
@@ -40,7 +40,7 @@ static std::filesystem::path MakeTempDir(const std::string &tag)
 {
     static std::atomic<unsigned int> counter(0);
     std::filesystem::path dir = std::filesystem::temp_directory_path() /
-        ("phoenixcoin_wallet_migration_" + tag + "_" +
+        ("phoenixcoin_wallet_persistence_" + tag + "_" +
          std::to_string(GetTimeMillis()) + "_" +
          std::to_string(counter.fetch_add(1)));
 
@@ -84,18 +84,6 @@ public:
     using CDB::ReadKV;
     using CDB::WriteKV;
 };
-
-/**
- * Reopens the LMDB wallet in dir, simulating a daemon restart.  The records
- * written through the wallet handles above are already in that environment;
- * there is no Berkeley DB source file any more.
- */
-static void MigrateMockWallet(const std::filesystem::path &dir)
-{
-    CloseLMDBWalletDB();
-    BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
-    BOOST_CHECK(IsLMDBWalletEnabled());
-}
 
 /** Simulates a daemon restart of the LMDB wallet in dir. */
 static void RestartLMDBWallet(const std::filesystem::path &dir)
@@ -446,7 +434,7 @@ struct WalletSnapshot
 };
 
 /**
- * Captures every wallet-level fact the migration must preserve.  Secret
+ * Captures every wallet-level fact the persistence layer must preserve.  Secret
  * material is only read while it is available (unencrypted or unlocked); the
  * encrypted case is covered by the raw record comparison and by signing after
  * an unlock.
@@ -512,7 +500,7 @@ static WalletSnapshot CaptureWalletSnapshot(
     // Hybrid keys live in three places: the decrypted in-memory map (with the
     // ML-DSA signer embedded in CHybridKey, there is no separate signer map),
     // the encrypted-at-rest disk map, and the hybrid address book.  All three
-    // must survive migration unchanged.
+    // must survive a restart unchanged.
     for (const auto &entry : wallet.mapHybridKeys) {
         HybridKeySnapshot hybrid;
         hybrid.secpPriv = entry.second.secpPriv;
@@ -795,7 +783,7 @@ struct BuiltWallet
 };
 
 /**
- * Populates wallet.dat with every record type the migration has to preserve:
+ * Populates wallet.dat with every record type persistence has to preserve:
  * regular and uncompressed keys, key metadata, a watch-only script, a redeem
  * script, address labels, a default key, a fully populated keypool, and
  * transactions with block, timestamp, order, label, spent and
@@ -841,7 +829,7 @@ static BuiltWallet BuildRichWallet(CWallet &wallet)
 
     // Loading the wallet has already topped up the hybrid key pool.  Label one
     // of those keys so the hybrid address book and its "hybaddr" record are
-    // part of the state the migration has to preserve.
+    // part of the state persistence has to preserve.
     BOOST_REQUIRE(!wallet.mapHybridKeys.empty());
     const CHybridKeyID labelledHybridID = wallet.mapHybridKeys.begin()->first;
     BOOST_REQUIRE(wallet.SetHybridAddressBookName(labelledHybridID,
@@ -884,7 +872,7 @@ static BuiltWallet BuildRichWallet(CWallet &wallet)
 
         CWalletTx &stored = wallet.mapWallet[tx.GetHash()];
         stored.strFromAccount = (variant == 0) ? "account-a" : "account-b";
-        stored.mapValue["comment"] = "migration transaction";
+        stored.mapValue["comment"] = "persistence transaction";
         stored.mapValue["label"] = "tx-label";
         if (variant == 0)
             stored.mapValue["abandoned"] = "1";
@@ -927,7 +915,7 @@ static void CheckSigningWorks(CWallet &wallet, const CKeyID &keyID,
     BOOST_CHECK_MESSAGE(key.GetPubKey().GetID() == keyID,
                         phase << ": key does not match its ID");
 
-    const uint256 hash = SerializeHash(std::string("wallet-migration-signing"));
+    const uint256 hash = SerializeHash(std::string("wallet-persistence-signing"));
     std::vector<unsigned char> signature;
     BOOST_REQUIRE_MESSAGE(key.Sign(hash, signature),
                           phase << ": signing failed");
@@ -939,7 +927,7 @@ static void CheckSigningWorks(CWallet &wallet, const CKeyID &keyID,
  * Every hybrid key has three representations that must agree: the legacy
  * ECDSA key in the normal keystore, the hybrid record keyed by CHybridKeyID,
  * and the embedded ML-DSA signer.  This is the invariant the atomic import and
- * the wallet migration both have to preserve.
+ * wallet persistence both have to preserve.
  */
 static void CheckHybridKeyInvariants(CWallet &wallet, const std::string &phase)
 {
@@ -1009,7 +997,7 @@ static void CheckHybridSigningWorks(CWallet &wallet,
                           phase << ": wallet cannot load the hybrid key");
     BOOST_REQUIRE(hybrid.mldsaSigner != nullptr);
 
-    const std::string message = "wallet migration hybrid signature";
+    const std::string message = "wallet persistence hybrid signature";
     std::vector<unsigned char> signature;
     BOOST_REQUIRE_MESSAGE(SignHybridMessage(hybrid, message, signature),
                           phase << ": hybrid signing failed");
@@ -1090,14 +1078,14 @@ struct KeyPoolArgGuard
 } // namespace
 
 /**
- * The migration must preserve the wallet's semantic state, not just its record
+ * Persistence must preserve the wallet's semantic state, not just its record
  * count: keys and metadata, scripts, watch-only entries, address labels,
  * transactions (including order, block association, timestamps and
  * abandoned/conflicted metadata), keypool records, and ordering state.  The
  * raw records are also compared byte-for-byte, which covers encrypted key
  * material that cannot be inspected while the wallet is locked.
  */
-BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
+BOOST_AUTO_TEST_CASE(wallet_persistence_preserves_semantic_state)
 {
     TempDirGuard guard("wallet_semantics");
 
@@ -1164,34 +1152,34 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
         BOOST_CHECK_EQUAL(entry.second.mldsaAlg, memory->second.mldsaAlg);
     }
 
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
-    std::unique_ptr<CWallet> migratedWallet(LoadWalletOrFail());
-    CheckHybridKeyInvariants(*migratedWallet, "migrated wallet");
-    const WalletSnapshot migrated = CaptureWalletSnapshot(
-        *migratedWallet, built.scripts, built.watchScripts);
-    migratedWallet.reset();
+    std::unique_ptr<CWallet> reloadedWallet(LoadWalletOrFail());
+    CheckHybridKeyInvariants(*reloadedWallet, "reloaded wallet");
+    const WalletSnapshot reloaded = CaptureWalletSnapshot(
+        *reloadedWallet, built.scripts, built.watchScripts);
+    reloadedWallet.reset();
 
-    const std::map<CDBKey, CDBValue> migratedRecords = CaptureRecords();
-    BOOST_CHECK_MESSAGE((migratedRecords.size()) == (expectedRecords.size()),
+    const std::map<CDBKey, CDBValue> reloadedRecords = CaptureRecords();
+    BOOST_CHECK_MESSAGE((reloadedRecords.size()) == (expectedRecords.size()),
                         "LMDB wallet record count differs");
-    BOOST_CHECK_MESSAGE(migratedRecords == expectedRecords,
+    BOOST_CHECK_MESSAGE(reloadedRecords == expectedRecords,
                         "LMDB wallet records differ from wallet.dat");
-    BOOST_CHECK_EQUAL(CountRecordsOfType(migratedRecords, "ckey"), 0U);
+    BOOST_CHECK_EQUAL(CountRecordsOfType(reloadedRecords, "ckey"), 0U);
     BOOST_CHECK_MESSAGE(expectedHybridIDs ==
-                            HybridRecordIDs(migratedRecords, "hyb"),
+                            HybridRecordIDs(reloadedRecords, "hyb"),
                         "LMDB wallet lost hybrid key records");
     BOOST_CHECK_MESSAGE(expectedHybridAddressIDs ==
-                            HybridRecordIDs(migratedRecords, "hybaddr"),
+                            HybridRecordIDs(reloadedRecords, "hybaddr"),
                         "LMDB wallet lost hybrid address records");
-    BOOST_CHECK_MESSAGE(KeyRecordIDs(migratedRecords, "key") ==
+    BOOST_CHECK_MESSAGE(KeyRecordIDs(reloadedRecords, "key") ==
                             expectedKeyRecords,
                         "LMDB wallet changed legacy ECDSA key records");
-    BOOST_CHECK_MESSAGE(ReadHybridDiskRecords(migratedRecords).size() ==
+    BOOST_CHECK_MESSAGE(ReadHybridDiskRecords(reloadedRecords).size() ==
                             expectedDisks.size(),
                         "LMDB wallet hybrid disk record count changed");
 
-    CheckSnapshotsEqual(expected, migrated, "migrated wallet");
+    CheckSnapshotsEqual(expected, reloaded, "reloaded wallet");
 
     // A restart must load the same wallet state from LMDB only.
     RestartLMDBWallet(guard.dir);
@@ -1221,7 +1209,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_semantic_state)
  * Also checks sequential next indices, ownership of every pool key, and refill
  * after a key is consumed.
  */
-BOOST_AUTO_TEST_CASE(wallet_migration_preserves_keypool_lifecycle)
+BOOST_AUTO_TEST_CASE(wallet_persistence_preserves_keypool_lifecycle)
 {
     TempDirGuard guard("wallet_keypool");
 
@@ -1236,7 +1224,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_keypool_lifecycle)
         *expectedWallet, built.scripts, built.watchScripts);
     expectedWallet.reset();
 
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
     RestartLMDBWallet(guard.dir);
 
     KeyPoolArgGuard keyPoolArg("4");
@@ -1340,7 +1328,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_preserves_keypool_lifecycle)
  * legacy ECDSA key, the "hyb" hybrid record, and (with a label) the "hybaddr"
  * address-book record.  All three have to survive a restart and still sign.
  */
-BOOST_AUTO_TEST_CASE(wallet_migration_hybrid_import_roundtrip)
+BOOST_AUTO_TEST_CASE(wallet_persistence_hybrid_import_roundtrip)
 {
     TempDirGuard guard("wallet_hybrid_import");
 
@@ -1350,7 +1338,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_hybrid_import_roundtrip)
         built = BuildRichWallet(wallet);
     }
 
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     // Build a standalone hybrid key outside the wallet and export it through
     // the real dumphybridkey RPC path, just as a user's backup would.
@@ -1485,7 +1473,7 @@ static void RunHybridImportRollback(const std::string &tag,
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     const ExportedHybridKey imported = MakeExportedHybridKey();
 
@@ -1591,7 +1579,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_write_boundaries)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     // Load once so any top-up triggered by opening the wallet is out of the way.
     {
@@ -1819,7 +1807,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_hybrid_keypool_rollback)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     const std::map<CDBKey, CDBValue> baseline = CaptureRecords();
@@ -1909,7 +1897,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_new_key_pool_rollback)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -2028,7 +2016,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_top_up_key_pool_rollback)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     KeyPoolArgGuard keyPoolArg("6");
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
@@ -2114,16 +2102,16 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_ecdsa_top_up_key_pool_rollback)
 }
 
 /**
- * Encryption lifecycle on a migrated wallet:
+ * Encryption lifecycle on an unencrypted wallet:
  *
- *   unencrypted -> migrate -> sign -> encrypt -> restart
+ *   unencrypted -> restart -> sign -> encrypt -> restart
  *               -> still encrypted -> unlock -> sign -> lock
  *               -> restart -> unlock -> sign
  *
  * It also checks that encryption removes every plaintext key record and that
  * the compacted LMDB files no longer contain the old private-key bytes.
  */
-BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
+BOOST_AUTO_TEST_CASE(wallet_persistence_encryption_lifecycle)
 {
     TempDirGuard guard("wallet_encryption");
 
@@ -2133,7 +2121,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
         built = BuildRichWallet(wallet);
     }
 
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     const SecureString passphrase("correct horse battery staple\n");
     const SecureString wrongPassphrase("not the passphrase\n");
@@ -2146,15 +2134,15 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
     BOOST_REQUIRE(!wallet->IsLocked());
-    CheckHybridKeyInvariants(*wallet, "unencrypted migrated wallet");
+    CheckHybridKeyInvariants(*wallet, "unencrypted wallet");
     BOOST_REQUIRE(!wallet->mapHybridKeys.empty());
     const CHybridKeyID hybridSigningID = wallet->mapHybridKeys.begin()->first;
 
-    // An unencrypted migrated wallet can sign straight away.
+    // An unencrypted wallet can sign straight away.
     const CKeyID signingKeyID = built.pubKeys[0].GetID();
-    CheckSigningWorks(*wallet, signingKeyID, "unencrypted migrated wallet");
+    CheckSigningWorks(*wallet, signingKeyID, "unencrypted wallet");
     CheckHybridSigningWorks(*wallet, hybridSigningID,
-                            "unencrypted migrated wallet");
+                            "unencrypted wallet");
 
     // Remember the plaintext secrets so the on-disk scan below can prove they
     // are gone after encryption and compaction.  Hybrid keys contribute both
@@ -2234,7 +2222,7 @@ BOOST_AUTO_TEST_CASE(wallet_migration_encryption_lifecycle)
     BOOST_CHECK(!wallet->GetKey(signingKeyID, lockedKey));
     wallet.reset();
 
-    // Restart: the migration target must still be an encrypted wallet.
+    // Restart: the reloaded wallet must still be encrypted.
     RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> restarted(LoadWalletOrFail());
@@ -2312,7 +2300,7 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_plaintext)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -2401,7 +2389,7 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_bad_records)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     const std::map<CDBKey, CDBValue> records = CaptureRecords();
     const std::map<CHybridKeyID, CHybridKeyDisk> disks =
@@ -2465,7 +2453,7 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_encrypted)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     const SecureString passphrase("correct horse battery staple\n");
 
@@ -2553,12 +2541,12 @@ BOOST_AUTO_TEST_CASE(wallet_hybrid_invariant_diagnostics_encrypted)
         BOOST_CHECK(check.fDeepVerified);
     }
 
-    const std::map<CHybridKeyID, CHybridKeyDisk> migrated =
+    const std::map<CHybridKeyID, CHybridKeyDisk> reencrypted =
         ReadHybridDiskRecords(CaptureRecords());
-    const auto migratedDisk = migrated.find(hybridID);
-    BOOST_REQUIRE(migratedDisk != migrated.end());
-    BOOST_CHECK(migratedDisk->second.IsEncrypted());
-    BOOST_CHECK(migratedDisk->second.CheckChecksum());
+    const auto reencryptedDisk = reencrypted.find(hybridID);
+    BOOST_REQUIRE(reencryptedDisk != reencrypted.end());
+    BOOST_CHECK(reencryptedDisk->second.IsEncrypted());
+    BOOST_CHECK(reencryptedDisk->second.CheckChecksum());
 }
 
 // Regression: encryptwallet must never report success when the post-encryption
@@ -2585,7 +2573,7 @@ BOOST_AUTO_TEST_CASE(wallet_encryption_rewrite_failure_is_not_success)
         built = BuildRichWallet(wallet);
     }
 
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     const SecureString passphrase("correct horse battery staple\n");
     const CKeyID signingKeyID = built.pubKeys[0].GetID();
@@ -2748,7 +2736,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_new_and_update)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -2934,7 +2922,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_default_key_rotation)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     // Keep the pool from being replenished during the test: every rotation
     // consumes exactly one pre-existing key.
@@ -3076,7 +3064,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_add_to_wallet_spent_batch)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -3214,7 +3202,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_spent_batch)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -3386,7 +3374,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_single_input_change_retry)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     std::unique_ptr<CWallet> wallet(LoadWalletOrFail());
     BOOST_REQUIRE(!wallet->IsCrypted());
@@ -3596,7 +3584,7 @@ BOOST_AUTO_TEST_CASE(wallet_atomic_commit_transaction_default_key_rotation)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     // Keep the pool from being replenished until the successful retry: each
     // failed attempt consumes exactly one pre-existing key.
@@ -3765,7 +3753,7 @@ BOOST_AUTO_TEST_CASE(wallet_commit_failure_does_not_broadcast)
         CWallet wallet("wallet.dat");
         built = BuildRichWallet(wallet);
     }
-    MigrateMockWallet(guard.dir);
+    RestartLMDBWallet(guard.dir);
 
     // BuildRichWallet() leaves four pool entries.  A target of three stops
     // ReserveKeyFromKeyPool() from topping up before the first reservation.
