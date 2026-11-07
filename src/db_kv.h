@@ -52,10 +52,9 @@ public:
 /**
  * Backend-neutral forward scan over a database.
  *
- * A key/value database needs a read transaction for the whole scan; Berkeley
- * DB scans are driven by a cursor instead.  CDBScan owns whichever resources
- * the selected backend needs and exposes the small common interface the
- * wallet loaders use.
+ * A key/value database needs read resources for the whole scan.  CDBScan owns
+ * the backend's transaction and cursor and exposes the small common interface
+ * the wallet loaders use.
  */
 class CDBScan
 {

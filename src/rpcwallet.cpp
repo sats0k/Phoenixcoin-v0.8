@@ -1520,9 +1520,8 @@ Value encryptwallet(const Array &params, bool fHelp) {
     if (!pwalletMain->EncryptWallet(strWalletPass))
         throw JSONRPCError(RPC_WALLET_ENCRYPTION_FAILED, "Error: Failed to encrypt the wallet.");
 
-    // BDB seems to have a bad habit of writing old data into
-    // slack space in .dat files; that is bad if the old data is
-    // unencrypted private keys. So:
+    // EncryptWallet rewrites the wallet and flushes the keypool, so stop here
+    // and let the restarted process open the encrypted wallet.
     StartShutdown();
     return "wallet encrypted; Phoenixcoin server stopping, restart to run with encrypted wallet.  The keypool has been flushed, you need to make a new backup.";
 }

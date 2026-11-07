@@ -31,7 +31,7 @@ struct TestingSetup {
         noui_connect();
 
         // The unit tests exercise the real LMDB backend in a throw-away data
-        // directory.  There is no mocked Berkeley DB environment any more.
+        // directory.
         g_testDataDir = std::filesystem::temp_directory_path() /
             ("phoenixcoin_unit_" + std::to_string(GetTimeMillis()));
         std::error_code ec;

@@ -138,8 +138,7 @@ bool g_fLMDBWalletEnabled = false;
 
 // Serializes wallet environment lifecycle operations (init, rewrite, backup,
 // flush) against each other.  Short-lived CWalletDB handles increment
-// g_nWalletKVHandles so a rewrite can wait for them to drain, mirroring the
-// Berkeley DB mapFileUseCount protocol.
+// g_nWalletKVHandles so a rewrite can wait for them to drain.
 std::mutex g_mutexWalletKV;
 std::atomic<int> g_nWalletKVHandles(0);
 size_t g_nWalletMapSize = 0;
@@ -886,8 +885,8 @@ bool InitLMDBChainDB()
                      strMapSizeError.c_str());
 
     // Durability is the safe default.  -lmdbnosync=1 is an explicit opt-in
-    // for bulk import or benchmarking; it matches Berkeley DB's
-    // DB_TXN_WRITE_NOSYNC behaviour but skips the per-commit fsync.
+    // for bulk import or benchmarking; it keeps commits atomic and consistent
+    // but skips the per-commit fsync.
     const bool fNoSync = GetBoolArg("-lmdbnosync", false);
 
     if (!g_lmdbChainEnv.Open(pathChain.string(), true, nMapSize, fNoSync,
