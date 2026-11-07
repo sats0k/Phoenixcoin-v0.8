@@ -690,13 +690,15 @@ In addition to the Boost unit suite, this directory contains shell
 regression scripts that drive full `phoenixcoind` daemons end to end.
 They exercise the hybrid private-key export/import flows and the LMDB
 wallet and chain-index workflows that need a real wallet and database:
-the standalone Berkeley DB to LMDB converter, converter compatibility with
-older Berkeley DB libraries, verified backup/restore, offline `checklmdb`,
-`SIGKILL` crash safety at each durability boundary, the full wallet lifecycle
-and batched block import. Each script takes an
-optional path to a `phoenixcoind` binary (defaults to the freshly built
-`src/phoenixcoind`), prints a `PASS`/`FAIL` tally, and exits non-zero on
-any failure:
+verified backup/restore, offline `checklmdb`, `SIGKILL` crash safety at each
+durability boundary, the full wallet lifecycle and batched block import. Each
+script takes an optional path to a `phoenixcoind` binary (defaults to the
+freshly built `src/phoenixcoind`), prints a `PASS`/`FAIL` tally, and exits
+non-zero on any failure.
+
+The Berkeley DB converter and its regression suites were retired with the
+migration support; recovery with the archived converter is described in
+[`doc/archive/bdb-migration.md`](../../doc/archive/bdb-migration.md).
 
 - `regression_importhybridkey.sh` — an `importhybridkey`-imported hybrid
   key is readable (`dumphybridkey`) immediately and after a full daemon
@@ -723,28 +725,6 @@ any failure:
   too-few-fields lines, unparseable timestamps, timestamps with trailing
   garbage, and zero (epoch) timestamps each fail the import with a
   diagnostic in the debug log.
-- `regression_db_migrate.sh` — the standalone `phoenix-db-migrate` converter.
-  An LMDB daemon creates a sample wallet and chain index; `mdb_dump` and the
-  test-only `phoenix-db-fixture` helper rewrite them into legacy
-  `wallet.dat`/`blkindex.dat` files, so the converter is exercised against the
-  real on-disk shape of a pre-LMDB data directory without needing a
-  BDB-capable daemon. The test records the source hashes and record counts,
-  runs the converter, and requires both `lmdb` markers, matching LMDB record
-  counts, byte-identical BDB sources and a clean staging directory. It then
-  starts the LMDB daemon and checks addresses, private keys, hybrid keys,
-  account labels, redeem scripts, keypool size and `getdbinfo`; a second run
-  must report `already migrated` without changing anything. It also covers an
-  encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
-  source, and interruption after N records, after the LMDB commit and after
-  the install rename. Set `PXC_REGTEST_PORT` to pin the daemon RPC port.
-- `regression_db_migrate_compat.sh` — converter compatibility with older
-  Berkeley DB versions. It compiles a small fixture writer against an older
-  `libdb_cxx` (5.3, 5.1 or 4.8, whichever is installed), writes a database in
-  that older format, converts it with the normal converter, and checks the
-  `lmdb` marker, the installed environment, the converted record and the
-  unchanged source. It reports `SKIP` and exits successfully when no older
-  library is available. Select a library with `PXC_OLD_BDB_LIB`; release builds
-  run it against the oldest Berkeley DB users actually used.
 - `regression_lmdb_import_batch.sh` — `-loadblock` / `bootstrap.dat` bulk
   import on the LMDB chain index. A clean four-block file must commit as one
   batch and preserve the tip, block bytes and transaction lookups across a
@@ -806,9 +786,6 @@ For CI or nightly jobs, the LMDB backup/restore path has dedicated targets:
 ```
 cd src
 make -f Makefile.linux check-lmdb-backup   # focused unit tests + backup/restore script
-make -f Makefile.linux check-db-migrate    # standalone BDB-to-LMDB converter suite
-make -f Makefile.linux check-db-migrate-compat  # optional older-BDB cross-version check
-make -f Makefile.linux dist-db-migrate     # converter-only release bundle
 make -f Makefile.linux nightly-lmdb        # adds the wallet lifecycle, crash and import regressions
 ```
 

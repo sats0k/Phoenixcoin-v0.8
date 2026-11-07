@@ -359,24 +359,17 @@ See [`SECURITY.md`](SECURITY.md) for the detailed cryptographic security model.
 # Database Backends
 
 The chain index and the wallet both use LMDB. It is the only supported
-runtime backend; Berkeley DB support has been removed. There is no implicit
-fallback to a legacy database.
+runtime backend; Berkeley DB support has been fully removed. There is no
+implicit fallback to a legacy database, and no part of the source tree or
+standard build environment links Berkeley DB.
 
-Existing Berkeley DB data directories must be converted offline with the
-standalone `phoenix-db-migrate` utility **before** starting this release. The
-converter is distributed separately from the daemon for one release cycle,
-reads `wallet.dat` and `blkindex.dat` read-only, verifies every copied record,
-installs the LMDB environments and writes the `lmdb` markers only after
-verification. The original Berkeley DB files are left untouched as a recovery
-copy. The converter reports its own version and the linked Berkeley DB and LMDB
-libraries, and can read databases written by older Berkeley DB releases; when
-the on-disk format needs an upgrade it upgrades a temporary copy, never the
-source. See
-[`doc/db-migrate.md`](doc/db-migrate.md) for the backup, disk-space, downtime
-and verification procedure, and
-[`doc/lmdb-only-release.md`](doc/lmdb-only-release.md) for the upgrade matrix,
-converter distribution, Berkeley DB version compatibility and the monitoring
-checklist for this release cycle.
+A data directory from the Berkeley DB era is refused with explicit guidance.
+Operators who still hold one must use the archived converter release described
+in [`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md) before
+starting the node. The converter was distributed separately during the
+migration window; the archived guide covers the backup, disk-space, downtime,
+verification and recovery procedure. Once converted, the LMDB environments and
+markers are the same ones the current daemon uses.
 
 LMDB commits fsync by default (`-lmdbnosync=0`), the map grows automatically as
 it fills up to `-lmdbmaxmapsize` / `-lmdbmaxwalletsize`, and `backupwallet`
@@ -463,7 +456,7 @@ The Quantum implementation currently uses:
 | OpenSSL providers | Cryptographic algorithm/provider support |
 | NeoScrypt         | Proof of work                            |
 | LMDB              | Chain-index/wallet database              |
-| Berkeley DB       | Converter-only: reads legacy data files  |
+| Berkeley DB       | Not used; historical migration only      |
 
 ---
 
@@ -475,10 +468,9 @@ Minimum versions used by this development branch include:
 
 * **OpenSSL 3.5 or newer**
 * **Boost 1.89 or newer**
-* **LMDB** (linked by the daemon, GUI and tests). Berkeley DB is only needed
-  to build the separately distributed `phoenix-db-migrate` converter and the
-  test-only fixture helper; the daemon, GUI and normal test binary never link
-  it.
+* **LMDB** (linked by the daemon, GUI and tests). Berkeley DB is not required
+  to build or run any part of the current tree; it is only needed if you build
+  the archived migration converter from historical sources.
 * **libsecp256k1** for the classical secp256k1 key operations
 * C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
   `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
@@ -521,17 +513,7 @@ project applies LTO to ELF targets. Release builds also enable
 `STATIC=1` links the static LMDB archive (`liblmdb.a`) instead of the shared
 library, matching the Boost and OpenSSL branches. For a non-default
 installation, `LMDB_INCLUDE_PATH`, `LMDB_LIB_PATH` and `LMDB_LIB_SUFFIX` select
-the include directory, library directory and filename suffix. The standalone
-converter has its own `BDB_*` variables for the Berkeley DB it links; those do
-not affect the daemon.
-
-The converter bundle is built separately and never contains the daemon or GUI:
-
-```bash
-cd src
-make -f Makefile.linux dist-db-migrate
-# src/dist/phoenix-db-migrate-<version>-<platform>/
-```
+the include directory, library directory and filename suffix.
 
 Before attempting to build or run Quantum, verify the installed OpenSSL version:
 

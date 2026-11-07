@@ -12,35 +12,14 @@ Changes since v0.8.3.
 
 ### Added
 
-- A standalone `phoenix-db-migrate` utility converts legacy Berkeley DB
-  `wallet.dat` and `blkindex.dat` files into LMDB before the daemon starts. It
-  opens the sources read-only, verifies them with Berkeley DB, copies raw
-  records transactionally, reads every record back byte-for-byte, compares
-  record counts inside and after the commit, and writes the `lmdb` authority
-  markers only after the environment is installed. Interrupted runs are
-  restartable at every install boundary, and the original files are left
-  untouched. See `doc/db-migrate.md`.
-- This is the LMDB-only release. The daemon, GUI and normal test binary no
-  longer link Berkeley DB; only the separately distributed `phoenix-db-migrate`
-  bundle and the test-only fixture helper do. New and existing LMDB
-  installations start normally, while a Berkeley DB data directory must be
-  converted first and is refused with explicit guidance. See
-  `doc/lmdb-only-release.md` for the upgrade matrix, rollback, retention and
-  release monitoring checklist.
-- `phoenix-db-migrate` now reports its own version and the linked Berkeley DB
-  and LMDB library versions through `--version` and `--help`. Berkeley DB
-  refuses databases written by a newer release, so the converter names the
-  linked version in verification errors and advises rebuilding against the
-  writer's version or newer. Databases written by an older Berkeley DB release
-  are upgraded on a hidden temporary copy and converted from that copy; the
-  original `wallet.dat` and `blkindex.dat` remain byte-for-byte untouched.
-- A separate `dist-db-migrate` build target packages only the converter and its
-  documentation for the migration release cycle. An optional
-  `check-db-migrate-compat` regression builds a fixture with an older
-  `libdb_cxx` (for example 5.3) and verifies that the shipped converter reads
-  it, preserving the converted record and the source file. The check reports
-  `SKIP` when no older Berkeley DB is installed and is included in
-  `nightly-lmdb`.
+- This is the LMDB-only release. The daemon, GUI, test binary and standard
+  build environment do not link Berkeley DB. New and existing LMDB
+  installations start normally, while a Berkeley DB data directory is refused
+  with explicit guidance. The converter that supported the migration window
+  (read-only sources, verified transactional copy, restartable installs and
+  older Berkeley DB compatibility) was published separately and has now been
+  archived; it is no longer part of this tree. See
+  `doc/archive/bdb-migration.md` for recovery with the archived release.
 - A locked (encrypted) wallet keeps showing its hybrid holdings instead of
   hiding them.
   `listhybridaddresses` now walks the at-rest `mapHybridKeyDisk` records
@@ -416,13 +395,20 @@ New coverage:
 
 ### Removed
 
-- Berkeley DB has been removed from the daemon, GUI and test binary. LMDB is
-  the only runtime database; only the standalone `phoenix-db-migrate`
-  converter (and the test-only fixture helper) still links `libdb_cxx`.
-  Startup no longer imports legacy databases. A `bdb` marker, or a
-  `wallet.dat` / `blkindex.dat` without a matching `lmdb` marker, fails
-  explicitly and points at the converter; it is never opened as an empty
-  LMDB environment.
+- Berkeley DB has been removed from the entire source tree and standard build
+  environment. LMDB is the only runtime database, and no target installs or
+  links `libdb_cxx`. Startup no longer imports legacy databases. A `bdb`
+  marker, or a `wallet.dat` / `blkindex.dat` without a matching `lmdb` marker,
+  fails explicitly and points at the archived converter; it is never opened as
+  an empty LMDB environment.
+- The standalone converter source, the test-only BDB fixture, the converter
+  regression suites and the live migration-window documentation were removed
+  after the migration cycle. The historical migration guide in
+  `doc/archive/bdb-migration.md` and the separately archived converter release
+  remain available for users who still hold a pre-LMDB data directory.
+- The `BDB_INCLUDE_PATH`, `BDB_LIB_PATH` and `BDB_LIB_SUFFIX` build variables
+  and the converter/fixture build targets were removed from the Linux, macOS
+  and MinGW makefiles and the Qt project.
 - `-walletbackend=bdb` and `-dbbackend=bdb` now fail with
   `Berkeley DB support has been removed.` and the instruction to run
   `phoenix-db-migrate` instead of silently ignoring the option.
@@ -430,8 +416,8 @@ New coverage:
   `-detachdb`, `-privdb`, `-dbcache` and `-dblogsize` options are gone.
 - The daemon-side `MigrateToLMDB` / `MigrateWalletToLMDB` startup paths,
   `CDBEnv`/`bitdb` and the BDB `CDB` implementation, including the
-  `bdb_kv` wrapper, are removed. The converter is self-contained and uses
-  `libdb_cxx` + `liblmdb` only.
+  `bdb_kv` wrapper, are removed. The archived converter used `libdb_cxx` +
+  `liblmdb` only.
 
 ---
 

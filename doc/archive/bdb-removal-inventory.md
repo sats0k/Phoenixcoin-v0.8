@@ -1,22 +1,23 @@
 # Berkeley DB Removal — Phase 0 Dependency and Data-Format Inventory
 
-Status: **Phase 0 inventory; Phases 1-5 implemented.** The daemon, GUI and
-normal test binary no longer depend on Berkeley DB.
+Status: **historical. Phases 0-6 complete.** No part of the Phoenix source tree
+or standard build environment depends on Berkeley DB.
 Branch: `remove-bdb` (created from `master` at `e6e95c33`).
 Version: `0.8.4` (unchanged).
 Scope: every tracked source file, build file, runtime option, on-disk database,
-test/script/fixture and document that still depends on Berkeley DB (BDB).
+test/script/fixture and document that still depended on Berkeley DB (BDB).
 
-> **Historical note:** Phases 1-5 are now implemented on this branch. The
-> runtime is LMDB-only, `wallet_migration_tests.cpp` was renamed to
-> `wallet_persistence_tests.cpp`, and the converter suite is part of
-> `nightly-lmdb`. Phase 5 ships the daemon/GUI separately from a
-> converter-only bundle (`dist-db-migrate`), reports the linked Berkeley DB and
-> LMDB versions, reads databases from older Berkeley DB releases, and adds the
-> optional `check-db-migrate-compat` cross-version check. The release cycle and
-> Phase 6 exit criteria are in [`lmdb-only-release.md`](lmdb-only-release.md).
-> This document is retained as the Phase 0 inventory; the per-file action
-> columns describe the plan at that time, not the final tree.
+> **Historical note:** Phases 1-6 are implemented on this branch. The runtime
+> is LMDB-only, `wallet_migration_tests.cpp` was renamed to
+> `wallet_persistence_tests.cpp`, and the conversion tools and tests have since
+> been retired. Phase 5 shipped the daemon/GUI separately from a converter-only
+> bundle and kept the converter compatible with older Berkeley DB releases.
+> Phase 6 removed the converter source, the test-only fixture, the converter
+> regressions and the live migration documentation. Operators who still need to
+> recover a pre-LMDB data directory use the archived converter release described
+> in [`bdb-migration.md`](bdb-migration.md). This document is retained as the
+> Phase 0 inventory; the per-file action columns describe the plan at that time,
+> not the final tree.
 
 This document is the gate for Phase 1/2. No BDB implementation is deleted
 until this inventory is reviewed.
@@ -634,9 +635,9 @@ for the converter, build files, new docs.
 - Ship `phoenix-db-migrate` separately for one release cycle. **Done:** the
   `dist-db-migrate` target writes a converter-only bundle with documentation
   and checksums; the daemon and GUI are never included.
-- Document that BDB installations must convert before upgrading. **Done:**
-  [`lmdb-only-release.md`](lmdb-only-release.md) and the updated
-  [`db-migrate.md`](db-migrate.md).
+- Document that BDB installations must convert before upgrading. **Done:** the
+  migration-window release guide and operator procedure (retired; see
+  [`bdb-migration.md`](bdb-migration.md)).
 - Keep the converter compatible with the Berkeley DB versions users actually
   used. **Done:** `--version` reports the converter, linked Berkeley DB and
   LMDB libraries; older on-disk formats are upgraded on a temporary copy;
@@ -644,16 +645,16 @@ for the converter, build files, new docs.
   recommendation; `check-db-migrate-compat` exercises an older `libdb_cxx`.
 - Monitor migration failures, wallet/chain mismatches, encrypted/hybrid
   reports, backup/restore failures and startup/recovery problems for the whole
-  cycle. **Ongoing during the release cycle;** the checklist and Phase 6 exit
-  criteria are in [`lmdb-only-release.md`](lmdb-only-release.md).
+  cycle. **Completed during the migration-window release cycle.**
 
 ### Phase 6 — final BDB removal
 
 - Remove converter source, BDB dependency, fixtures and live migration docs.
-- Keep a historical migration guide and archived converter release.
-- Enter Phase 6 only after the Phase 5 exit criteria in
-  [`lmdb-only-release.md`](lmdb-only-release.md#7-phase-6-exit-criteria) are
-  met.
+  **Done.**
+- Keep a historical migration guide and archived converter release. **Done:**
+  [`bdb-migration.md`](bdb-migration.md) documents recovery with the archived
+  converter bundle.
+- Enter Phase 6 only after the Phase 5 exit criteria are met. **Done.**
 
 ---
 

@@ -53,15 +53,12 @@ Implemented components include:
 - LMDB as the only chain-index and wallet runtime backend, with
   authoritative backend markers and fail-closed startup: a legacy Berkeley DB
   marker or source is never silently opened as an empty LMDB environment
-- A standalone `phoenix-db-migrate` converter for offline Berkeley DB to LMDB
-  migration: read-only sources, Berkeley DB verification, transactional raw
-  record copy, byte-for-byte read-back, in-transaction and post-commit record
-  counts, marker-after-install, restartable interrupt handling and untouched
-  source files. It reports the converter, Berkeley DB and LMDB versions, reads
-  databases written by older Berkeley DB releases (upgrading a temporary copy
-  when the on-disk format is old, never the source), and fails with the linked
-  version when the source is newer. It is packaged and distributed separately
-  for the LMDB-only release cycle; see `doc/lmdb-only-release.md`
+- Berkeley DB fully removed from the source tree and standard build
+  environment: no target links `libdb_cxx`, and the converter source, test-only
+  fixture, converter regressions and live migration documentation were retired
+  after the migration cycle. The archived converter release and the historical
+  guide in `doc/archive/bdb-migration.md` remain available for users who still
+  hold a pre-LMDB data directory
 - Verified `backupwallet` (compacted copy with a full staged-record scan and
   entry-count comparison) plus offline `checklmdb` / `-checklmdb` structural
   verification and live `getdbinfo` health diagnostics
@@ -144,7 +141,7 @@ make -j$(nproc) DYNAMIC=1 -f Makefile.linux test_phoenixcoin
 
 Four libFuzzer targets (`fuzz_MLDSASigner_deserialize`, `fuzz_encrypted_keys`, `fuzz_hybrid_verify`, `fuzz_hybrid_message_parse`) build and run cleanly under Clang with ASan/UBSan; `fuzz_hybrid_message_parse` fuzzes the pure v1 `HYBS` parser extracted into `src/hs/hybrid_message.{h,cpp}`. See `fuzzREADME.md` at the repository root.
 
-Twelve shell regression scripts under `src/test/` drive full daemons end to end. Six exercise the exported-private-key flows (import persistence, cross-node legacy/hybrid round trips, atomic import under injected write failure, bulk file export/import plus its failure modes, and malformed-record rejection); six cover the LMDB database workflows (the standalone Berkeley DB converter, converter compatibility with older Berkeley DB libraries, verified wallet backup/restore and offline `checklmdb`, `SIGKILL` crash safety at every durability boundary, the full wallet lifecycle, and batched block import). Each runs as `src/test/<script> [path-to-phoenixcoind]` and reports a `PASS`/`FAIL` tally.
+Ten shell regression scripts under `src/test/` drive full daemons end to end. Six exercise the exported-private-key flows (import persistence, cross-node legacy/hybrid round trips, atomic import under injected write failure, bulk file export/import plus its failure modes, and malformed-record rejection); four cover the LMDB database workflows (verified wallet backup/restore and offline `checklmdb`, `SIGKILL` crash safety at every durability boundary, the full wallet lifecycle, and batched block import). Each runs as `src/test/<script> [path-to-phoenixcoind]` and reports a `PASS`/`FAIL` tally.
 
 ## Consensus
 
@@ -196,7 +193,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 173 test cases with no errors, including the `kvdb_tests` and `wallet_persistence_tests` database/persistence suites, the daemon-level regression scripts (export/import, atomicity, malformed input, the Berkeley DB converter, backup/restore, crash safety and batched block import) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 173 test cases with no errors, including the `kvdb_tests` and `wallet_persistence_tests` database/persistence suites, the daemon-level regression scripts (export/import, atomicity, malformed input, backup/restore, crash safety and batched block import) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 
@@ -204,9 +201,6 @@ Remaining work focuses on:
 - Release Quantum node software.
 - Release updated wallet binaries.
 - Coordinate network activation.
-- Run the LMDB-only release cycle with the separately distributed
-  `phoenix-db-migrate` bundle and monitor the migration issues listed in
-  `doc/lmdb-only-release.md`; Phase 6 removes the converter after the cycle.
 
 ## Summary
 

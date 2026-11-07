@@ -4,13 +4,11 @@ Phoenixcoin stores the block index, the transaction/UTXO index and the wallet
 in LMDB.  LMDB is the only supported backend; Berkeley DB support has been
 removed.  Address storage (`peers.dat`) is unaffected.
 
-Existing Berkeley DB installations must be converted offline with the
-standalone `phoenix-db-migrate` utility before starting this daemon.  It
-verifies the source, copies the records transactionally, and writes the
-authority markers only after the LMDB environment is installed.  The
-Berkeley DB files are left untouched as a recovery copy.  See
-[`db-migrate.md`](db-migrate.md) for the operator procedure, backup and disk
-space requirements, verification steps and failure recovery.
+A data directory from the Berkeley DB era must be converted offline before
+this daemon will start.  The converter was archived after the migration
+window; see [`archive/bdb-migration.md`](archive/bdb-migration.md) for the
+operator procedure, backup and disk-space requirements, verification steps and
+failure recovery.  The daemon itself never reads a Berkeley DB file.
 
 ## Chain index backend
 
@@ -22,22 +20,22 @@ The chain index lives in `<datadir>/blkindex/`.  On startup:
   non-empty LMDB index; if `blkindex/` is missing, empty, or removed, startup
   fails rather than silently creating an empty chain;
 - a `bdb` marker means the data directory has not been converted.  Startup
-  fails and points at `phoenix-db-migrate`; it never opens the legacy
+  fails and points at the archived converter; it never opens the legacy
   `blkindex.dat` as an empty LMDB index;
 - missing or conflicting markers in a directory that still contains
-  `blkindex.dat` also fail explicitly and point at the converter.
+  `blkindex.dat` also fail explicitly and point at the archived converter.
 
 The daemon no longer imports a Berkeley DB chain index at startup, and there is
-no option to select a backend.  The converter creates the marker only after it
-has verified the new environment, so an interrupted conversion is never
-adopted as a live index.
+no option to select a backend.  The archived converter wrote the marker only
+after it had verified the new environment, so an interrupted conversion is
+never adopted as a live index.
 
 ## Wallet backend
 
 The wallet lives in `<datadir>/wallet/` and follows the same marker rules via
 `<datadir>/wallet.backend`.  It is an LMDB environment directory, not a single
-file.  Berkeley DB `wallet.dat` is only read by `phoenix-db-migrate`, which
-leaves it unchanged.
+file.  A legacy Berkeley DB `wallet.dat` is never read by the daemon; only the
+archived converter can read it, and it leaves the file unchanged.
 
 If the wallet environment is missing or incomplete while the marker says
 `lmdb`, startup fails instead of creating an empty wallet.  A `bdb` marker, or
@@ -469,9 +467,10 @@ containing only the genesis block, then downloads the chain again.
 
 If the marker says `lmdb` but the LMDB index is missing or empty, restore
 `blkindex/` from a backup.  Removing the marker does not make the daemon read a
-legacy `blkindex.dat`; the daemon never imports Berkeley DB data.  Use
-`phoenix-db-migrate` to rebuild an LMDB index from a legacy source, or
-resynchronise from the network.
+legacy `blkindex.dat`; the daemon never imports Berkeley DB data.  Use the
+archived converter described in
+[`archive/bdb-migration.md`](archive/bdb-migration.md) to rebuild an LMDB
+index from a legacy source, or resynchronise from the network.
 
 ## Validation
 
@@ -483,8 +482,6 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports;
   that sanitizer run predates the later wallet, backup and runtime-growth
   suites.
-- `regression_db_migrate.sh` (the standalone converter suite) passed with
-  AddressSanitizer and UndefinedBehaviorSanitizer enabled.
 - `regression_lmdb_import_batch.sh` passed 62/62 checks in the normal build:
   a four-block `-loadblock` import commits as one batch and survives a
   restart while announcing the pre-batch tip and each intermediate coinbase,
@@ -501,21 +498,11 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   all in pre-existing non-LMDB code (`Hash160` on an empty vector,
   base32/base64 decoding, and empty-vector handling in `EvalScript`).
 
-Crash recovery was checked at two points:
-
-- Killing `phoenix-db-migrate` part-way through a copy left no `lmdb` marker
-  and no incomplete environment in place.  The next run discarded the staging
-  directory, repeated the copy, and produced the same record count and chain
-  tip as an uninterrupted run.
-- Three `SIGKILL`/restart cycles during initial sync at and above height
-  202135 always reopened the last committed tip or a later one.  The tip
-  block and its coinbase transaction remained readable after every restart,
-  and syncing continued to height 227811 with 665129 records.
-
-A full BDB chain at height 202135 (588001 records: 202136 `blockindex` and
-385861 `tx`) was converted in about three seconds.  LMDB contained exactly
-588001 entries in a 72118272-byte `data.mdb`, and the BDB and LMDB tips had the
-same hash.  The converted node then continued syncing normally.
+Crash recovery was checked with three `SIGKILL`/restart cycles during initial
+sync at and above height 202135.  Every restart reopened the last committed tip
+or a later one.  The tip block and its coinbase transaction remained readable
+after every restart, and syncing continued to height 227811 with 665129
+records.
 
 The wallet tests in `kvdb_tests` cover the wallet marker, the startup action
 matrix (existing, missing, migration required, new), `CWalletDB` routing,
@@ -682,29 +669,6 @@ stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
-`regression_db_migrate.sh` passed 59/59 checks.  It drives the standalone
-converter against fixtures built from an LMDB daemon:
-
-- a sample LMDB wallet and a four-block mainnet chain index are dumped with
-  `mdb_dump` and rewritten into legacy `wallet.dat`/`blkindex.dat` files with
-  the test-only `phoenix-db-fixture` helper, so no BDB-capable daemon is
-  needed;
-- `--version` reports the converter, linked Berkeley DB and LMDB library
-  versions;
-- the converter writes both `lmdb` markers only after verified installs, the
-  LMDB record counts match the source, the chain height and tip are preserved,
-  and the Berkeley DB files stay byte-for-byte unchanged;
-- a second run reports `already migrated` without changing anything;
-- an encrypted wallet, dry runs, ambiguous markers, a missing target, a corrupt
-  source, and interruption after N records, after the LMDB commit and after
-  the install rename are all covered.
-
-`regression_db_migrate_compat.sh` builds a database with an older
-`libdb_cxx` (for example 5.3), converts it with the normal converter and checks
-the marker, environment, converted record and unchanged source.  It reports
-`SKIP` when no older library is installed; release builds run it against the
-oldest Berkeley DB version users actually used.
-
 `regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It drives a real
 daemon through the full LMDB wallet lifecycle:
 
@@ -779,9 +743,7 @@ make -f Makefile.linux nightly-lmdb
 
 `check-lmdb-backup` builds the daemon and test binary, runs the two focused
 unit tests, then runs `regression_lmdb_wallet_backup.sh`.  `nightly-lmdb` adds
-the converter suite, the optional older-Berkeley-DB compatibility check, and
-the wallet lifecycle, crash and batch-import regressions.  The converter-only
-release bundle is produced with `make -f Makefile.linux dist-db-migrate`.
+the wallet lifecycle, crash and batch-import regressions.
 
 ## Wallet backend performance
 
