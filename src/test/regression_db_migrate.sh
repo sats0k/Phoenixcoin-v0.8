@@ -212,6 +212,15 @@ if ! command -v mdb_dump >/dev/null 2>&1; then
     exit 1
 fi
 
+echo "== step 0: converter reports its version and libraries =="
+MIGRATE_VERSION="$("$MIGRATE" --version 2>/dev/null)"
+check "converter reports its own version" \
+    "$(printf '%s\n' "$MIGRATE_VERSION" | grep -Eq '^phoenix-db-migrate [0-9]+\.[0-9]+\.[0-9]+$'; echo $?)"
+check "converter reports the Berkeley DB library" \
+    "$(printf '%s\n' "$MIGRATE_VERSION" | grep -Eq '^Berkeley DB library: [0-9]+\.[0-9]+\.[0-9]+ \(compiled against [0-9]+\.[0-9]+\.[0-9]+\)$'; echo $?)"
+check "converter reports the LMDB library" \
+    "$(printf '%s\n' "$MIGRATE_VERSION" | grep -Eq '^LMDB library: [0-9]+\.[0-9]+\.[0-9]+$'; echo $?)"
+
 echo "== step 1: create the legacy Berkeley DB fixture =="
 start_at "$DATADIR" "$PORT" \
     || { echo "FAILED: could not start the LMDB daemon"; exit 1; }

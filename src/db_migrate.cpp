@@ -50,12 +50,42 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr const char* CONVERTER_VERSION = "0.1";
+constexpr const char* CONVERTER_VERSION = "0.8.4";
 constexpr const char* LMDB_DB_NAME = "main";
 constexpr unsigned int LMDB_MAX_DBS = 64;
 constexpr const char* COMPLETION_SIDECAR = ".phoenix-migration-complete";
 constexpr const char* LOCK_FILE = ".phoenix-db-migrate.lock";
 constexpr size_t PROGRESS_INTERVAL = 100000;
+
+std::string FormatVersion(int major, int minor, int patch)
+{
+    return std::to_string(major) + "." + std::to_string(minor) + "." +
+           std::to_string(patch);
+}
+
+std::string LinkedBdbVersion()
+{
+    int major = 0;
+    int minor = 0;
+    int patch = 0;
+    db_version(&major, &minor, &patch);
+    return FormatVersion(major, minor, patch);
+}
+
+std::string CompiledBdbVersion()
+{
+    return FormatVersion(DB_VERSION_MAJOR, DB_VERSION_MINOR,
+                         DB_VERSION_PATCH);
+}
+
+std::string LinkedLmdbVersion()
+{
+    int major = 0;
+    int minor = 0;
+    int patch = 0;
+    mdb_version(&major, &minor, &patch);
+    return FormatVersion(major, minor, patch);
+}
 
 volatile sig_atomic_t g_interrupted = 0;
 
@@ -98,15 +128,19 @@ void PrintUsage()
         "  --wallet-target=<dir>    Override <datadir>/wallet\n"
         "  --chain-target=<dir>     Override <datadir>/blkindex\n"
         "  --map-size=<MiB>         Initial LMDB map size\n"
-        "  --dry-run                Validate and report; write nothing\n"
+        "  --dry-run                Validate and report; write no target or marker\n"
         "  --verbose                Print progress while copying\n"
-        "  --version                Print the converter version\n"
+        "  --version                Print the converter and library versions\n"
         "  --help                   Print this help\n"
         "\n"
         "The original Berkeley DB files are opened read-only and are never\n"
         "modified, renamed or deleted.  Markers are written only after the\n"
-        "LMDB environment has been copied, verified and installed.\n",
-        CONVERTER_VERSION);
+        "LMDB environment has been copied, verified and installed.\n"
+        "\n"
+        "Berkeley DB library: %s (compiled against %s)\n"
+        "LMDB library: %s\n",
+        CONVERTER_VERSION, LinkedBdbVersion().c_str(),
+        CompiledBdbVersion().c_str(), LinkedLmdbVersion().c_str());
 }
 
 struct Options
@@ -173,6 +207,10 @@ bool ParseArgs(int argc, char** argv, Options& options, std::string& error)
         else if (key == "--version")
         {
             std::printf("phoenix-db-migrate %s\n", CONVERTER_VERSION);
+            std::printf("Berkeley DB library: %s (compiled against %s)\n",
+                        LinkedBdbVersion().c_str(),
+                        CompiledBdbVersion().c_str());
+            std::printf("LMDB library: %s\n", LinkedLmdbVersion().c_str());
             std::exit(0);
         }
         else if (key == "--wallet")
@@ -599,6 +637,120 @@ bool ValidateRecordKey(bool wallet, const Dbt& key, MigrationStats& stats,
     return true;
 }
 
+class BdbSource
+{
+public:
+    ~BdbSource()
+    {
+        if (!m_upgraded.empty())
+        {
+            std::error_code ec;
+            fs::remove(m_upgraded, ec);
+        }
+    }
+
+    // Berkeley DB refuses to open databases written by an older release with
+    // DB_OLD_VERSION.  Upgrade a temporary copy so the original source stays
+    // byte-for-byte untouched and read-only.
+    bool Prepare(const fs::path& source, std::string& error)
+    {
+        m_source = source;
+
+        Db probe(nullptr, DB_CXX_NO_EXCEPTIONS);
+        int rc = probe.open(nullptr, source.string().c_str(), LMDB_DB_NAME,
+                            DB_BTREE, DB_RDONLY, 0);
+        if (rc == 0)
+        {
+            probe.close(0);
+            return true;
+        }
+        if (rc != DB_OLD_VERSION)
+        {
+            error = "cannot open " + source.string() + " read-only: " +
+                    db_strerror(rc) +
+                    ". If the database needs recovery, stop Phoenixcoin "
+                    "cleanly and retry; never run recovery on the original.";
+            return false;
+        }
+
+        const fs::path parent = source.parent_path().empty()
+                                    ? fs::path(".")
+                                    : source.parent_path();
+
+        // Remove upgrade copies left by an interrupted earlier run.  The
+        // datadir lock already excludes a concurrent conversion of the same
+        // scope; these files are disposable by construction.
+        const std::string stalePrefix =
+            "." + source.filename().string() +
+            ".phoenix-db-migrate-upgrade-";
+        std::error_code staleEc;
+        for (const auto& entry : fs::directory_iterator(parent, staleEc))
+        {
+            if (staleEc)
+                break;
+            const std::string name = entry.path().filename().string();
+            if (name.rfind(stalePrefix, 0) == 0 &&
+                entry.is_regular_file(staleEc))
+            {
+                std::error_code removeEc;
+                fs::remove(entry.path(), removeEc);
+            }
+        }
+
+        m_upgraded = parent /
+            ("." + source.filename().string() +
+             ".phoenix-db-migrate-upgrade-" + std::to_string(GetPid()) + "-" +
+             std::to_string(static_cast<long long>(std::time(nullptr))));
+
+        std::error_code ec;
+        fs::remove(m_upgraded, ec);
+        fs::copy_file(source, m_upgraded, fs::copy_options::overwrite_existing,
+                      ec);
+        if (ec)
+        {
+            const std::string message =
+                "the source was written by an older Berkeley DB and a "
+                "temporary copy for upgrading could not be created at " +
+                m_upgraded.string() + ": " + ec.message();
+            m_upgraded.clear();
+            error = message;
+            return false;
+        }
+
+        std::printf("Berkeley DB: upgrading a temporary copy of %s "
+                    "(the source is not modified)\n",
+                    source.filename().string().c_str());
+
+        // DB->upgrade() takes the database file name and works without an
+        // environment.  DB_UPGRADE on DB->open() is rejected for a standalone
+        // named database file, so do not use it here.
+        Db upgrader(nullptr, DB_CXX_NO_EXCEPTIONS);
+        rc = upgrader.upgrade(m_upgraded.string().c_str(), 0);
+        if (rc != 0)
+        {
+            const std::string message =
+                "cannot upgrade the temporary Berkeley DB copy " +
+                m_upgraded.string() + ": " + db_strerror(rc) +
+                ". This converter links Berkeley DB " + LinkedBdbVersion() +
+                "; the source may require a newer library.";
+            fs::remove(m_upgraded, ec);
+            m_upgraded.clear();
+            error = message;
+            return false;
+        }
+        return true;
+    }
+
+    const fs::path& Path() const
+    {
+        return m_upgraded.empty() ? m_source : m_upgraded;
+    }
+
+private:
+    fs::path m_source;
+    fs::path m_upgraded;
+};
+
 class BdbReader
 {
 public:
@@ -628,7 +780,11 @@ public:
         if (rc != 0)
         {
             error = "Berkeley DB verification failed for " + path.string() +
-                    ": " + db_strerror(rc);
+                    ": " + db_strerror(rc) +
+                    ". This converter links Berkeley DB " +
+                    LinkedBdbVersion() +
+                    "; a source written by a newer Berkeley DB needs a "
+                    "converter built against that version or newer.";
             return false;
         }
         return true;
@@ -1341,6 +1497,15 @@ bool MigrateScope(const ScopePaths& paths, const Options& options,
         return true;
     }
 
+    // Berkeley DB can read databases written by older releases, but a library
+    // older than the source refuses to verify it.  Prepare the readable source
+    // before the adopt/compare paths below touch it; an old-format source is
+    // upgraded on a temporary copy, never in place.
+    BdbSource bdbSource;
+    if (!bdbSource.Prepare(paths.source, error))
+        return false;
+    const fs::path& readableSource = bdbSource.Path();
+
     const bool targetExists = fs::exists(paths.target, ec);
     bool targetIsEmpty = false;
     if (targetExists)
@@ -1357,7 +1522,7 @@ bool MigrateScope(const ScopePaths& paths, const Options& options,
             if (HasCompletionSidecar(paths.target))
             {
                 size_t count = 0;
-                if (!CompareBdbAndLmdb(paths.source, paths.target, count,
+                if (!CompareBdbAndLmdb(readableSource, paths.target, count,
                                        error))
                 {
                     error = scope + " target has a completion marker but does "
@@ -1384,9 +1549,9 @@ bool MigrateScope(const ScopePaths& paths, const Options& options,
     if (options.dryRun)
     {
         MigrationStats stats;
-        if (!BdbReader().Verify(paths.source, error))
+        if (!BdbReader().Verify(readableSource, error))
             return false;
-        if (!CountBdbRecords(paths.source, stats, paths.wallet, error))
+        if (!CountBdbRecords(readableSource, stats, paths.wallet, error))
             return false;
         std::printf("%s: dry run OK; source is valid\n", scope.c_str());
         PrintStats(scope, stats);
@@ -1399,7 +1564,7 @@ bool MigrateScope(const ScopePaths& paths, const Options& options,
                 static_cast<unsigned long long>(sourceSize));
     {
         BdbReader verifier;
-        if (!verifier.Verify(paths.source, error))
+        if (!verifier.Verify(readableSource, error))
             return false;
     }
 
@@ -1413,7 +1578,7 @@ bool MigrateScope(const ScopePaths& paths, const Options& options,
     fs::remove_all(staging, removeEc);
 
     BdbReader reader;
-    if (!reader.Open(paths.source, error))
+    if (!reader.Open(readableSource, error))
         return false;
     if (!reader.OpenCursor(error))
         return false;
