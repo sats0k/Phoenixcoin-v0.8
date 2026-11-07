@@ -475,8 +475,8 @@ Minimum versions used by this development branch include:
 * C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
   `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
   the compiler default)
-* **Qt 5 or newer** for the GUI (Qt4 reached end of life in 2015 and is no
-  longer supported; `qmake` refuses a Qt4 kit)
+* **Qt 6.8 or newer** for the GUI. Older Qt versions are rejected by
+  `phoenixcoin-qt.pro`; use `qmake6` (or a Qt6 `qmake`) to configure the GUI.
 
 ---
 
@@ -485,7 +485,7 @@ Minimum versions used by this development branch include:
 A typical development build starts with:
 
 ```bash
-qmake
+qmake6
 make -j$(nproc)
 
 cd src
