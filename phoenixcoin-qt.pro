@@ -17,6 +17,10 @@ QMAKE_CXXFLAGS += -fstack-protector-strong -D_FORTIFY_SOURCE=2
 # Pin the C++ standard (must match CMakeLists.txt and src/Makefile.linux) so the
 # build does not depend on the compiler's default -std.
 QMAKE_CXXFLAGS += -std=gnu++20
+# GCC 16 warns when Qt's QChar is defined after an earlier SFINAE completeness
+# check in the standard-library headers.  The diagnostic is in Qt's headers,
+# not this project, so keep it out of the release build log.
+gcc:!clang:greaterThan(QMAKE_GCC_MAJOR_VERSION, 15): QMAKE_CXXFLAGS += -Wno-sfinae-incomplete
 # Enable native CPU tuning (SIMD, BMI, etc.) with: qmake NATIVE=1
 contains(NATIVE, 1) {
     QMAKE_CFLAGS_RELEASE += -march=native -mtune=native
