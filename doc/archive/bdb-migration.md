@@ -205,7 +205,57 @@ running an old daemon against a half-converted directory.
 
 ---
 
-## 7. Final state of the removal
+## 7. Validation record
+
+The conversion path was exercised end to end during the migration-window
+release cycle. The last revision containing the converter source, the BDB
+fixture and the converter regressions is commit `6fd6a948`; Phase 6 removed
+them in commit `b9b95f60`.
+
+On `6fd6a948`, the full `nightly-lmdb` target passed:
+
+| Suite | Result |
+|---|---|
+| Boost unit suite | 173/173 test cases |
+| `regression_db_migrate.sh` | 59/59 checks |
+| `regression_db_migrate_compat.sh` | 8/8 checks |
+| `regression_lmdb_wallet_backup.sh` | passed |
+| `regression_lmdb_wallet_e2e.sh` | 99/99 checks |
+| `regression_lmdb_wallet_crash.sh` | 237/237 checks |
+| `regression_lmdb_import_batch.sh` | 62/62 checks |
+
+The converter suite covered:
+
+- plain, encrypted and hybrid wallets, and a four-block chain index;
+- source hashes and record counts unchanged before and after conversion;
+- both `lmdb` markers written only after a verified install;
+- an encrypted wallet remaining encrypted and readable after conversion, and
+  hybrid ECDSA/ML-DSA records surviving intact;
+- dry runs, an already-migrated directory, ambiguous markers, a missing target
+  and a corrupt source;
+- interruption after N records, after the LMDB commit and after the install
+  rename, each restartable without destroying the source.
+
+The compatibility suite converted a fixture written by an older `libdb_cxx`
+(for example 5.3) and verified the marker, the installed environment, the
+converted record and the unchanged source.
+
+To rebuild and re-run the archived converter from the migration-window
+revision (Berkeley DB headers and libraries are required for this checkout
+only):
+
+```bash
+git worktree add /tmp/phoenix-migrate 6fd6a948
+cd /tmp/phoenix-migrate/src
+make -f Makefile.linux DYNAMIC=1 check-db-migrate check-db-migrate-compat
+```
+
+Delete the worktree with `git worktree remove /tmp/phoenix-migrate` when
+finished. The current tree does not build, link or test the converter.
+
+---
+
+## 8. Final state of the removal
 
 Phase 6 completed the removal:
 
