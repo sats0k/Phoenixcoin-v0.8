@@ -30,8 +30,9 @@ The obsolete options `-walletbackend=bdb`, `-dbbackend=bdb` and
 `-salvagewallet` fail with:
 
 ```text
-Berkeley DB support has been removed.
-Please migrate your database to LMDB using phoenix-db-migrate.
+Berkeley DB support has been removed, and the phoenix-db-migrate converter is
+no longer built or shipped. See doc/archive/bdb-migration.md for the archived
+converter release and migration procedure.
 ```
 
 Never delete a marker to force a BDB directory open as an empty LMDB database.

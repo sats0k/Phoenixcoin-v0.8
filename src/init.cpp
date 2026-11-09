@@ -469,9 +469,10 @@ bool AppInit2()
     std::transform(strDBBackend.begin(), strDBBackend.end(), strDBBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     if (strDBBackend == "bdb")
-        return InitError(_("Berkeley DB support has been removed.\n"
-                           "Please migrate your database to LMDB using "
-                           "phoenix-db-migrate."));
+        return InitError(_("Berkeley DB support has been removed, and the "
+                           "phoenix-db-migrate converter is no longer built or "
+                           "shipped. See doc/archive/bdb-migration.md for the "
+                           "archived converter release and migration procedure."));
     if (strDBBackend != "lmdb")
         return InitError(strprintf(_("Invalid -dbbackend '%s': expected 'lmdb'"),
                                    strDBBackend.c_str()));
@@ -504,9 +505,10 @@ bool AppInit2()
     std::transform(strWalletBackend.begin(), strWalletBackend.end(), strWalletBackend.begin(),
                    [](unsigned char c) { return std::tolower(c); });
     if (strWalletBackend == "bdb")
-        return InitError(_("Berkeley DB support has been removed.\n"
-                           "Please migrate your database to LMDB using "
-                           "phoenix-db-migrate."));
+        return InitError(_("Berkeley DB support has been removed, and the "
+                           "phoenix-db-migrate converter is no longer built or "
+                           "shipped. See doc/archive/bdb-migration.md for the "
+                           "archived converter release and migration procedure."));
     if (strWalletBackend != "lmdb")
         return InitError(strprintf(_("Invalid -walletbackend '%s': expected 'lmdb'"),
                                    strWalletBackend.c_str()));
@@ -529,7 +531,10 @@ bool AppInit2()
 
     if (GetBoolArg("-salvagewallet"))
         return InitError(_("-salvagewallet is not supported: Berkeley DB support "
-                           "has been removed."));
+                           "has been removed, and the phoenix-db-migrate "
+                           "converter is no longer built or shipped. See "
+                           "doc/archive/bdb-migration.md for the archived "
+                           "converter release and migration procedure."));
 
     static const char* const removedDBOptions[] = {
         "-detachdb", "-privdb", "-dbcache", "-dblogsize"
@@ -538,9 +543,12 @@ bool AppInit2()
     {
         if (mapArgs.count(option))
             return InitError(strprintf(_("%s is not supported: Berkeley DB support "
-                                         "has been removed.\n"
-                                         "Please migrate your database to LMDB using "
-                                         "phoenix-db-migrate."), option));
+                                         "has been removed, and the "
+                                         "phoenix-db-migrate converter is no longer "
+                                         "built or shipped. See "
+                                         "doc/archive/bdb-migration.md for the "
+                                         "archived converter release and migration "
+                                         "procedure."), option));
     }
 
     if (mapArgs.count("-bind")) {

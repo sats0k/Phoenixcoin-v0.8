@@ -133,9 +133,10 @@ enum ChainIndexStartupAction
  * Decides what startup should do with the LMDB chain index.  A legacy marker
  * saying LMDB is authoritative forbids starting over: an empty index means
  * data loss, not an invitation to resurrect the old blkindex.dat snapshot.
- * When no marker exists, an existing blkindex.dat must be migrated with
- * phoenix-db-migrate; only a data directory with neither source nor marker
- * initialises a new index.
+ * When no marker exists, an existing blkindex.dat must be converted offline
+ * with the archived converter release (see doc/archive/bdb-migration.md);
+ * only a data directory with neither source nor marker initialises a new
+ * index.
  */
 ChainIndexStartupAction GetChainIndexStartupAction(bool fMarkerLMDB,
                                                    bool fLMDBEmpty,
@@ -217,8 +218,9 @@ enum WalletStartupAction
  * Decides what startup should do with the LMDB wallet.  A wallet.backend
  * marker saying LMDB is authoritative forbids silently starting from an empty
  * wallet; that is data loss, not an invitation to create a fresh wallet.  When
- * no marker is present and wallet.dat exists, the wallet must be migrated with
- * phoenix-db-migrate before the daemon can start.
+ * no marker is present and wallet.dat exists, the wallet must be converted
+ * offline with the archived converter release (see
+ * doc/archive/bdb-migration.md) before the daemon can start.
  */
 WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
                                            bool fBDBWalletExists);

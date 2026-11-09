@@ -317,8 +317,10 @@ bool CheckChainBackendCompatibility(const std::filesystem::path& dir)
 
         if (strMarker == "bdb")
             return error("This data directory uses the Berkeley DB chain index. "
-                         "Berkeley DB support has been removed. Migrate it "
-                         "offline with phoenix-db-migrate before starting.");
+                         "Berkeley DB support has been removed, and the "
+                         "phoenix-db-migrate converter is no longer built or "
+                         "shipped. See doc/archive/bdb-migration.md for the "
+                         "archived converter release and migration procedure.");
         return true;
     }
 
@@ -441,8 +443,10 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir)
         // directory whose marker still says Berkeley DB owns the wallet.
         if (strMarker == "bdb")
             return error("This data directory uses the Berkeley DB wallet. "
-                         "Berkeley DB support has been removed. Migrate it "
-                         "offline with phoenix-db-migrate before starting.");
+                         "Berkeley DB support has been removed, and the "
+                         "phoenix-db-migrate converter is no longer built or "
+                         "shipped. See doc/archive/bdb-migration.md for the "
+                         "archived converter release and migration procedure.");
         return true;
     }
 
@@ -454,8 +458,9 @@ bool CheckWalletBackendCompatibility(const std::filesystem::path& dir)
         InspectLMDBEnvironmentOnDisk(GetWalletLMDBPath(dir));
     if (state.fDirectoryExists && !state.fComplete)
         return error("The LMDB wallet at %s is incomplete: %s. "
-                     "Restore it from a verified backup, or run "
-                     "phoenix-db-migrate to rebuild it from wallet.dat.",
+                     "Restore it from a verified backup. Rebuilding it from a "
+                     "legacy wallet.dat requires the archived converter "
+                     "release; see doc/archive/bdb-migration.md.",
                      GetWalletLMDBPath(dir).string().c_str(),
                      state.strReason.c_str());
 
@@ -811,14 +816,16 @@ bool MissingLMDBChainIndexError(const std::filesystem::path& pathChain)
                      "blkindex.backend marks LMDB as authoritative, so the "
                      "node will not silently fall back to blkindex.dat. Restore "
                      "the chain index from a verified backup (check it with "
-                     "-checklmdb), or run phoenix-db-migrate to rebuild it from "
-                     "a legacy blkindex.dat.",
+                     "-checklmdb). Rebuilding it from a legacy blkindex.dat "
+                     "requires the archived converter release; see "
+                     "doc/archive/bdb-migration.md.",
                      pathChain.string().c_str(), state.strReason.c_str());
 
     return error("The LMDB chain index at %s is missing or empty, but "
                  "blkindex.backend marks LMDB as authoritative. Restore the "
-                 "chain index from a backup, or run phoenix-db-migrate to "
-                 "rebuild it from a legacy blkindex.dat.",
+                 "chain index from a backup. Rebuilding it from a legacy "
+                 "blkindex.dat requires the archived converter release; see "
+                 "doc/archive/bdb-migration.md.",
                  pathChain.string().c_str());
 }
 
@@ -894,8 +901,10 @@ bool InitLMDBChainDB()
         g_lmdbChainDb.Close();
         g_lmdbChainEnv.Close();
         return error("Found a Berkeley DB chain index at %s, but Berkeley DB "
-                     "support has been removed. Migrate it offline with "
-                     "phoenix-db-migrate before starting the node.",
+                     "support has been removed and the phoenix-db-migrate "
+                     "converter is no longer built or shipped. Convert it "
+                     "offline with the archived converter release before "
+                     "starting the node; see doc/archive/bdb-migration.md.",
                      (GetDataDir() / "blkindex.dat").string().c_str());
 
     case CHAIN_INDEX_INIT_NEW:
@@ -957,15 +966,17 @@ bool MissingLMDBWalletError(const std::filesystem::path& pathWallet)
                      "The wallet.backend initialization marker marks LMDB as "
                      "authoritative, so the node will not silently fall back to "
                      "wallet.dat. Restore the wallet from a verified backup "
-                     "(check it with -checklmdb), or run phoenix-db-migrate to "
-                     "rebuild it from a legacy wallet.dat.",
+                     "(check it with -checklmdb). Rebuilding it from a legacy "
+                     "wallet.dat requires the archived converter release; see "
+                     "doc/archive/bdb-migration.md.",
                      pathWallet.string().c_str(), state.strReason.c_str());
 
     return error("The LMDB wallet at %s is missing or empty, but the "
                  "wallet.backend initialization marker marks LMDB as "
                  "authoritative. The wallet environment was deleted or lost. "
-                 "Restore it from a backup, or run phoenix-db-migrate to "
-                 "rebuild it from a legacy wallet.dat. The node will not create "
+                 "Restore it from a backup. Rebuilding it from a legacy "
+                 "wallet.dat requires the archived converter release; see "
+                 "doc/archive/bdb-migration.md. The node will not create "
                  "an empty replacement wallet.",
                  pathWallet.string().c_str());
 }
@@ -1073,8 +1084,10 @@ bool InitLMDBWalletDBInternal(const std::filesystem::path& dir,
         g_lmdbWalletDb.Close();
         g_lmdbWalletEnv.Close();
         return error("Found a Berkeley DB wallet at %s, but Berkeley DB support "
-                     "has been removed. Migrate it offline with "
-                     "phoenix-db-migrate before starting the node.",
+                     "has been removed and the phoenix-db-migrate converter is "
+                     "no longer built or shipped. Convert it offline with the "
+                     "archived converter release before starting the node; see "
+                     "doc/archive/bdb-migration.md.",
                      (dir / "wallet.dat").string().c_str());
 
     case WALLET_INIT_NEW:

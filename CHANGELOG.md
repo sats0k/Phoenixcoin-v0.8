@@ -74,6 +74,10 @@ Changes since v0.8.3.
 
 ### Fixed
 
+- Startup errors for a Berkeley DB data directory, `-salvagewallet` and the
+  removed backend options no longer tell operators to run `phoenix-db-migrate`,
+  which is no longer built or shipped. They name the archived converter release
+  and the migration guide in `doc/archive/bdb-migration.md` instead.
 - The wallet no longer loses its fail-closed protection when the environment
   is deleted. `wallet.backend` is written atomically after every successful
   LMDB wallet open, so a later missing `wallet/` is reported as data loss
@@ -422,11 +426,13 @@ New coverage:
 - The `BDB_INCLUDE_PATH`, `BDB_LIB_PATH` and `BDB_LIB_SUFFIX` build variables
   and the converter/fixture build targets were removed from the Linux, macOS
   and MinGW makefiles and the Qt project.
-- `-walletbackend=bdb` and `-dbbackend=bdb` now fail with
-  `Berkeley DB support has been removed.` and the instruction to run
-  `phoenix-db-migrate` instead of silently ignoring the option.
-  `-salvagewallet` is rejected for the same reason, and the obsolete
-  `-detachdb`, `-privdb`, `-dbcache` and `-dblogsize` options are gone.
+- `-walletbackend=bdb` and `-dbbackend=bdb` now fail explicitly instead of
+  being silently ignored. They report that Berkeley DB support has been
+  removed, that the `phoenix-db-migrate` converter is no longer built or
+  shipped, and where the archived converter release and migration procedure
+  are documented. `-salvagewallet` is rejected for the same reason, and the
+  obsolete `-detachdb`, `-privdb`, `-dbcache` and `-dblogsize` options are
+  gone.
 - The daemon-side `MigrateToLMDB` / `MigrateWalletToLMDB` startup paths,
   `CDBEnv`/`bitdb` and the BDB `CDB` implementation, including the
   `bdb_kv` wrapper, are removed. The archived converter used `libdb_cxx` +

@@ -52,8 +52,10 @@ explicitly and points at the converter.
 
 `-salvagewallet` and the removed Berkeley DB backend options
 (`-walletbackend`, `-dbbackend`, `-detachdb`, `-privdb`, `-dbcache`,
-`-dblogsize`) fail explicitly with `Berkeley DB support has been removed.` and
-the instruction to run `phoenix-db-migrate`.
+`-dblogsize`) fail explicitly: they report that Berkeley DB support has been
+removed, that the `phoenix-db-migrate` converter is no longer built or shipped,
+and that [`archive/bdb-migration.md`](archive/bdb-migration.md) documents the
+archived converter release and migration procedure.
 
 An LMDB wallet is an environment directory, so `backupwallet <destination>`
 writes a directory, not a single file.  If `<destination>` is an existing
