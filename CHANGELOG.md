@@ -107,8 +107,8 @@ Changes since v0.8.3.
   The static branch had used `-llmdb`, so a system with both
   `/usr/lib/liblmdb.so` and `/usr/lib/liblmdb.a` still produced a binary
   with a shared LMDB dependency. `LMDB_INCLUDE_PATH`, `LMDB_LIB_PATH` and
-  `LMDB_LIB_SUFFIX` are available for non-default installations, matching
-  the Berkeley DB variables.
+  `LMDB_LIB_SUFFIX` are available for non-default installations, matching the
+  other dependency variables.
 - The hybrid objects in `src/Makefile.linux` rebuilt only when their own
   `.cpp` changed: their rules carried no `-MMD`, so editing a shared
   header such as `wallet.h` rebuilt the rest of the binary but left
@@ -139,8 +139,8 @@ Changes since v0.8.3.
   `QT_QPA_FONTDIR` points at a system font directory when the caller has
   not chosen one.
 - An interrupted or failed `RewriteWalletLMDB()` could disable LMDB while
-  `wallet.backend` still marked LMDB as authoritative, after which
-  `CDB("wallet.dat")` routed writes to Berkeley DB and committed data
+  `wallet.backend` still marked LMDB as authoritative, after which later
+  writes either failed or went to a stale environment and committed data
   disappeared on the next LMDB start. Every path that closes the live
   environment now either reopens a usable one or stops: a failed rename
   keeps and reopens `wallet/`, a failed install restores and reopens
@@ -154,10 +154,9 @@ Changes since v0.8.3.
   failure, so encryption cannot leave plaintext keys in the old copy.
 - A failed database read was treated as end-of-data by the wallet loaders,
   so a truncated wallet could finish loading silently. `CDBIterator` now
-  exposes `Error()`, both backends set it for failures other than
-  "not found", the Berkeley DB iterator copies its own key/value data
-  instead of reusing static buffers, and `CDBScan` provides a
-  backend-neutral scan handle that owns the read transaction and iterator.
+  exposes `Error()`, the LMDB iterator sets it for failures other than
+  "not found", and `CDBScan` provides a scan handle that owns the read
+  transaction and iterator.
   Wallet record iteration uses it; the chain index keeps its cursor reads
   but now distinguishes a failed cursor operation from end-of-data.
 - `AddToBlockIndex()` inserted a new `CBlockIndex` into `mapBlockIndex`
@@ -168,49 +167,39 @@ Changes since v0.8.3.
   links, and checks the genesis `WriteHashBestChain()` result.
 - A `blkindex.backend` marker that says `lmdb` no longer re-imports the
   migration-time `blkindex.dat` snapshot when the LMDB index is missing or
-  empty: startup fails instead, and a deliberate re-import requires removing
-  the marker.
+  empty: startup fails instead. The daemon never imports a legacy
+  `blkindex.dat`; recovery is from a backup or the archived converter.
 
 ### Changed
 
-- LMDB is now the production default for the wallet: `-walletbackend`
-  defaults to `lmdb` instead of `bdb`. An existing `wallet.dat` is copied
-  into `<datadir>/wallet/` on the first start, and startup prints
-  `Wallet backend: LMDB`. Berkeley DB remains available for compatibility
-  and recovery with `-walletbackend=bdb`; there is no implicit fallback
-  between the two backends. See `doc/lmdb.md`.
-- LMDB is now the production default for the chain index:
-  `-dbbackend` defaults to `lmdb` instead of `bdb`. An existing
-  `blkindex.dat` is copied into `<datadir>/blkindex/` on the first start,
-  and startup prints `Chain index backend: LMDB`. Berkeley DB remains
-  available for compatibility and recovery with `-dbbackend=bdb`; there is
-  no implicit fallback between the two backends.
-- The RPC console Information tab now reports the database library actually
-  selected instead of always showing the compiled Berkeley DB release. With
-  the default LMDB chain index and wallet it shows the LMDB version; a mixed
-  chain/wallet configuration shows both libraries.
-- Chain backend markers are now authoritative in both directions. A
-  `blkindex.backend` marker that says `bdb` refuses `-dbbackend=lmdb` even
-  when a stale `blkindex/` directory exists, matching the wallet behaviour;
-  a `lmdb` marker likewise refuses `-dbbackend=bdb`. Migration from
-  `blkindex.dat` now runs only when no marker exists at all.
-- The unused bundled `src/leveldb/` tree is gone. LMDB and Berkeley DB are
-  the only database backends, and no code or build rule references LevelDB.
+- LMDB is now the only runtime database backend. `-walletbackend` and
+  `-dbbackend` accept only `lmdb`; selecting `bdb` fails with the archived
+  converter guidance instead of falling back. There is no implicit fallback
+  and no on-startup import: a data directory that still depends on Berkeley DB
+  must be converted offline with the archived converter release. Startup
+  prints `Wallet backend: LMDB`. See `doc/lmdb.md`.
+- The RPC console Information tab now reports the LMDB library version used by
+  the running daemon and GUI; Berkeley DB is no longer compiled or selectable.
+- Backend markers are authoritative in both directions when present. A
+  `wallet.backend` / `blkindex.backend` marker that says `bdb` refuses startup
+  even when a leftover LMDB environment exists; a marker that says `lmdb`
+  turns a missing environment into an explicit data-loss error. Current builds
+  write only the wallet initialization marker.
+- The unused bundled `src/leveldb/` tree is gone. LMDB is the only database
+  backend, and no code or build rule references LevelDB.
 - `-lmdbmapsize` is parsed strictly instead of through `atoi64`:
   non-positive, unrepresentable and non-page-multiple values are rejected
   before conversion, and 32-bit builds are capped at 2048 MiB so a large
   request cannot wrap during the `size_t` conversion. The equivalent
   validation applies to the wallet map-size options.
 - Wallet flushing and backup now dispatch through `FlushWalletDB()` and
-  `BackupWalletDB()` in the database layer instead of branching on
-  `IsLMDBWalletEnabled()` inside `walletdb.cpp`. Wallet code no longer needs
-  to know which backend is underneath; Berkeley DB and LMDB keep their
-  existing on-disk behaviour. `FlushWalletDB()` now propagates LMDB sync
-  failures instead of reporting them as a successful flush.
-- The startup wallet salvage and verification pass is now selected by
-  `CheckWalletDatabaseAtStartup()` in the wallet persistence layer.
-  `init.cpp` handles the result but no longer checks whether the active
-  backend is LMDB or Berkeley DB.
+  `BackupWalletDB()` in the database layer instead of branching inside
+  `walletdb.cpp`. Wallet code no longer needs to know which operations sit
+  underneath. `FlushWalletDB()` now propagates LMDB sync failures instead of
+  reporting them as a successful flush.
+- Startup wallet verification is handled by `InitLMDBWalletDB()`, which
+  applies the same fail-closed marker and environment checks as the rest of
+  startup. There is no Berkeley DB branch and no on-startup salvage path.
 - LMDB now uses its strongest normal durability mode by default:
   `-lmdbnosync` defaults to `0`, so each commit fsyncs.  The previous
   default skipped the per-commit fsync to match Berkeley DB's
@@ -289,8 +278,9 @@ Changes since v0.8.3.
   following the compiler default. Release builds get
   `-fstack-protector-strong` and `_FORTIFY_SOURCE=2` again; the daemon
   and tests had been built with `-fno-stack-protector`.
-- Qt4 support is dropped and Qt5 or newer is required;
-  `phoenixcoin-qt.pro` now errors out on Qt4 instead of building it.
+- The GUI requires Qt 6.8 or newer; Qt 4 and Qt 5 are no longer supported
+  and `phoenixcoin-qt.pro` rejects them instead of attempting a build.
+  Configure with `qmake6` (or a Qt 6 `qmake`).
 - `-march=native` is opt-in: release binaries are portable by default and
   `make NATIVE=1` enables native CPU tuning, matching the Qt build.
 - `phoenixcoin.conf` is parsed without the Boost `program_options`
@@ -351,8 +341,8 @@ Changes since v0.8.3.
 
 ### Testing
 
-The Boost suite is at 173 test cases. The database work added two new
-suites, `kvdb_tests` (36 cases for the backend abstraction, LMDB
+The Boost suite is at 178 test cases. The database work added two new
+suites, `kvdb_tests` (37 cases for the database abstraction, LMDB
 environments, marker authority, backup/verification and runtime map growth)
 and `wallet_persistence_tests` (20 cases for wallet persistence semantics,
 encryption lifecycle, write-boundary atomicity and hybrid-key invariants).

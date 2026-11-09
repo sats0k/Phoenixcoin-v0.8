@@ -19,7 +19,7 @@ Implemented components include:
 - Hybrid multisignature support
 - OpenSSL ML-DSA-65 verification
 - Signature cache compatibility
-- Wallet import compatibility (`wallet.dat`, `importprivkey`)
+- Wallet key import (`importprivkey`); a pre-LMDB `wallet.dat` is not loaded directly and requires the archived converter described in [`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md)
 - Legacy transaction compatibility
 - Hybrid wallet key pool
 - Automatic hybrid change address support
