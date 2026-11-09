@@ -37,6 +37,9 @@ protected:
     bool filterAcceptsRow(int source_row, const QModelIndex & source_parent) const;
 
 private:
+    void beginFilterChangeCompat();
+    void endFilterChangeCompat();
+
     QDateTime dateFrom;
     QDateTime dateTo;
     QString addrPrefix;

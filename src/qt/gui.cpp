@@ -8,6 +8,7 @@
 #include <iostream>
 
 #include <QApplication>
+#include <QActionGroup>
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QMenu>

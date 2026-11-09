@@ -32,15 +32,21 @@ LDFLAGS = -Wl,-O2 -Wl,-s -Wl,--dynamicbase -Wl,--nxcompat -static -static-libgcc
 # May break MinGW64
 #LDFLAGS += -Wl,--large-address-aware
 
-BOOST_LIB_SUFFIX = -mgw49-mt-x64-1_81
-BOOST_INCLUDE_PATH = /home/Administrator/boost-1.81
-BOOST_LIB_PATH = /home/Administrator/boost-1.81/stage/lib
+# Dependency locations must be supplied for the installed Boost, OpenSSL 3.5+
+# and miniupnpc trees, for example on the make command line.  Keeping these
+# empty avoids silently linking an obsolete OpenSSL from a stale hardcoded path.
+BOOST_LIB_SUFFIX =
+BOOST_INCLUDE_PATH =
+BOOST_LIB_PATH =
 
 # OpenSSL 3.5 or newer is required (key.cpp uses the provider API and
-# hs/hybrid_signer.cpp needs EVP_PKEY_ML_DSA_65): adjust the paths below.
+# hs/hybrid_signer.cpp needs EVP_PKEY_ML_DSA_65).
 OPENSSL_LIB_SUFFIX =
-OPENSSL_INCLUDE_PATH = /home/Administrator/openssl-1.0.2u/include
-OPENSSL_LIB_PATH = /home/Administrator/openssl-1.0.2u
+OPENSSL_INCLUDE_PATH =
+OPENSSL_LIB_PATH =
+
+MINIUPNPC_INCLUDE_PATH =
+MINIUPNPC_LIB_PATH =
 
 SECP256K1_INCLUDE_PATH =
 SECP256K1_LIB_PATH =
@@ -69,9 +75,8 @@ ifndef USE_UPNP
  override USE_UPNP = -
 endif
 ifneq (${USE_UPNP}, -)
-# Directory with the headers "include" should be renamed or copied to "miniupnpc"
- INCS += -I/home/Administrator/miniupnpc-2.3.0
- LIBS += -L/home/Administrator/miniupnpc-2.3.0 -lminiupnpc -liphlpapi
+ INCS += $(addprefix -I,$(MINIUPNPC_INCLUDE_PATH))
+ LIBS += $(addprefix -L,$(MINIUPNPC_LIB_PATH)) -lminiupnpc -liphlpapi
 # Remove -DMINIUPNP_STATICLIB if linking against a shared library
  DEFS += -DMINIUPNP_STATICLIB -DUSE_UPNP=$(USE_UPNP)
 endif

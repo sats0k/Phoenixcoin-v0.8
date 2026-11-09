@@ -3,8 +3,6 @@
 
 #include "macdockiconhandler.h"
 
-extern void qt_mac_set_dock_menu(QMenu*);
-
 #undef slots
 #include <Cocoa/Cocoa.h>
 
@@ -50,7 +48,7 @@ MacDockIconHandler::MacDockIconHandler() : QObject()
 
     this->m_dummyWidget = new QWidget();
     this->m_dockMenu = new QMenu(this->m_dummyWidget);
-    qt_mac_set_dock_menu(this->m_dockMenu);
+    this->m_dockMenu->setAsDockMenu();
     [pool release];
 }
 

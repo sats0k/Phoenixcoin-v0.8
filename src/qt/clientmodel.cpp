@@ -73,7 +73,7 @@ double ClientModel::GetDifficulty() const {
 
 QDateTime ClientModel::getLastBlockDate() const
 {
-    return QDateTime::fromTime_t(pindexBest->GetBlockTime());
+    return QDateTime::fromSecsSinceEpoch(pindexBest->GetBlockTime());
 }
 
 quint64 ClientModel::getTotalBytesRx() const {

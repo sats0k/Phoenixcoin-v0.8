@@ -488,7 +488,7 @@ index from a legacy source, or resynchronise from the network.
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 Counts that name an earlier tree are historical records; the current suite is
-173 cases (see [`../src/test/README.md`](../src/test/README.md)).
+177 cases (see [`../src/test/README.md`](../src/test/README.md)).
 
 - `kvdb_tests` passed 48/48 test cases in the normal build of that validation
   tree.  The chain-index subset that existed at the time (24 cases, 1238
@@ -503,7 +503,7 @@ Counts that name an earlier tree are historical records; the current suite is
   any transaction, and an injected final commit failure restores the tip and
   block index in memory, leaves no batch entries after a restart and still
   allows a later clean import to reach the correct tip.
-- The full unit suite passed 173 test cases with no errors in the normal build.
+- The full unit suite passed 177 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -966,7 +966,7 @@ Every entry passed in both builds:
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
 | full unit suite | 158 cases |
 
-The current normal-build suite is 173 cases, and the current crash regression
+The current normal-build suite is 177 cases, and the current crash regression
 covers normal operation and the encryption rewrite.  See
 [`../src/test/README.md`](../src/test/README.md) for current test coverage.
 

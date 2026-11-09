@@ -31,17 +31,6 @@
 #include "walletmodel.h"
 #include "optionsmodel.h"
 
-#if defined(NEED_QT_PLUGINS) && !defined(_QT_PLUGINS_INCLUDED)
-#define _QT_PLUGINS_INCLUDED
-#define __INSURE__
-#include <QtPlugin>
-Q_IMPORT_PLUGIN(qcncodecs)
-Q_IMPORT_PLUGIN(qjpcodecs)
-Q_IMPORT_PLUGIN(qtwcodecs)
-Q_IMPORT_PLUGIN(qkrcodecs)
-Q_IMPORT_PLUGIN(qtaccessiblewidgets)
-#endif
-
 extern CWallet *pwalletMain;
 
 // Need a global reference for the notifications to find the GUI
@@ -261,16 +250,19 @@ int main(int argc, char *argv[])
     lang.truncate(lang_territory.lastIndexOf('_'));
 
     QTranslator qtTranslatorBase, qtTranslator, translatorBase, translator;
+    const QString qtTranslationsPath = QLibraryInfo::path(QLibraryInfo::TranslationsPath);
     // Load language files for configured locale:
     // - First load the translator for the base language, without territory
     // - Then load the more specific locale translator
 
-    // Load e.g. qt_de.qm
-    if (qtTranslatorBase.load("qt_" + lang, QLibraryInfo::location(QLibraryInfo::TranslationsPath)))
+    // Load e.g. qt_de.qm (Qt5 catalog) or qtbase_de.qm (Qt6 catalog)
+    if (qtTranslatorBase.load("qt_" + lang, qtTranslationsPath) ||
+        qtTranslatorBase.load("qtbase_" + lang, qtTranslationsPath))
         app.installTranslator(&qtTranslatorBase);
 
-    // Load e.g. qt_de_DE.qm
-    if (qtTranslator.load("qt_" + lang_territory, QLibraryInfo::location(QLibraryInfo::TranslationsPath)))
+    // Load e.g. qt_de_DE.qm (Qt5 catalog) or qtbase_de_DE.qm (Qt6 catalog)
+    if (qtTranslator.load("qt_" + lang_territory, qtTranslationsPath) ||
+        qtTranslator.load("qtbase_" + lang_territory, qtTranslationsPath))
         app.installTranslator(&qtTranslator);
 
     /* Load e.g. phoenixcoin_de.qm (shortcut "de" needs to be defined in phoenixcoin.qrc) */

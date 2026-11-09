@@ -477,8 +477,12 @@ Minimum versions used by this development branch include:
 * C++20-capable compiler (`-std=gnu++20` is pinned in `CMakeLists.txt`,
   `src/Makefile.linux` and `phoenixcoin-qt.pro`, so it does not depend on
   the compiler default)
-* **Qt 5 or newer** for the GUI (Qt4 reached end of life in 2015 and is no
-  longer supported; `qmake` refuses a Qt4 kit)
+* **Qt 6.8 or newer** for the GUI. Older Qt versions are rejected by
+  `phoenixcoin-qt.pro`; use `qmake6` (or a Qt6 `qmake`) to configure the GUI.
+
+The Windows Qt and MinGW build files do not hardcode dependency paths.  Pass
+the `BOOST_*`, `OPENSSL_*` and `MINIUPNPC_*` variables when configuring so the
+versions above are used instead of an older system copy.
 
 ---
 
@@ -487,7 +491,7 @@ Minimum versions used by this development branch include:
 A typical development build starts with:
 
 ```bash
-qmake
+qmake6
 make -j$(nproc)
 
 cd src
@@ -681,7 +685,7 @@ An automated unit-test suite covers these scenarios under
 cases for the database layer and LMDB operations) and
 `wallet_persistence_tests.cpp` (20 cases for persistence, atomicity and
 hybrid invariants), alongside the re-enabled legacy Boost suites (script,
-multisig, transaction, P2SH, miner, DoS). The full suite reports **173 test
+multisig, transaction, P2SH, miner, DoS). The full suite reports **177 test
 cases** and passes with no errors:
 
 ```bash

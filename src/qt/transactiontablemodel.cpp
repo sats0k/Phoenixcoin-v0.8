@@ -554,7 +554,7 @@ QVariant TransactionTableModel::data(const QModelIndex &index, int role) const
     case TypeRole:
         return rec->type;
     case DateRole:
-        return QDateTime::fromTime_t(static_cast<uint>(rec->time));
+        return QDateTime::fromSecsSinceEpoch(static_cast<qint64>(rec->time));
     case(LongDescriptionRole):
         return(priv->describe(rec, walletModel->getOptionsModel()->getDisplayUnit()));
     case AddressRole:

@@ -37,6 +37,7 @@ sigopcount_tests.cpp
 transaction_tests.cpp
 uint160_tests.cpp
 uint256_tests.cpp
+unlockcontext_tests.cpp
 util_tests.cpp
 wallet_tests.cpp
 testutil.cpp
@@ -361,19 +362,23 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 173 test cases...
+Running 177 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 173 cases: `kvdb_tests` (36), `hybrid_multisig_tests`
-(33), `wallet_persistence_tests` (20), `util_tests` (12) and the re-enabled
-legacy suites. `wallet_persistence_tests.cpp` covers LMDB wallet
+The full suite is 177 cases: `kvdb_tests` (36), `hybrid_multisig_tests`
+(33), `wallet_persistence_tests` (20), `util_tests` (12),
+`unlockcontext_tests` (4) and the re-enabled legacy suites.
+`wallet_persistence_tests.cpp` covers LMDB wallet
 persistence, encryption-state equality, write-boundary rollback, explicit
 rewrite-failure handling and hybrid-key invariants; `kvdb_tests.cpp` covers
 the backend abstraction, cursor error reporting, LMDB environments,
 legacy marker authority and fail-closed startup, verified backup/restore,
 `checklmdb`, `getdbinfo`, map growth and corruption handling.
+`unlockcontext_tests.cpp` covers the Qt wallet unlock context: copying
+transfers the relock responsibility exactly once, and self-assignment leaves
+it intact.
 
 The hybrid message-key suite now also covers the `dumphybridkey` /
 `importhybridkey` round trip: a key exported as WIF + Base64-DER is
