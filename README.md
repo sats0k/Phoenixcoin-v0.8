@@ -369,9 +369,12 @@ in [`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md) before
 starting the node. The converter was distributed separately during the
 migration window; the archived guide covers the backup, disk-space, downtime,
 verification and recovery procedure. Once converted, the LMDB environments are
-the ones the current daemon uses; a migration-era `blkindex.backend` or
-`wallet.backend` marker, if present, is read only as legacy state. Current
-builds do not create new markers.
+the ones the current daemon uses. A migration-era `blkindex.backend` marker, if
+present, is read only as legacy state; current builds do not create a
+chain-index marker. The wallet maintains `wallet.backend` containing `lmdb` as
+a durable initialization marker after every successful open, so a deleted
+`wallet/` directory is reported as data loss instead of being silently
+recreated.
 
 LMDB commits fsync by default (`-lmdbnosync=0`), the map grows automatically as
 it fills up to `-lmdbmaxmapsize` / `-lmdbmaxwalletsize`, and `backupwallet`
@@ -681,11 +684,11 @@ Testing has covered:
   commits
 
 An automated unit-test suite covers these scenarios under
-`src/test/hybrid_multisig_tests.cpp` (33 test cases), `kvdb_tests.cpp` (36
+`src/test/hybrid_multisig_tests.cpp` (33 test cases), `kvdb_tests.cpp` (37
 cases for the database layer and LMDB operations) and
 `wallet_persistence_tests.cpp` (20 cases for persistence, atomicity and
 hybrid invariants), alongside the re-enabled legacy Boost suites (script,
-multisig, transaction, P2SH, miner, DoS). The full suite reports **177 test
+multisig, transaction, P2SH, miner, DoS). The full suite reports **178 test
 cases** and passes with no errors:
 
 ```bash

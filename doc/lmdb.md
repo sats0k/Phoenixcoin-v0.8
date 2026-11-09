@@ -36,14 +36,18 @@ never adopted as a live index.
 ## Wallet backend
 
 The wallet lives in `<datadir>/wallet/` and follows the same rules.  It is an
-LMDB environment directory, not a single file.  Current builds do not create a
-`wallet.backend` marker; the LMDB environment is authoritative.  A legacy
-Berkeley DB `wallet.dat` is never read by the daemon; only the archived
+LMDB environment directory, not a single file.  A successful open writes
+`<datadir>/wallet.backend` containing `lmdb`.  The marker is not a backend
+selector; it is the durable record that this data directory already had an LMDB
+wallet.  If `wallet/` is deleted while the marker remains, startup fails with a
+data-loss error instead of creating an empty wallet.  The LMDB environment is
+authoritative; the marker exists to stop it from being silently recreated.  A
+legacy Berkeley DB `wallet.dat` is never read by the daemon; only the archived
 converter can read it, and it leaves the file unchanged.
 
-An incomplete LMDB wallet, or a legacy marker that says `lmdb` while the wallet
-is missing or empty, fails startup instead of creating an empty wallet.  A
-legacy `bdb` marker, or a legacy `wallet.dat` without an LMDB wallet, also fails
+An incomplete LMDB wallet, or a marker that says `lmdb` while the wallet is
+missing or empty, fails startup instead of creating an empty wallet.  A
+`bdb` marker, or a legacy `wallet.dat` without an LMDB wallet, also fails
 explicitly and points at the converter.
 
 `-salvagewallet` and the removed Berkeley DB backend options
@@ -360,20 +364,23 @@ The result has a `chain` and a `wallet` object with the same shape:
 }
 ```
 
-The sample is a current installation with no legacy marker.  A data directory
-converted during the migration window may still contain `blkindex.backend` /
-`wallet.backend`; the daemon reads those files as legacy state but never
-creates new ones.
+The sample is a current installation: the wallet has an `lmdb`
+`wallet.backend` marker, while the chain index has no marker.  A data directory
+from the migration window may also contain `blkindex.backend`; the daemon reads
+it as legacy state but never creates one.
 
 Field meanings:
 
 - `configured_backend` is `lmdb`; `active_backend` and `lmdb_enabled` describe
   what startup actually opened.
-- `marker` reports a legacy `blkindex.backend` / `wallet.backend` file when one
-  is present.  Current builds do not create these files, so `present: false` is
-  normal.  `matches_backend` is true when no legacy marker exists or when it
-  says `lmdb`; it is false for a `bdb` or unknown marker, which is a startup
-  problem rather than a healthy state.
+- `marker` reports the `wallet.backend` marker for the wallet and a legacy
+  `blkindex.backend` for the chain.  A successful wallet open always writes
+  `wallet.backend`, so `present: false` for an active wallet is an error.  The
+  chain index has no current marker, so absence is normal there.
+  `matches_backend` is true for a wallet marker that says `lmdb`, and for the
+  chain when no marker exists or the marker says `lmdb`; it is false for a
+  `bdb` or unknown marker, which is a startup problem rather than a healthy
+  state.
 - `opened_cleanly` is true when both the LMDB environment and its main
   database handle opened successfully.  `environment_open`, `database_open`
   and `error` narrow down a false value.
@@ -488,7 +495,7 @@ index from a legacy source, or resynchronise from the network.
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
 Counts that name an earlier tree are historical records; the current suite is
-177 cases (see [`../src/test/README.md`](../src/test/README.md)).
+178 cases (see [`../src/test/README.md`](../src/test/README.md)).
 
 - `kvdb_tests` passed 48/48 test cases in the normal build of that validation
   tree.  The chain-index subset that existed at the time (24 cases, 1238
@@ -503,7 +510,7 @@ Counts that name an earlier tree are historical records; the current suite is
   any transaction, and an injected final commit failure restores the tip and
   block index in memory, leaves no batch entries after a restart and still
   allows a later clean import to reach the correct tip.
-- The full unit suite passed 177 test cases with no errors in the normal build.
+- The full unit suite passed 178 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -708,7 +715,7 @@ value between 0 and `BASE_MATURITY`; it is inert otherwise, applies only to the
 test daemon process, and is not set by any normal startup path.
 
 A daemon smoke test on a temporary data directory also covered the stage-3
-wiring: the first start created `wallet/` (no backend marker is written) and
+wiring: the first start created `wallet/` and wrote `wallet.backend` (`lmdb`) and
 printed `Wallet database: LMDB`; `getnewaddress` worked, the address survived a
 clean restart, and the keypool was refilled through the LMDB wallet;
 `backupwallet` produced an environment that loaded the same addresses when
@@ -734,7 +741,8 @@ It follows the operator workflow described above:
 - rejects a data file truncated to its two meta pages, zeroed meta pages and
   an empty directory through both the standalone command and the RPC;
 - starts against a truncated live wallet and requires a non-zero exit, a clear
-  `LMDB wallet ... is incomplete` error, and no backend marker creation;
+  `LMDB wallet ... is incomplete` error, and that the existing `wallet.backend`
+  marker is preserved;
 - restores the point-in-time backup into the live datadir and proves that the
   pre-backup address and label survive while an address-book entry created
   after the backup is gone; then creates a new address, restarts, and signs
@@ -907,9 +915,8 @@ grown to 7.68 MB, slightly below the 7.79 MB Berkeley DB wallet.
 `RewriteWalletLMDB()` closes the live environment before it moves `wallet/`
 aside, so every failure after that point must either reopen a usable
 environment or stop the process.  It never disables LMDB: the LMDB environment
-remains authoritative.  Current builds do not create a `wallet.backend` marker;
-a migration-era marker, if present, is only read at startup, and there is no
-Berkeley DB fallback path that could accept writes the next LMDB start could
+remains authoritative and the `wallet.backend` marker stays in place.  There is
+no Berkeley DB fallback path that could accept writes the next LMDB start could
 not see.  The failure paths are:
 
 - a failed rename of `wallet/` leaves the active environment in place and
@@ -932,10 +939,11 @@ test-only `SetTestWalletRewriteFailure` hook:
 `wallet_lmdb_rewrite_rename_old_failure`,
 `wallet_lmdb_rewrite_install_failure`,
 `wallet_lmdb_rewrite_reopen_failure` and
-`wallet_lmdb_rewrite_cleanup_failure`.  They check that no backend marker is
-created, that `wallet.dat` never appears on disk, that later writes still reach
-LMDB, that a write after an unrecoverable failure fails instead of opening a
-new database, and that a restart repairs the directory.
+`wallet_lmdb_rewrite_cleanup_failure`.  They check that the `wallet.backend`
+marker stays present and says `lmdb`, that `wallet.dat` never appears on disk,
+that later writes still reach LMDB, that a write after an unrecoverable
+failure fails instead of opening a new database, and that a restart repairs
+the directory.
 `SetTestWalletRewriteAbort(true)` makes the fatal path return false instead
 of exiting, so the test can inspect the on-disk state; both hooks apply only
 to the LMDB wallet.
@@ -966,7 +974,7 @@ Every entry passed in both builds:
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
 | full unit suite | 158 cases |
 
-The current normal-build suite is 177 cases, and the current crash regression
+The current normal-build suite is 178 cases, and the current crash regression
 covers normal operation and the encryption rewrite.  See
 [`../src/test/README.md`](../src/test/README.md) for current test coverage.
 
@@ -1035,7 +1043,8 @@ Interrupted `RewriteWalletLMDB` is repaired by
 `RecoverInterruptedWalletRewrite`, called from
 `InitLMDBWalletDBInternal`: if `wallet/` is missing it installs the staged
 `wallet.rewrite` environment or restores `wallet.old`, otherwise it removes
-the staging directories, and it removes a stale legacy `wallet.backend.tmp`.
+the staging directories, and it removes a stale `wallet.backend.tmp` left by an
+interrupted marker write.
 `CWallet::ReacceptWalletTransactions` also repairs spent flags from the
 wallet's own transactions before consulting the chain index, so a wallet
 that committed a send but was killed before that bookkeeping still reports

@@ -973,8 +973,8 @@ void RunWalletBackendMarker(const std::string &tag)
     std::filesystem::remove_all(dir, ec);
     BOOST_REQUIRE(!ec);
 
-    // Legacy LMDB wallets have no marker; an existing environment is
-    // authoritative.
+    // A wallet from an earlier build may have no marker; an existing
+    // environment is authoritative and gains one on the next successful open.
     const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
     {
         CLMDBDatabase stale;
@@ -1029,9 +1029,10 @@ void RunWalletLMDBBackend(const std::string &tag)
     BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
     BOOST_CHECK(IsLMDBWalletEnabled());
 
-    // Current builds do not create a backend marker.
+    // A successful open writes the durable wallet initialization marker.
     std::string marker;
-    BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
+    BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
     BOOST_CHECK(HasLMDBWallet(dir));
 
     {
@@ -1419,9 +1420,9 @@ void RunWalletLMDBDiagnostics(const std::string &tag)
     BOOST_CHECK(diag.wallet.fOpenedCleanly);
     BOOST_CHECK(diag.wallet.fEnvironmentOpen);
     BOOST_CHECK(diag.wallet.fDatabaseOpen);
-    // Current builds do not create a marker; absence is the healthy state.
-    BOOST_CHECK(!diag.wallet.fMarkerPresent);
-    BOOST_CHECK(diag.wallet.strMarker.empty());
+    // A successful open always writes the initialization marker.
+    BOOST_CHECK(diag.wallet.fMarkerPresent);
+    BOOST_CHECK_EQUAL(diag.wallet.strMarker, "lmdb");
     BOOST_CHECK(diag.wallet.fMarkerMatchesBackend);
     BOOST_CHECK(diag.wallet.strError.empty());
     BOOST_CHECK_EQUAL(diag.wallet.strPath, (dir / "wallet").string());
@@ -1465,15 +1466,106 @@ void RunWalletLMDBStartupRefusal(const std::string &tag)
 
     {
         // A marker that says LMDB is authoritative must not fall back to an
-        // empty wallet.
+        // empty wallet or invent a replacement environment.
         const std::filesystem::path dir = MakeTempDir(tag + "_missing");
         BOOST_REQUIRE(WriteBackendMarkerForTest(dir, "wallet.backend", "lmdb"));
         BOOST_CHECK(!InitLMDBWalletDBForTest(dir));
         BOOST_CHECK(!IsLMDBWalletEnabled());
+        BOOST_CHECK(!std::filesystem::exists(dir / "wallet"));
+
+        std::string marker;
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "lmdb");
 
         std::error_code ec;
         std::filesystem::remove_all(dir, ec);
     }
+}
+
+// Regression: the wallet initialization marker is durable evidence that a
+// wallet existed.  Deleting wallet/ after a successful start must fail closed
+// instead of silently creating an empty replacement.  A genuinely new data
+// directory and a markerless legacy wallet must both still initialise and gain
+// the marker.
+void RunWalletMarkerProtectsWallet(const std::string &tag)
+{
+    struct Guard {
+        ~Guard() { CloseLMDBWalletDB(); }
+    } guard;
+
+    std::error_code ec;
+
+    // Normal first start: a genuinely new data directory initialises and
+    // records the durable marker.
+    const std::filesystem::path fresh = MakeTempDir(tag + "_fresh");
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(fresh));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+    BOOST_CHECK(HasLMDBWallet(fresh));
+
+    std::string marker;
+    BOOST_REQUIRE(ReadWalletBackendMarker(fresh, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+    BOOST_CHECK(!std::filesystem::exists(fresh / "wallet.backend.tmp"));
+
+    {
+        WalletDBTestAccess db("wallet.dat", "cr+");
+        BOOST_REQUIRE_MESSAGE(db.Write(std::string("marker-probe"),
+                                       std::string("present")),
+                              "wallet write failed");
+    }
+
+    CloseLMDBWalletDB();
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+
+    // Delete the whole wallet environment, as in the reported accident.  No
+    // wallet.dat is present either.
+    std::filesystem::remove_all(fresh / "wallet", ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_CHECK(!std::filesystem::exists(fresh / "wallet"));
+    BOOST_CHECK(!std::filesystem::exists(fresh / "wallet.dat"));
+
+    // Startup must report data loss and must not create or accept a new empty
+    // wallet.  A second attempt must behave the same way.
+    BOOST_CHECK(!InitLMDBWalletDBForTest(fresh));
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+    BOOST_CHECK(!std::filesystem::exists(fresh / "wallet"));
+    BOOST_REQUIRE(ReadWalletBackendMarker(fresh, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+
+    BOOST_CHECK(!InitLMDBWalletDBForTest(fresh));
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+    BOOST_CHECK(!std::filesystem::exists(fresh / "wallet"));
+
+    std::filesystem::remove_all(fresh, ec);
+    BOOST_REQUIRE(!ec);
+
+    // A wallet created by a markerless build is adopted on the next successful
+    // open and gains the marker, so deleting it later also fails closed.
+    const std::filesystem::path legacy = MakeTempDir(tag + "_legacy");
+    {
+        CLMDBDatabase db;
+        BOOST_REQUIRE(db.Open((legacy / "wallet").string()));
+        WriteValue(db, Key("legacy-probe"), Value("present"));
+        db.Close();
+    }
+    BOOST_CHECK(!ReadWalletBackendMarker(legacy, marker));
+
+    BOOST_REQUIRE(InitLMDBWalletDBForTest(legacy));
+    BOOST_CHECK(IsLMDBWalletEnabled());
+    BOOST_REQUIRE(ReadWalletBackendMarker(legacy, marker));
+    BOOST_CHECK_EQUAL(marker, "lmdb");
+
+    CloseLMDBWalletDB();
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+
+    std::filesystem::remove_all(legacy / "wallet", ec);
+    BOOST_REQUIRE(!ec);
+    BOOST_CHECK(!InitLMDBWalletDBForTest(legacy));
+    BOOST_CHECK(!IsLMDBWalletEnabled());
+    BOOST_CHECK(!std::filesystem::exists(legacy / "wallet"));
+
+    std::filesystem::remove_all(legacy, ec);
+    BOOST_REQUIRE(!ec);
 }
 
 // Regression: wallet.backend is authoritative.  A bdb marker must refuse
@@ -1575,10 +1667,11 @@ public:
 
     const std::filesystem::path &Dir() const { return dir; }
 
-    void ExpectNoBackendMarker() const
+    void ExpectBackendMarker() const
     {
         std::string marker;
-        BOOST_CHECK(!ReadWalletBackendMarker(dir, marker));
+        BOOST_REQUIRE(ReadWalletBackendMarker(dir, marker));
+        BOOST_CHECK_EQUAL(marker, "lmdb");
     }
 
     void ExpectNoBDBWallet() const
@@ -1611,7 +1704,7 @@ public:
         CloseLMDBWalletDB();
         BOOST_REQUIRE(InitLMDBWalletDBForTest(dir));
         BOOST_CHECK(IsLMDBWalletEnabled());
-        ExpectNoBackendMarker();
+        ExpectBackendMarker();
     }
 
     void ArmFailingRewrite()
@@ -1636,7 +1729,7 @@ void RunWalletRewriteRenameOldFailure(const std::string &tag)
     BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
     BOOST_CHECK(!TestWalletRewriteAborted());
     BOOST_CHECK(IsLMDBWalletEnabled());
-    h.ExpectNoBackendMarker();
+    h.ExpectBackendMarker();
     BOOST_CHECK(std::filesystem::exists(h.Dir() / "wallet"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.old"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.rewrite"));
@@ -1664,7 +1757,7 @@ void RunWalletRewriteInstallFailure(const std::string &tag)
     BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
     BOOST_CHECK(!TestWalletRewriteAborted());
     BOOST_CHECK(IsLMDBWalletEnabled());
-    h.ExpectNoBackendMarker();
+    h.ExpectBackendMarker();
     BOOST_CHECK(std::filesystem::exists(h.Dir() / "wallet"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.old"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.rewrite"));
@@ -1695,7 +1788,7 @@ void RunWalletRewriteReopenFailure(const std::string &tag)
     BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
     BOOST_CHECK(!TestWalletRewriteAborted());
     BOOST_CHECK(IsLMDBWalletEnabled());
-    h.ExpectNoBackendMarker();
+    h.ExpectBackendMarker();
     BOOST_CHECK(std::filesystem::exists(h.Dir() / "wallet"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.old"));
     BOOST_CHECK(!std::filesystem::exists(h.Dir() / "wallet.rewrite"));
@@ -1707,9 +1800,9 @@ void RunWalletRewriteReopenFailure(const std::string &tag)
     BOOST_CHECK_EQUAL(h.Read("rewrite-after-reopen-fallback"), "lmdb");
 
     // Neither the installed copy nor the restored copy can be reopened: no
-    // usable environment remains, so the rewrite must stop.  No marker is
-    // created, writes fail instead of reaching Berkeley DB, and startup
-    // recovers the staged copy.
+    // usable environment remains, so the rewrite must stop.  The wallet
+    // initialization marker stays in place, writes fail instead of reaching
+    // Berkeley DB, and startup recovers the staged copy.
     h.ArmFailingRewrite();
     SetTestWalletRewriteFailure("wallet-rewrite-reopen-installed");
     SetTestWalletRewriteFailure("wallet-rewrite-reopen-restored");
@@ -1717,7 +1810,7 @@ void RunWalletRewriteReopenFailure(const std::string &tag)
     BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
     BOOST_CHECK(TestWalletRewriteAborted());
     BOOST_CHECK(IsLMDBWalletEnabled());
-    h.ExpectNoBackendMarker();
+    h.ExpectBackendMarker();
     BOOST_CHECK(!h.TryWrite("bdb-fallback", "must-not-happen"));
     h.ExpectNoBDBWallet();
 
@@ -1741,7 +1834,7 @@ void RunWalletRewriteCleanupFailure(const std::string &tag)
     BOOST_CHECK(!CDB::Rewrite("wallet.dat"));
     BOOST_CHECK(!TestWalletRewriteAborted());
     BOOST_CHECK(IsLMDBWalletEnabled());
-    h.ExpectNoBackendMarker();
+    h.ExpectBackendMarker();
     BOOST_CHECK(std::filesystem::exists(h.Dir() / "wallet"));
     BOOST_CHECK(std::filesystem::exists(h.Dir() / "wallet.old"));
     h.ExpectNoBDBWallet();
@@ -2173,6 +2266,11 @@ BOOST_AUTO_TEST_CASE(wallet_lmdb_backup)
 BOOST_AUTO_TEST_CASE(wallet_lmdb_startup_refusal)
 {
     RunWalletLMDBStartupRefusal("wallet_lmdb_startup_refusal");
+}
+
+BOOST_AUTO_TEST_CASE(wallet_lmdb_marker_protects_wallet)
+{
+    RunWalletMarkerProtectsWallet("wallet_lmdb_marker_protects_wallet");
 }
 
 BOOST_AUTO_TEST_CASE(wallet_lmdb_rewrite_rename_old_failure)

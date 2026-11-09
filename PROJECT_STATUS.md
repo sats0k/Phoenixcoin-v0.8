@@ -50,9 +50,11 @@ Implemented components include:
   ECDSA key ID straight to its `CHybridKeyID`, so `IsMine()` resolves hybrid outputs in
   constant time instead of re-hashing the public key of every hybrid key the wallet holds
   (coin selection was O(outputs × hybrid keys) `Hash160` operations)
-- LMDB as the only chain-index and wallet runtime backend, with fail-closed
-  startup and legacy marker handling: a Berkeley DB marker or source is never
-  silently opened as an empty LMDB environment
+- LMDB as the only chain-index and wallet runtime backend, with a durable
+  wallet initialization marker and fail-closed startup: a Berkeley DB marker or
+  source is never silently opened as an empty LMDB environment, and deleting the
+  wallet environment is reported as data loss instead of creating an empty
+  replacement wallet
 - Berkeley DB fully removed from the source tree and standard build
   environment: no target links `libdb_cxx`, and the converter source, test-only
   fixture, converter regressions and live migration documentation were retired
@@ -88,7 +90,7 @@ Testing on a fresh Quantum blockchain confirms that:
 
 ## Automated Test Suite
 
-`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (33 test cases), `src/test/kvdb_tests.cpp` covers the database layer (36 cases) and `src/test/wallet_persistence_tests.cpp` covers wallet persistence and atomicity (20 cases) inside the full Boost suite, which reports **173 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
+`src/test/hybrid_multisig_tests.cpp` provides the hybrid unit/regression suite (33 test cases), `src/test/kvdb_tests.cpp` covers the database layer (37 cases) and `src/test/wallet_persistence_tests.cpp` covers wallet persistence and atomicity (20 cases) inside the full Boost suite, which reports **178 test cases** and passes with no errors (the legacy script/multisig/transaction/P2SH/miner/DoS suites are re-enabled alongside). Coverage:
 
 - ML-DSA signer serialization edge cases (v1/v2 `FromSerialized*`), including regression coverage for `FromSerializedV2` rejecting valid provider-created keys
 - Hybrid-key disk-format tampering resistance (`FromLegacyDiskFormat` strict field guards on truncated/corrupted records)
@@ -127,7 +129,7 @@ Testing on a fresh Quantum blockchain confirms that:
 - `CKey` copy/move lifetime (`key_copy_move_lifetime` in `key_tests.cpp`): refcounted-PKEY sharing across copies, move/swaps, self-assignments, and ECIES decrypts performed after the source keys were destroyed — the whole `decryptmessage` (`key = GetCKey()`) regression family
 - `CKey` copy/move under legacy transaction signing (`key_copy_move_legacy_signing` in `key_tests.cpp`): a keystore churning the signing key through every copy/move pathway drives `SignSignature` on P2PKH/P2PK outputs, asserting `VerifySignature`, serialization round-trip, and repeated-signing stability; it crashes (SIGSEGV) under the pre-fix shallow-copy CKey
 - `CKey` copy/move under hybrid transaction signing (`key_copy_move_hybrid_signing` in `hybrid_multisig_tests.cpp`): the same churn drives `SignHybridTx` on P2PH, P2HPKH, hybrid-multisig and P2SH-wrapped outputs; every scriptSig verifies, the ECDSA half is re-sign stable, and it crashes (SIGSEGV) under the pre-fix shallow-copy CKey. This test surfaced and pins a `SignHybridTx` append bug (the output scriptSig was filled incrementally, so re-signing accumulated stale signatures) — now cleared at the start of the call
-- `kvdb_tests`: backend-neutral interfaces and scans, cursor/iterator error reporting, LMDB environment handling, writer serialization and read-transaction threading, marker authority and fail-closed startup, record verification, `backupwallet` staging and restore refusals, offline `checklmdb` verification, `getdbinfo` counters, runtime map growth and ceilings, fixed-map map-full handling, and strict map-size parsing limits
+- `kvdb_tests`: backend-neutral interfaces and scans, cursor/iterator error reporting, LMDB environment handling, writer serialization and read-transaction threading, durable wallet markers and fail-closed startup when the wallet environment is deleted, marker authority, record verification, `backupwallet` staging and restore refusals, offline `checklmdb` verification, `getdbinfo` counters, runtime map growth and ceilings, fixed-map map-full handling, and strict map-size parsing limits
 - `wallet_persistence_tests`: LMDB wallet persistence with key, label and encryption-state equality, the encrypted lifecycle across restarts, wallet write-boundary rollback, explicit LMDB rewrite-failure handling, hybrid-key invariants, and ECDSA/hybrid keypool refill rollback through the staged-key path
 - Full-daemon regressions for LMDB wallet crash safety under `SIGKILL` at every write and encryption-rewrite boundary, and for verified backup/restore and `checklmdb` on real environments
 
@@ -193,7 +195,7 @@ These items are wallet improvements only and do not affect consensus.
 
 ## Next Phase
 
-Automated testing is complete: the Boost unit suite passes all 173 test cases with no errors, including the `kvdb_tests` and `wallet_persistence_tests` database/persistence suites, the daemon-level regression scripts (export/import, atomicity, malformed input, backup/restore, crash safety and batched block import) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
+Automated testing is complete: the Boost unit suite passes all 178 test cases with no errors, including the `kvdb_tests` and `wallet_persistence_tests` database/persistence suites, the daemon-level regression scripts (export/import, atomicity, malformed input, backup/restore, crash safety and batched block import) pass end to end, and the four libFuzzer targets build and run cleanly under Clang with AddressSanitizer/UBSan, including fuzzing of the isolated v1 `HYBS` container parser.
 
 Remaining work focuses on:
 

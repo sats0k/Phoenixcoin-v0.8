@@ -362,20 +362,21 @@ Run one specific test case, for example the P2SH spend test:
 A successful test run should report:
 
 ```
-Running 177 test cases...
+Running 178 test cases...
 
 *** No errors detected
 ```
 
-The full suite is 177 cases: `kvdb_tests` (36), `hybrid_multisig_tests`
+The full suite is 178 cases: `kvdb_tests` (37), `hybrid_multisig_tests`
 (33), `wallet_persistence_tests` (20), `util_tests` (12),
 `unlockcontext_tests` (4) and the re-enabled legacy suites.
 `wallet_persistence_tests.cpp` covers LMDB wallet
 persistence, encryption-state equality, write-boundary rollback, explicit
 rewrite-failure handling and hybrid-key invariants; `kvdb_tests.cpp` covers
 the backend abstraction, cursor error reporting, LMDB environments,
-legacy marker authority and fail-closed startup, verified backup/restore,
-`checklmdb`, `getdbinfo`, map growth and corruption handling.
+durable wallet markers and fail-closed startup, legacy marker authority,
+verified backup/restore, `checklmdb`, `getdbinfo`, map growth and corruption
+handling.
 `unlockcontext_tests.cpp` covers the Qt wallet unlock context: copying
 transfers the relock responsibility exactly once, and self-assignment leaves
 it intact.
@@ -611,10 +612,15 @@ either record.
 `RewriteWalletLMDB()`: moving the old environment aside, installing the
 compacted copy, restoring it, reopening it, or removing `wallet.old`.  They
 also arm `SetTestWalletRewriteAbort(true)` so the fatal path with no usable
-environment returns instead of exiting.  Each case requires that no backend
-marker is created (`wallet.backend` stays absent), `wallet.dat` does not
+environment returns instead of exiting.  Each case requires that the
+`wallet.backend` marker stays present and says `lmdb`, `wallet.dat` does not
 appear on disk, later writes stay in LMDB, and a restart repairs the
 directory.
+`kvdb_tests/wallet_lmdb_marker_protects_wallet` covers the marker as a
+durable initialization record: a new data directory starts and writes
+`wallet.backend`; deleting `wallet/` afterwards makes startup fail without
+creating or accepting an empty replacement; and a markerless legacy wallet is
+adopted on a successful open and gains the marker.
 `wallet_persistence_tests/wallet_encryption_rewrite_failure_is_not_success`
 uses the same hooks to force a post-encryption rewrite failure.  It requires
 `EncryptWallet()` to report failure while plaintext bytes are still present
@@ -683,11 +689,11 @@ instead of reporting stale health.
 The RPC surface is `getdbinfo` (safe mode allowed and not wallet-locked),
 which returns a `chain` and `wallet` object with the same fields.  The
 `regression_lmdb_wallet_e2e.sh` and `regression_lmdb_wallet_backup.sh` runs
-assert on a real daemon that the wallet reports `active_backend == "lmdb"`, no
-legacy marker, positive map/page counters, a nonzero entry count,
-`writer_active == false`, `read_only == false`, `nosync == false` and an empty
-`error`.  Field definitions and a sample result are in `doc/lmdb.md`, "Health
-diagnostics".
+assert on a real daemon that the wallet reports `active_backend == "lmdb"`, an
+`lmdb` initialization marker, positive map/page counters, a nonzero entry
+count, `writer_active == false`, `read_only == false`, `nosync == false` and an
+empty `error`.  Field definitions and a sample result are in `doc/lmdb.md`,
+"Health diagnostics".
 
 ## Shell regression scripts
 
@@ -754,10 +760,11 @@ migration support; recovery with the archived converter is described in
   `<destination>/wallet`; non-empty, regular-file and live-environment
   destinations are refused; truncated, zeroed and empty environments are
   rejected by both check forms; startup against a truncated live wallet exits
-  non-zero with an `LMDB wallet ... is incomplete` error and does not create a
-  marker; and restoring the snapshot brings back the address and label
-  while discarding a post-backup address-book entry.  It also restarts after
-  the restore and signs with the restored and newly created keys.
+  non-zero with an `LMDB wallet ... is incomplete` error and preserves the
+  existing `wallet.backend` marker; and restoring the snapshot brings back the
+  address and label while discarding a post-backup address-book entry.  It also
+  restarts after the restore and signs with the restored and newly created
+  keys.
 - `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on a real
   daemon: create an LMDB wallet and populate it with imported keys, labels,
   watch-only and multisig scripts, signed messages, keypool entries and

@@ -214,35 +214,39 @@ enum WalletStartupAction
 };
 
 /**
- * Decides what startup should do with the LMDB wallet.  A legacy marker saying
- * LMDB is authoritative forbids silently starting from an empty wallet; that is
- * data loss, not an invitation to create a fresh wallet.  When no marker is
- * present and wallet.dat exists, the wallet must be migrated with
+ * Decides what startup should do with the LMDB wallet.  A wallet.backend
+ * marker saying LMDB is authoritative forbids silently starting from an empty
+ * wallet; that is data loss, not an invitation to create a fresh wallet.  When
+ * no marker is present and wallet.dat exists, the wallet must be migrated with
  * phoenix-db-migrate before the daemon can start.
  */
 WalletStartupAction GetWalletStartupAction(bool fMarkerLMDB, bool fLMDBEmpty,
                                            bool fBDBWalletExists);
 
-/** Reads a legacy wallet.backend marker.  Returns false when it is absent. */
+/** Reads the wallet.backend initialization marker.  Returns false when absent. */
 bool ReadWalletBackendMarker(const std::filesystem::path& dir, std::string& strBackend);
+
+/** Atomically writes the wallet.backend initialization marker in dir. */
+bool WriteWalletBackendMarker(const std::filesystem::path& dir, const std::string& strBackend);
 
 /** Returns true when dir contains a non-empty LMDB wallet. */
 bool HasLMDBWallet(const std::filesystem::path& dir);
 
 /**
- * Checks that the LMDB runtime can use the wallet in dir.  Current builds do
- * not write a marker, so an existing LMDB wallet is authoritative on its own.
- * A marker left by a migration-window build is still honoured, and a Berkeley
- * DB marker or source is reported as requiring off-line migration.
+ * Checks that the LMDB runtime can use the wallet in dir.  The wallet.backend
+ * marker records which format owns the wallet; an older LMDB wallet without a
+ * marker is still treated as authoritative and gains one on the next successful
+ * open.  A Berkeley DB marker or source is reported as requiring off-line
+ * migration.
  */
 bool CheckWalletBackendCompatibility(const std::filesystem::path& dir);
 
 /**
  * Validates the configured wallet backend and opens the LMDB wallet when it is
  * selected.  An existing wallet.dat is an explicit migration error and is
- * never imported automatically.  No backend marker is created; a legacy
- * wallet.backend marker is still honoured so a later start cannot silently
- * adopt a stale wallet.dat.
+ * never imported automatically.  A successful open writes wallet.backend as a
+ * durable initialization marker, so deleting wallet/ later fails closed
+ * instead of silently creating an empty wallet.
  */
 bool InitLMDBWalletDB();
 void CloseLMDBWalletDB();

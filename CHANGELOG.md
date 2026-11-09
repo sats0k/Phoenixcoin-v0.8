@@ -74,6 +74,12 @@ Changes since v0.8.3.
 
 ### Fixed
 
+- The wallet no longer loses its fail-closed protection when the environment
+  is deleted. `wallet.backend` is written atomically after every successful
+  LMDB wallet open, so a later missing `wallet/` is reported as data loss
+  instead of silently creating an empty wallet. A markerless wallet from an
+  earlier build gains the marker on its next successful start. The chain index
+  remains markerless because it can be rebuilt from the block files.
 - Hybrid key generation and keypool top-up could persist the `hyb` record
   without the matching legacy ECDSA `key`/`ckey` record, leaving a key whose
   legacy half was unusable after a restart. A new
@@ -401,8 +407,10 @@ New coverage:
   `bdb` marker, or a `wallet.dat` / `blkindex.dat` without an LMDB
   environment, fails explicitly and points at the archived converter; it is
   never opened as an empty LMDB environment.
-- New data directories no longer create `blkindex.backend` or `wallet.backend`.
-  The LMDB environment is the authority. Markers left by migration-window
+- New data directories no longer create `blkindex.backend`; the chain-index
+  LMDB environment is the authority. The wallet's `wallet.backend`
+  initialization marker is still written after every successful open and
+  remains authoritative, as described above. Markers left by migration-window
   builds and the archived converter are still read; a `bdb` or unknown marker
   still fails closed, and an `lmdb` marker still turns a missing environment
   into an explicit data-loss error instead of a fresh database.
