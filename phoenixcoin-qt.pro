@@ -45,17 +45,11 @@ message("Building with Qt $$QT_VERSION$$escape_expand(\\n)")
 
 
 # Dependency library locations can be customized with:
-#    BOOST_INCLUDE_PATH, BOOST_LIB_PATH, OPENSSL_INCLUDE_PATH and
-#    OPENSSL_LIB_PATH respectively.
-win32:BOOST_LIB_SUFFIX=-mgw49-mt-x64-1_81
-win32:BOOST_INCLUDE_PATH="/home/Administrator/boost-1.81"
-win32:BOOST_LIB_PATH="/home/Administrator/boost-1.81/stage/lib"
-win32:OPENSSL_INCLUDE_PATH="/home/Administrator/openssl-1.0.2u/include"
-win32:OPENSSL_LIB_PATH="/home/Administrator/openssl-1.0.2u"
-# Directory with the headers "include" should be renamed or copied to "miniupnpc"
-win32:MINIUPNPC_INCLUDE_PATH="/home/Administrator/miniupnpc-2.3.0"
-win32:MINIUPNPC_LIB_PATH="/home/Administrator/miniupnpc-2.3.0"
-
+#    BOOST_INCLUDE_PATH, BOOST_LIB_PATH, BOOST_LIB_SUFFIX,
+#    OPENSSL_INCLUDE_PATH, OPENSSL_LIB_PATH, MINIUPNPC_INCLUDE_PATH and
+#    MINIUPNPC_LIB_PATH.  Windows builds must point these at the installed
+#    Boost, OpenSSL 3.5+ and miniupnpc trees; no machine-specific defaults are
+#    baked in, so an old OpenSSL installation cannot be picked up silently.
 macx:BOOST_LIB_SUFFIX=-mt-x64
 
 # Anchor generated files to the build directory so out-of-tree (shadow)

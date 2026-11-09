@@ -478,6 +478,10 @@ Minimum versions used by this development branch include:
 * **Qt 6.8 or newer** for the GUI. Older Qt versions are rejected by
   `phoenixcoin-qt.pro`; use `qmake6` (or a Qt6 `qmake`) to configure the GUI.
 
+The Windows Qt and MinGW build files do not hardcode dependency paths.  Pass
+the `BOOST_*`, `OPENSSL_*` and `MINIUPNPC_*` variables when configuring so the
+versions above are used instead of an older system copy.
+
 ---
 
 # Building
