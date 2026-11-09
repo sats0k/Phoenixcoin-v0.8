@@ -372,7 +372,7 @@ legacy suites. `wallet_persistence_tests.cpp` covers LMDB wallet
 persistence, encryption-state equality, write-boundary rollback, explicit
 rewrite-failure handling and hybrid-key invariants; `kvdb_tests.cpp` covers
 the backend abstraction, cursor error reporting, LMDB environments,
-marker authority and fail-closed startup, verified backup/restore,
+legacy marker authority and fail-closed startup, verified backup/restore,
 `checklmdb`, `getdbinfo`, map growth and corruption handling.
 
 The hybrid message-key suite now also covers the `dumphybridkey` /
@@ -477,14 +477,13 @@ hooks in `db.h` — `SetTestWalletWriteFailure(type, nSkip)`,
 fail one matching LMDB wallet write or wallet commit. The skip count lets a
 test pass earlier writes or the pool-clearing transaction and fail a later
 record or the refill commit. The hooks are one-shot, inert until armed, and
-apply only to the LMDB wallet database (never Berkeley DB or the chain
-index).
+apply only to the LMDB wallet database, never the chain index.
 
 A separate one-shot hook, `SetTestChainCommitFailure()` in `db.h`, fails the
 next non-wallet LMDB transaction commit and aborts it. The import-batch
 regression arms it through `PHOENIX_TEST_FAIL_CHAIN_BATCH_COMMIT` to exercise
 `CChainImportBatch::Commit()`'s rollback path; it is inert until armed and
-never affects Berkeley DB or wallet transactions.
+never affects wallet transactions.
 
 - `wallet_atomic_write_boundaries` fails every existing wallet record write
   inside one explicit transaction (`WriteKey`'s `keymeta` and `key`,
@@ -607,9 +606,10 @@ either record.
 `RewriteWalletLMDB()`: moving the old environment aside, installing the
 compacted copy, restoring it, reopening it, or removing `wallet.old`.  They
 also arm `SetTestWalletRewriteAbort(true)` so the fatal path with no usable
-environment returns instead of exiting.  Each case requires `wallet.backend`
-to remain `lmdb`, `wallet.dat` not to appear as a Berkeley DB file, later
-writes to stay in LMDB, and a restart to repair the directory.
+environment returns instead of exiting.  Each case requires that no backend
+marker is created (`wallet.backend` stays absent), `wallet.dat` does not
+appear on disk, later writes stay in LMDB, and a restart repairs the
+directory.
 `wallet_persistence_tests/wallet_encryption_rewrite_failure_is_not_success`
 uses the same hooks to force a post-encryption rewrite failure.  It requires
 `EncryptWallet()` to report failure while plaintext bytes are still present
@@ -749,8 +749,8 @@ migration support; recovery with the archived converter is described in
   `<destination>/wallet`; non-empty, regular-file and live-environment
   destinations are refused; truncated, zeroed and empty environments are
   rejected by both check forms; startup against a truncated live wallet exits
-  non-zero with an `LMDB wallet ... is incomplete` error and does not rewrite
-  the marker; and restoring the snapshot brings back the address and label
+  non-zero with an `LMDB wallet ... is incomplete` error and does not create a
+  marker; and restoring the snapshot brings back the address and label
   while discarding a post-backup address-book entry.  It also restarts after
   the restore and signs with the restored and newly created keys.
 - `regression_lmdb_wallet_e2e.sh` — the full wallet lifecycle on a real
