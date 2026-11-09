@@ -7,6 +7,7 @@
 #include <map>
 
 #include "allocators.h" /* for SecureString */
+#include "unlockcontext.h"
 
 class OptionsModel;
 class AddressTableModel;
@@ -100,25 +101,8 @@ public:
     bool dumpHybridKeys(const QString &filename, QString &strError);
     bool importHybridKeys(const QString &filename, QString &strError);
 
-    // RAI object for unlocking wallet, returned by requestUnlock()
-    class UnlockContext
-    {
-    public:
-        UnlockContext(WalletModel *wallet, bool valid, bool relock);
-        ~UnlockContext();
-
-        bool isValid() const { return valid; }
-
-        // Copy operator and constructor transfer the context
-        UnlockContext(const UnlockContext& obj) { CopyFrom(obj); }
-        UnlockContext& operator=(const UnlockContext& rhs) { CopyFrom(rhs); return *this; }
-    private:
-        WalletModel *wallet;
-        bool valid;
-        mutable bool relock; // mutable, as it can be set to false by copying
-
-        void CopyFrom(const UnlockContext& rhs);
-    };
+    // RAII object for unlocking wallet, returned by requestUnlock()
+    typedef ::UnlockContext UnlockContext;
 
     UnlockContext requestUnlock();
 

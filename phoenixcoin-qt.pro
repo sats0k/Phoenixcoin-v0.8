@@ -211,6 +211,7 @@ HEADERS += src/qt/gui.h \
     src/keystore.h \
     src/qt/transactionfilterproxy.h \
     src/qt/transactionview.h \
+    src/qt/unlockcontext.h \
     src/qt/walletmodel.h \
     src/rpcmain.h \
     src/qt/overviewpage.h \

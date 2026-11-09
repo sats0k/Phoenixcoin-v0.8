@@ -393,31 +393,7 @@ WalletModel::UnlockContext WalletModel::requestUnlock()
     // If wallet is still locked, unlock was failed or cancelled, mark context as invalid
     bool valid = getEncryptionStatus() != Locked;
 
-    return UnlockContext(this, valid, was_locked);
-}
-
-WalletModel::UnlockContext::UnlockContext(WalletModel *wallet, bool valid, bool relock):
-        wallet(wallet),
-        valid(valid),
-        relock(relock)
-{
-}
-
-WalletModel::UnlockContext::~UnlockContext()
-{
-    if(valid && relock)
-    {
-        wallet->setWalletLocked(true);
-    }
-}
-
-void WalletModel::UnlockContext::CopyFrom(const UnlockContext& rhs)
-{
-    // Transfer context; old object no longer relocks wallet
-    wallet = rhs.wallet;
-    valid = rhs.valid;
-    relock = rhs.relock;
-    rhs.relock = false;
+    return UnlockContext([this]() { setWalletLocked(true); }, valid, was_locked);
 }
 
 bool WalletModel::getPubKey(const CKeyID &address, CPubKey& vchPubKeyOut) const {

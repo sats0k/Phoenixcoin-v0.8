@@ -681,7 +681,7 @@ An automated unit-test suite covers these scenarios under
 cases for the database layer and LMDB operations) and
 `wallet_persistence_tests.cpp` (20 cases for persistence, atomicity and
 hybrid invariants), alongside the re-enabled legacy Boost suites (script,
-multisig, transaction, P2SH, miner, DoS). The full suite reports **173 test
+multisig, transaction, P2SH, miner, DoS). The full suite reports **177 test
 cases** and passes with no errors:
 
 ```bash

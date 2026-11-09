@@ -496,7 +496,7 @@ with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
   any transaction, and an injected final commit failure restores the tip and
   block index in memory, leaves no batch entries after a restart and still
   allows a later clean import to reach the correct tip.
-- The full unit suite passed 173 test cases with no errors in the normal build.
+- The full unit suite passed 177 test cases with no errors in the normal build.
   Under sanitizers, on the earlier 153-case tree, it passed 140/141 test cases
   (40534/40535 assertions).  The only failure was the timing-sensitive
   `DoS_tests/DoS_checkSig` under sanitizer slowdown.  There were no
@@ -958,7 +958,7 @@ builds:
 
 These runs were recorded on the 158-case tree that existed when the wallet
 backend was validated, before Berkeley DB was removed; the script totals are
-from that version. The current normal-build suite is 173 cases, and the crash
+from that version. The current normal-build suite is 177 cases, and the crash
 regression now covers normal operation and the encryption rewrite only.
 
 The targeted unit runs used LeakSanitizer (`detect_leaks=1`) and reported no
