@@ -298,8 +298,8 @@ continues to describe committed pages.
 
 ## Health diagnostics
 
-`getdbinfo` reports the state of both database backends without inspecting
-`data.mdb` by hand:
+`getdbinfo` reports the state of both LMDB environments (the chain index and
+the wallet) without inspecting `data.mdb` by hand:
 
 ```
 phoenixcoind getdbinfo
@@ -318,8 +318,8 @@ The result has a `chain` and a `wallet` object with the same shape:
     "database_open" : true,
     "path" : "/home/user/.phoenixcoin/blkindex",
     "marker" : {
-      "present" : true,
-      "value" : "lmdb",
+      "present" : false,
+      "value" : "",
       "matches_backend" : true
     },
     "data_file" : {
@@ -359,6 +359,11 @@ The result has a `chain` and a `wallet` object with the same shape:
   "wallet" : { ... }
 }
 ```
+
+The sample is a current installation with no legacy marker.  A data directory
+converted during the migration window may still contain `blkindex.backend` /
+`wallet.backend`; the daemon reads those files as legacy state but never
+creates new ones.
 
 Field meanings:
 
@@ -482,12 +487,14 @@ index from a legacy source, or resynchronise from the network.
 
 The chain-index backend was validated on Linux x86-64 with a build configured
 with `-fsanitize=address,undefined -fno-omit-frame-pointer` and LTO disabled.
+Counts that name an earlier tree are historical records; the current suite is
+173 cases (see [`../src/test/README.md`](../src/test/README.md)).
 
-- `kvdb_tests` passed 48/48 test cases in the normal build.  The chain-index
-  subset that existed at the time (24 cases, 1238 assertions) also passed under
-  AddressSanitizer and UndefinedBehaviorSanitizer with no sanitizer reports;
-  that sanitizer run predates the later wallet, backup and runtime-growth
-  suites.
+- `kvdb_tests` passed 48/48 test cases in the normal build of that validation
+  tree.  The chain-index subset that existed at the time (24 cases, 1238
+  assertions) also passed under AddressSanitizer and UndefinedBehaviorSanitizer
+  with no sanitizer reports; that sanitizer run predates the later wallet,
+  backup and runtime-growth suites.
 - `regression_lmdb_import_batch.sh` passed 62/62 checks in the normal build:
   a four-block `-loadblock` import commits as one batch and survives a
   restart while announcing the pre-batch tip and each intermediate coinbase,
@@ -510,13 +517,13 @@ or a later one.  The tip block and its coinbase transaction remained readable
 after every restart, and syncing continued to height 227811 with 665129
 records.
 
-The wallet tests in `kvdb_tests` cover the wallet marker, the startup action
-matrix (existing, missing, migration required, new), `CWalletDB` routing,
-commit/abort, persistence across an environment restart, and prefix scans
-through `CDBScan`.  A dedicated regression covers the authority cases: with a
-`bdb` marker, an existing `wallet.dat`, and a real LMDB environment left in
-`wallet/`, startup is refused, the marker stays `bdb`, and the stale environment
-is not adopted or modified.
+The wallet tests in `kvdb_tests` cover legacy wallet-marker handling, the
+startup action matrix (existing, missing, conversion required, new),
+`CWalletDB` routing, commit/abort, persistence across an environment restart,
+and prefix scans through `CDBScan`.  A dedicated regression covers the
+authority cases: with a `bdb` marker, an existing `wallet.dat`, and a real
+LMDB environment left in `wallet/`, startup is refused, the marker stays
+`bdb`, and the stale environment is not adopted or modified.
 
 `wallet_persistence_tests` compares wallet semantics, not record counts.  It
 builds a wallet containing compressed and uncompressed keys, key metadata,
@@ -541,7 +548,7 @@ requires:
   by the wallet, `GetAllReserveKeys` to agree with the pool, and the next index
   to continue sequentially;
 - keypool reserve, return, keep, refill and `GetKeyFromPool` to behave the same
-  after the migration and after a restart.
+  after the environment is reopened and after a restart.
 
 The hybrid import round-trip test runs
 `importhybridkey` -> `dumphybridkey` -> restart -> `dumphybridkey` -> sign ->
@@ -565,9 +572,9 @@ Wallet write atomicity is covered by twelve failure-injection tests in
 `wallet_persistence_tests`.  They use the test-only hooks
 `SetTestWalletWriteFailure` and `SetTestWalletCommitFailure`, which make one
 matching LMDB wallet write or wallet commit fail after an optional skip count.
-The hooks are one-shot, inert until armed, and never affect
-Berkeley DB or the chain index.  `wallet_atomic_write_boundaries` fails every
-existing `CWalletDB` write boundary inside one explicit transaction -- `keymeta`
+The hooks are one-shot, inert until armed, and never affect the chain index.
+`wallet_atomic_write_boundaries` fails every existing `CWalletDB` write
+boundary inside one explicit transaction -- `keymeta`
 and `key`, `ckey`, `tx`, `name`, `bestblock`, `pool`, `cscript`, `watch`,
 `defaultkey`, `orderposnext`, `hyb`, `hybaddr`, `hybused`, `mkey`, `setting`,
 `acc`, `acentry`, `minversion` and `version` -- and requires the aborted
@@ -675,7 +682,7 @@ stage-commit-register sequence.
 
 These suites pass in the normal build together with the rest of the unit suite.
 
-`regression_lmdb_wallet_e2e.sh` passed 107/107 checks.  It drives a real
+`regression_lmdb_wallet_e2e.sh` currently passes 99/99 checks.  It drives a real
 daemon through the full LMDB wallet lifecycle:
 
 - imported coinbase keys, labelled receiving addresses, a watch-only address,
@@ -900,9 +907,10 @@ grown to 7.68 MB, slightly below the 7.79 MB Berkeley DB wallet.
 `RewriteWalletLMDB()` closes the live environment before it moves `wallet/`
 aside, so every failure after that point must either reopen a usable
 environment or stop the process.  It never disables LMDB: the LMDB environment
-remains authoritative (a legacy `wallet.backend` marker, if present, still says
-`lmdb`), and a Berkeley DB fallback would accept writes that the next LMDB
-start could not see.  The failure paths are:
+remains authoritative.  Current builds do not create a `wallet.backend` marker;
+a migration-era marker, if present, is only read at startup, and there is no
+Berkeley DB fallback path that could accept writes the next LMDB start could
+not see.  The failure paths are:
 
 - a failed rename of `wallet/` leaves the active environment in place and
   reopens it;
@@ -924,10 +932,10 @@ test-only `SetTestWalletRewriteFailure` hook:
 `wallet_lmdb_rewrite_rename_old_failure`,
 `wallet_lmdb_rewrite_install_failure`,
 `wallet_lmdb_rewrite_reopen_failure` and
-`wallet_lmdb_rewrite_cleanup_failure`.  They check that the marker stays
-`lmdb`, that `wallet.dat` never appears as a Berkeley DB file, that later
-writes still reach LMDB, that a write after an unrecoverable failure fails
-instead of landing in Berkeley DB, and that a restart repairs the directory.
+`wallet_lmdb_rewrite_cleanup_failure`.  They check that no backend marker is
+created, that `wallet.dat` never appears on disk, that later writes still reach
+LMDB, that a write after an unrecoverable failure fails instead of opening a
+new database, and that a restart repairs the directory.
 `SetTestWalletRewriteAbort(true)` makes the fatal path return false instead
 of exiting, so the test can inspect the on-disk state; both hooks apply only
 to the LMDB wallet.
@@ -940,13 +948,15 @@ observable failure), and scans `wallet/data.mdb` to prove plaintext pages
 are still present.  A following successful rewrite must remove those bytes,
 and the encrypted wallet must restart, unlock and sign.
 
-## Wallet backend sanitizer validation
+## Wallet backend sanitizer validation (historical)
 
 The wallet backend matrix was validated on Linux x86-64 with separate
 AddressSanitizer and UndefinedBehaviorSanitizer builds
 (`-fsanitize=address` and `-fsanitize=undefined`, with
-`-fno-omit-frame-pointer -g` and LTO disabled).  Every entry passed in both
-builds:
+`-fno-omit-frame-pointer -g` and LTO disabled).  These results are a historical
+record from the 158-case tree that existed when the wallet backend was
+validated, before Berkeley DB was removed; they are not current test counts.
+Every entry passed in both builds:
 
 | Check | Result |
 | --- | --- |
@@ -956,10 +966,9 @@ builds:
 | full wallet suite (the unit cases above plus `wallet_tests`) | 17 cases, 21550 assertions |
 | full unit suite | 158 cases |
 
-These runs were recorded on the 158-case tree that existed when the wallet
-backend was validated, before Berkeley DB was removed; the script totals are
-from that version. The current normal-build suite is 173 cases, and the crash
-regression now covers normal operation and the encryption rewrite only.
+The current normal-build suite is 173 cases, and the current crash regression
+covers normal operation and the encryption rewrite.  See
+[`../src/test/README.md`](../src/test/README.md) for current test coverage.
 
 The targeted unit runs used LeakSanitizer (`detect_leaks=1`) and reported no
 leaks.  Broad runs used `detect_leaks=0` because of pre-existing RPC/asio
@@ -984,9 +993,10 @@ The chain-index validations above were mirrored for the wallet:
 `regression_lmdb_wallet_crash.sh` kills a real daemon with `SIGKILL` at
 every durable boundary and requires the restarted wallet to be either
 exactly the pre-operation state or the fully committed state, never
-anything in between.  It passed 359/359 checks.  The kill is injected by a
-test-only hook, `TestWalletCrashPoint` (`src/db.cpp`), controlled by
-`PHOENIX_TEST_CRASH_FILE`.  The file contains `<point> <skip>`; each matching
+anything in between.  The current normal-build run passes 237/237 checks; the
+migration-era run reported 359/359 before Berkeley DB was removed.  The kill is
+injected by a test-only hook, `TestWalletCrashPoint` (`src/db.cpp`), controlled
+by `PHOENIX_TEST_CRASH_FILE`.  The file contains `<point> <skip>`; each matching
 call decrements the skip and the call that finds it at zero raises
 `SIGKILL` (falling back to `std::_Exit(137)`), after flushing stdio so
 `debug.log` records how far the operation got.  With no file or no

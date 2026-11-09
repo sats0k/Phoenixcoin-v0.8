@@ -368,8 +368,10 @@ Operators who still hold one must use the archived converter release described
 in [`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md) before
 starting the node. The converter was distributed separately during the
 migration window; the archived guide covers the backup, disk-space, downtime,
-verification and recovery procedure. Once converted, the LMDB environments and
-markers are the same ones the current daemon uses.
+verification and recovery procedure. Once converted, the LMDB environments are
+the ones the current daemon uses; a migration-era `blkindex.backend` or
+`wallet.backend` marker, if present, is read only as legacy state. Current
+builds do not create new markers.
 
 LMDB commits fsync by default (`-lmdbnosync=0`), the map grows automatically as
 it fills up to `-lmdbmaxmapsize` / `-lmdbmaxwalletsize`, and `backupwallet`
@@ -662,9 +664,11 @@ Testing has covered:
   round trip, atomic import under injected mid-transaction write failure,
   export-failure / no-overwrite / atomic-write guarantees, and explicit
   rejection of malformed import records
-* Offline Berkeley DB to LMDB chain-index and wallet conversion with
-  byte-for-byte record copying, semantic wallet equality, chain-tip
-  preservation and restartable installs
+* Historical migration-window coverage (retired with the converter): offline
+  Berkeley DB to LMDB chain-index and wallet conversion with byte-for-byte
+  record copying, semantic wallet equality, chain-tip preservation and
+  restartable installs; see
+  [`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md)
 * Wallet crash safety under `SIGKILL` at every marker, write and
   encryption-rewrite boundary
 * Verified LMDB backup/restore and offline structural verification
@@ -730,8 +734,8 @@ The hybrid post-quantum transaction layer is substantially implemented.
 * [x] Locked-wallet hybrid visibility: hybrid addresses, balances and all
       fully owned hybrid output forms are listed as watch-only while the
       wallet is encrypted, and stay non-spendable until unlocked
-* [x] LMDB as the only chain-index and wallet backend, with a documented
-      offline conversion for legacy Berkeley DB data and no implicit fallback
+* [x] LMDB as the only chain-index and wallet backend, with archived converter
+      guidance for legacy Berkeley DB data and no implicit fallback
 * [x] Verified LMDB wallet backup/restore, offline `checklmdb` verification
       and live `getdbinfo` health diagnostics
 * [x] Automatic LMDB map growth and per-commit fsync by default
@@ -861,8 +865,10 @@ src/test/regression_lmdb_wallet_crash.sh
 src/test/regression_lmdb_wallet_e2e.sh
 ```
 
-The LMDB backend, migration, backup, recovery and diagnostics are documented
-in [`doc/lmdb.md`](doc/lmdb.md).
+The current LMDB backend, backup, recovery and diagnostics are documented in
+[`doc/lmdb.md`](doc/lmdb.md). Historical Berkeley DB migration and archived
+converter recovery are documented in
+[`doc/archive/bdb-migration.md`](doc/archive/bdb-migration.md).
 
 ---
 
