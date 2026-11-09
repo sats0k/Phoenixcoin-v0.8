@@ -255,8 +255,14 @@ check-lmdb-backup:
 
 # Longer-running LMDB regression set for CI/nightly jobs.  The full unit suite
 # covers the backend guarantees; the backup restore tests run next because they
-# exercise the recovery paths operators rely on.
-nightly-lmdb: check-lmdb check-lmdb-backup
+# exercise the recovery paths operators rely on.  Invoke the checks
+# sequentially from the recipe instead of listing them as prerequisites: each
+# one builds and links the same binaries, so under -j they would race and fail
+# with "Text file busy" while one make tried to run a binary another was
+# writing.
+nightly-lmdb:
+	@$(MAKE) -f Makefile.linux check-lmdb
+	@$(MAKE) -f Makefile.linux check-lmdb-backup
 	./test/regression_lmdb_wallet_e2e.sh ./phoenixcoind
 	./test/regression_lmdb_wallet_crash.sh ./phoenixcoind
 	./test/regression_lmdb_import_batch.sh ./phoenixcoind
