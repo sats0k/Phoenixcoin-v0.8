@@ -531,6 +531,18 @@ bool AppInit2()
         return InitError(_("-salvagewallet is not supported: Berkeley DB support "
                            "has been removed."));
 
+    static const char* const removedDBOptions[] = {
+        "-detachdb", "-privdb", "-dbcache", "-dblogsize"
+    };
+    for (const char* option : removedDBOptions)
+    {
+        if (mapArgs.count(option))
+            return InitError(strprintf(_("%s is not supported: Berkeley DB support "
+                                         "has been removed.\n"
+                                         "Please migrate your database to LMDB using "
+                                         "phoenix-db-migrate."), option));
+    }
+
     if (mapArgs.count("-bind")) {
         // when specifying an explicit binding address, you want to listen on it
         // even when -connect or -proxy is specified
